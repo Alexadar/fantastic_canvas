@@ -1,2 +1,8 @@
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.uv.workspace]
+members = ["core"]
+
+[tool.uv.sources]
+fantastic = { workspace = true }

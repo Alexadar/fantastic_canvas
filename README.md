@@ -25,10 +25,16 @@ CLI / REST / WS ──→ Dispatch ──→ Engine ──→ .fantastic/
 ## Installation
 
 ```bash
-# Conda
-conda env create -f environment.yml
-conda activate fantastic
-bash scripts/build-core.sh --install-local
+# From source (recommended)
+uv sync                                  # install deps + create venv
+uv run fantastic                         # run directly
+
+# Install globally
+uv tool install .                        # from source
+uv tool install fantastic                # from PyPI (after publish)
+
+# Or with pip
+pip install fantastic
 ```
 
 ## Usage
