@@ -81,9 +81,9 @@ async def ai_start(**kwargs) -> ToolResult:
 
 
 @register_dispatch("ai_swap")
-async def _ai_swap(provider: str, model: str = "", **kwargs) -> ToolResult:
+async def _ai_swap(provider: str, model: str = "", instance: str = "", **kwargs) -> ToolResult:
     brain = _engine.ai
-    result = await brain.swap_provider(provider, model or None)
+    result = await brain.swap_provider(provider, model or None, instance=instance or None)
     return ToolResult(data={"status": result})
 
 
@@ -102,6 +102,26 @@ async def _ai_configure(**kwargs) -> ToolResult:
 @register_tool("ai_configure")
 async def ai_configure(**kwargs) -> ToolResult:
     return await _ai_configure(**kwargs)
+
+
+@register_dispatch("ai_generate")
+async def _ai_generate(messages: list[dict] | None = None, **kwargs) -> ToolResult:
+    """Run inference on the local provider. Used by ProxyProvider on remote callers."""
+    if not messages:
+        return ToolResult(data={"error": "messages required"})
+    brain = _engine.ai
+    provider = await brain.ensure_provider()
+    if not provider:
+        return ToolResult(data={"error": "no provider available"})
+    chunks: list[str] = []
+    async for token in provider.generate(messages):
+        chunks.append(token)
+    return ToolResult(data={"text": "".join(chunks)})
+
+
+@register_tool("ai_generate")
+async def ai_generate(**kwargs) -> ToolResult:
+    return await _ai_generate(**kwargs)
 
 
 @register_dispatch("ai_providers")

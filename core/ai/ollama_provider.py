@@ -55,8 +55,8 @@ class OllamaProvider:
                 error=str(e),
             )
 
-    async def chat(self, messages: list[dict]) -> AsyncIterator[str]:
-        """Stream chat tokens from Ollama."""
+    async def generate(self, messages: list[dict]) -> AsyncIterator[str]:
+        """Stream completion tokens from Ollama."""
         client = self._get_client()
         stream = await client.chat(
             model=self._model,
