@@ -43,6 +43,11 @@ uv tool install .                                            # from source
 uv tool install fantastic                                    # from PyPI
 fantastic add canvas && fantastic --project-dir ~/my-project
 
+# AI features (PyTorch) — pick one for your platform
+uv sync --extra torch                                       # macOS (MPS/Apple Silicon)
+uv sync --extra torch-cpu                                   # Linux/Windows (CPU only)
+uv sync --extra torch-cuda                                  # Linux (NVIDIA CUDA 12.4)
+
 # Docker
 docker-compose up
 # or: docker build -t fantastic-canvas . && docker run -v $(pwd):/workspace fantastic-canvas fantastic --host 0.0.0.0 --project-dir /workspace
