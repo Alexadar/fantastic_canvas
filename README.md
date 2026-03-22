@@ -19,14 +19,22 @@ CLI / REST / WS ──→ Dispatch ──→ Engine ──→ .fantastic/
 
 ## Requirements
 
-- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
 - Node.js 18+ (for frontend build)
+
+```bash
+# Install uv (macOS / Linux)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Or via Homebrew
+brew install uv
+```
 
 ## Installation
 
 ```bash
 # From source (recommended)
-uv sync                                  # install deps + create venv
+uv sync                                  # install Python 3.11+, deps, and venv
 uv run fantastic                         # run directly
 
 # Install globally
