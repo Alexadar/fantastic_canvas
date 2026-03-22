@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 from .agent_store import AgentStore
+from .ai.brain import AIBrain
 from .code_runner import CodeRunner
 
 logger = logging.getLogger(__name__)
@@ -60,11 +61,18 @@ class Engine:
         # Code runner (subprocess-based, stateless)
         self._runner = CodeRunner(project_dir=str(self._project_dir))
 
+        # AI brain (provider abstraction + conversation → LLM)
+        self._ai = AIBrain(self._project_dir)
+
         # Content alias registry (lazy-loaded from .fantastic/aliases.json)
         self._content_aliases: dict[str, dict] | None = None
 
         # State enrichment hooks (plugins add custom fields)
         self._state_hooks: list[Callable[[dict], None]] = []
+
+    @property
+    def ai(self) -> AIBrain:
+        return self._ai
 
     @property
     def store(self) -> AgentStore:

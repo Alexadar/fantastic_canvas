@@ -14,6 +14,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pydantic>=2.10.0",
     "httpx>=0.27.0",
+    "ollama>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +25,7 @@ torch = ["torch>=2.2.0"]
 fantastic = "core.cli:main"
 
 [tool.setuptools]
-packages = ["core", "core.tools", "core.server"]
+packages = ["core", "core.tools", "core.server", "core.ai"]
 
 [tool.setuptools.package-dir]
 core = "."

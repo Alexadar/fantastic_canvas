@@ -13,6 +13,7 @@ CONVERSATION_BUFFER_SIZE = 1000
 CORE_COLOR = "\033[35m"  # magenta
 USER_COLOR = "\033[32m"  # green
 AGENT_COLOR = "\033[36m"  # cyan
+AI_COLOR = "\033[33m"     # yellow
 RESET = "\033[0m"
 
 CORE_ACTORS = {"fantastic", "system"}
@@ -51,6 +52,8 @@ def actor_color(who: str) -> str:
         return CORE_COLOR
     if who.lower() == "user":
         return USER_COLOR
+    if who.lower() == "ai":
+        return AI_COLOR
     return AGENT_COLOR
 
 
