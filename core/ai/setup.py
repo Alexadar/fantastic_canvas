@@ -30,16 +30,6 @@ SHOW_CURSOR = "\033[?25h"
 UP = "\033[A"
 
 
-# Popular models to suggest for pulling (if not already available)
-SUGGESTED_MODELS = [
-    ("llama3.2", "3B general-purpose"),
-    ("llama3.2:1b", "1B lightweight"),
-    ("mistral", "7B general-purpose"),
-    ("gemma2:2b", "2B lightweight"),
-    ("qwen2.5:3b", "3B multilingual"),
-    ("deepseek-r1:8b", "8B reasoning"),
-]
-
 
 class _Row:
     """A navigable row with left/right options."""
@@ -154,25 +144,12 @@ async def run_setup(project_dir: Path, say_fn: Callable[[str], None] | None = No
     # Build rows
     provider_row = _Row("Provider", ["ollama"], ["local LLM server"])
 
-    # Model options: available models + suggested pulls
     available = result.models or []
-    pull_candidates = [
-        (name, desc) for name, desc in SUGGESTED_MODELS
-        if name not in available
-    ]
+    if not available:
+        say("no models pulled. Run: ollama pull <model>")
+        return False
 
-    model_names = list(available)
-    model_descs = ["installed"] * len(available)
-    for name, desc in pull_candidates:
-        model_names.append(f"+ {name}")
-        model_descs.append(f"pull {desc}")
-
-    if not model_names:
-        # Nothing available and nothing to suggest — shouldn't happen
-        model_names = ["llama3.2"]
-        model_descs = ["will pull"]
-
-    model_row = _Row("Model", model_names, model_descs)
+    model_row = _Row("Model", available)
 
     rows = [provider_row, model_row]
     current = 0
@@ -217,37 +194,15 @@ async def run_setup(project_dir: Path, say_fn: Callable[[str], None] | None = No
         sys.stdout.write(SHOW_CURSOR)
         sys.stdout.flush()
 
-    # Process selection
-    model_choice = model_row.value
-    needs_pull = model_choice.startswith("+ ")
-    model_name = model_choice.lstrip("+ ")
-
     print()
-
-    if needs_pull:
-        say(f"pulling {model_name}...")
-        provider = OllamaProvider(endpoint=result.endpoint, model=model_name)
-        try:
-            last_status = ""
-            async for progress in provider.pull(model_name):
-                if progress != last_status:
-                    sys.stdout.write(f"\r{CLEAR_LINE}  {conversation.AI_COLOR}{progress}{RESET}")
-                    sys.stdout.flush()
-                    last_status = progress
-            print()
-            say(f"pulled {model_name}")
-        except Exception as e:
-            print()
-            say(f"pull failed: {e}")
-            return False
 
     # Save config
     config = {
         "provider": provider_row.value,
         "endpoint": result.endpoint,
-        "model": model_name,
+        "model": model_row.value,
     }
     save_config(project_dir, config)
-    say(f"saved: {provider_row.value} / {model_name}")
+    say(f"saved: {provider_row.value} / {model_row.value}")
 
     return True
