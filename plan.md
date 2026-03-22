@@ -1,124 +1,171 @@
-# Plan: AI Integration (Ollama-only, @-handles)
+# Plan: Interactive AI Brain Discovery & Control API
 
-## Concept
+## Problem
 
-Fantastic becomes an AI coding assistant in the terminal (like OpenCoder/Aider).
-User types freely — unrecognized input goes to AI instead of becoming dead conversation.
-Canvas agents run in parallel and can interact with the main conversation via `@` handles.
+The canvas frontend has no awareness of AI brain state. If a user opens the canvas and no provider is configured, there's no interactive way to discover that, see options, and activate one. The AI lifecycle tools exist but aren't wired into the real-time WS broadcast system or exposed as a coherent plugin surface.
 
-## @ Handle Routing (existing system extended)
+## Design Principles
 
-```
-"fix the bug"              → AI responds (default for non-commands)
-"@ai explain this"         → AI explicitly
-"@canvas hello"            → message to canvas agent
-"@terminal_a3f2b1 ls"      → message to specific agent
-"add canvas"               → existing core command (unchanged)
-"ai status"                → AI management command (new)
-```
+- Follow the **instance management pattern**: tools → ToolResult with broadcast → WS clients react
+- AI status changes broadcast `ai_changed` to all WS clients (like `instances_changed`)
+- Frontend hook can subscribe and render interactive UI
+- No new REST endpoints — everything goes through existing `POST /api/call` and WS dispatch
 
-Key change: **fallback for unrecognized input changes from `conversation.say("user", text)` to AI chat**.
+---
 
-## New Files
+## Step 1: Backend — Broadcast `ai_changed` on every AI lifecycle event
 
-### `core/ai/__init__.py`
-Package init, re-exports AIBrain + OllamaProvider.
+**File: `core/tools/_ai.py`**
 
-### `core/ai/provider.py` — OllamaProvider
-Thin wrapper around `ollama.AsyncClient`:
-- `check()` → bool (health check)
-- `chat(messages)` → AsyncIterator[str] (streaming)
-- `list_models()` → list[str]
-- `pull(model)` → AsyncIterator[str] (progress)
-- `model` property + `set_model()`
+Add an `_ai_state()` helper that returns the current AI snapshot (provider, model, status, available providers). Every mutating AI tool (`ai_start`, `ai_stop`, `ai_swap`, `ai_configure`, `ai_model`) appends a broadcast:
 
-### `core/ai/brain.py` — AIBrain
-Reads conversation buffer, builds messages, streams from provider:
-- `respond(user_message)` → AsyncIterator[str]
-- `_build_messages()` → conversation buffer → ollama chat format
-- `available` property (is provider reachable?)
-- Maps: who="user" → role=user, who="ai" → role=assistant, others → role=system
-
-### `core/ai/config.py` — Config
-Load/save `.fantastic/ai.json`:
-```json
-{"model": "qwen2.5-coder:7b", "endpoint": "http://localhost:11434"}
-```
-
-### `core/tools/_ai.py` — AI dispatch tools
-Registered via `@register_dispatch` / `@register_tool`:
-- `ai_status` → availability, model, endpoint
-- `ai_models` → list local models
-- `ai_model` → switch model
-- `ai_pull` → pull model
-
-## Modified Files
-
-### `core/pyproject.toml`
-Add `"ollama>=0.4"` to default dependencies.
-
-### `core/conversation.py`
-Add `AI_COLOR = "\033[33m"` (yellow) and `"ai"` to color routing.
-
-### `core/engine.py`
-- Create OllamaProvider + AIBrain in `__init__` (from config)
-- Expose `self.ai` property → AIBrain
-- In `start()`: non-fatal provider health check
-
-### `core/input_loop.py`
-The critical change — two parts:
-
-1. **Fallback**: when text is not a command and not `@`-routed, send to AI:
 ```python
-# old: conversation.say("user", text)
-# new:
-conversation.say("user", text)
-if self._engine and self._engine.ai.available:
-    # stream AI response to terminal
-else:
-    # silent fallback (no AI configured)
+async def _ai_state() -> dict:
+    brain = _engine.ai
+    provider = brain.provider
+    config = load_config(brain._project_dir) or {}
+    return {
+        "provider": config.get("provider"),
+        "model": config.get("model"),
+        "connected": provider is not None,
+        "swapping": brain.swapping,
+        "providers": AIBrain.available_providers(),
+    }
 ```
 
-2. **Streaming output**: print chunks with AI_COLOR as they arrive, save full response to buffer when done.
-
-3. **Engine reference**: InputLoop needs access to engine (currently it doesn't have it). Pass via constructor or setter after lifespan creates it.
-
-### `core/recipients.py`
-Add `ai` subcommands to CoreRecipient.parse():
-- `ai status` → `("ai_status", {})`
-- `ai models` → `("ai_models", {})`
-- `ai model <name>` → `("ai_model", {"model": name})`
-- `ai pull <name>` → `("ai_pull", {"model": name})`
-
-### `core/server/_lifespan.py`
-After `engine.start()`: log AI availability (non-fatal).
-
-### `core/tools/__init__.py`
-Add `from . import _ai` to import block.
-
-## Streaming UX
-
-```
-> what does this function do?
-ai         : The `resolve_working_dir` method walks up the parent chain...
-             it returns the root parent's working_dir or falls back to
-             project_dir. This ensures child agents inherit their...
+Tools that mutate state return:
+```python
+return ToolResult(
+    data=...,
+    broadcast=[{"type": "ai_changed", **await _ai_state()}],
+)
 ```
 
-Yellow-colored, streamed chunk-by-chunk, padded name column like all other actors.
+**Tools to update:** `ai_stop`, `ai_start`, `ai_swap`, `ai_configure`, `ai_model`.
 
-## Canvas Agent Conversation Participation
+`ai_status` stays read-only (no broadcast). `ai_generate` stays broadcast-free (it's a hot path).
 
-Already works via existing tools:
-- Canvas agents write to buffer via `conversation_say` tool
-- Canvas agents read buffer via `conversation_log` tool
-- AI sees everything in the buffer (it reads the full history)
-- Future AI-backed canvas agent: same pattern — subscribe to buffer, route through own AI provider
+## Step 2: Backend — Add `ai_discover` tool
 
-## Error States
+**File: `core/tools/_ai.py`**
 
-| State | Behavior |
-|---|---|
-| Ollama not installed/running | `ai status` → "unavailable", typing falls through to plain `conversation.say()` |
-| Model not pulled | Error message + suggest `ai pull <model>` |
-| Connection lost mid-stream | Partial response saved, error shown |
+New tool that probes all registered providers without activating any. Returns what's available so the frontend can show options before the user commits.
+
+```python
+@register_dispatch("ai_discover")
+async def _ai_discover(**kwargs) -> ToolResult:
+    """Probe all providers, return availability + models."""
+    from ..ai.brain import _PROVIDERS
+    results = []
+    for cls, endpoint in _PROVIDERS:
+        r = await cls.discover(endpoint)
+        results.append({
+            "provider": r.provider_name,
+            "available": r.available,
+            "models": r.models,
+            "endpoint": r.endpoint,
+            "error": r.error,
+        })
+    return ToolResult(data={"providers": results})
+```
+
+This gives the frontend everything it needs to render a provider/model picker without committing to anything.
+
+## Step 3: Frontend — `useAI` hook
+
+**File: `bundled_agents/canvas/web/src/hooks/useAI.ts`**
+
+React hook that:
+1. On mount, calls `request('ai_status')` to get initial state
+2. Subscribes to WS `ai_changed` messages for real-time updates
+3. Exposes: `{ status, discover, swap, stop, start }`
+
+```typescript
+interface AIStatus {
+  provider: string | null
+  model: string | null
+  connected: boolean
+  swapping: boolean
+  providers: string[]
+}
+
+export function useAI(
+  request: (tool: string, args?: Record<string, unknown>) => Promise<unknown>,
+  subscribe: (fn: (msg: WSMessage) => void) => () => void,
+) {
+  const [status, setStatus] = useState<AIStatus | null>(null)
+
+  useEffect(() => {
+    request('ai_status').then((data) => setStatus(data as AIStatus))
+    return subscribe((msg) => {
+      if (msg.type === 'ai_changed') {
+        const { type, ...rest } = msg
+        setStatus(rest as AIStatus)
+      }
+    })
+  }, [])
+
+  const discover = () => request('ai_discover') as Promise<{ providers: DiscoverEntry[] }>
+  const swap = (provider: string, opts?: { model?: string; instance?: string }) =>
+    request('ai_swap', { provider, ...opts })
+  const stop = () => request('ai_stop')
+  const start = () => request('ai_start')
+
+  return { status, discover, swap, stop, start }
+}
+```
+
+## Step 4: Frontend — AI status indicator in Canvas
+
+**File: `bundled_agents/canvas/web/src/components/AIStatus.tsx`**
+
+Minimal floating UI element (bottom-right corner) that:
+
+1. **Connected state**: Shows provider name + model as a small chip (e.g. `ollama · llama3.2`). Click to expand menu with stop/switch options.
+2. **No provider**: Shows "No AI" chip. Click opens a dropdown:
+   - Calls `discover()` to probe available providers + models
+   - Renders options as a selectable list
+   - On select, calls `swap(provider, { model })`
+   - Shows loading state during swap (`swapping: true` from `ai_changed`)
+3. **Swapping state**: Shows spinner + "Switching..."
+
+Standalone React component integrated into `Canvas.tsx` as a sibling overlay.
+
+**File: `bundled_agents/canvas/web/src/components/Canvas.tsx`**
+
+Mount `<AIStatus />` inside the canvas container, passing `request` and `subscribe` from the existing WS hook.
+
+## Step 5: Handbook & CLAUDE.md updates
+
+**File: `skills/ai-management.md`** (new skill doc)
+
+Document the full AI infrastructure:
+- Tools: `ai_status`, `ai_discover`, `ai_models`, `ai_model`, `ai_swap`, `ai_start`, `ai_stop`, `ai_configure`, `ai_providers`, `ai_generate`, `ai_pull`
+- WS broadcast: `ai_changed` event shape and when it fires
+- Provider types: integrated (HuggingFace local), ollama (local server), proxy (remote instance)
+- Proxy setup flow: register/launch instance → `ai_swap provider=proxy instance=<id>`
+
+**File: `CLAUDE.md`**
+
+- Add `ai_discover`, `ai_generate` to the **Core** tools list
+- Add to Skills table: `get_handbook` skill `ai-management`
+- Add `ai_changed` to WS incoming (backend → frontend) protocol section
+
+---
+
+## File Summary
+
+| File | Change |
+|------|--------|
+| `core/tools/_ai.py` | Add `_ai_state()`, `ai_discover` tool, broadcast `ai_changed` from mutating tools |
+| `bundled_agents/canvas/web/src/hooks/useAI.ts` | New: AI status hook |
+| `bundled_agents/canvas/web/src/components/AIStatus.tsx` | New: floating AI indicator + provider picker |
+| `bundled_agents/canvas/web/src/components/Canvas.tsx` | Mount `<AIStatus />` |
+| `skills/ai-management.md` | New skill doc |
+| `CLAUDE.md` | Update tools, skills, WS protocol |
+
+## Out of Scope
+
+- Chat UI in canvas (separate feature — uses `brain.respond()`)
+- Streaming tokens over WS (current `ai_generate` is request/response)
+- AI as a canvas agent type (would be a plugin like terminal)
