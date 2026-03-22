@@ -7,7 +7,7 @@ An infinite canvas where AI agents build anything — a server/IDE where agents 
 ```
 Core   — conversation loop + command parsing + ring buffer     (always)
 Server — bundles + agents + REST/WS                            (on demand, singleton per folder)
-AI     — brain that reads conversation, responds               (stub for now)
+AI     — brain + pluggable providers (integrated/ollama/anthropic/proxy)
 ```
 
 `fantastic` always starts **Core**. If bundles are added and no server is running, Core starts it alongside. If a server is already running (PID alive, singleton per folder), Core connects to it.
@@ -54,6 +54,7 @@ Skills are provided by bundles via their own handbook tools.
 | Tool | Skill name | What It Covers |
 |------|------------|----------------|
 | `get_handbook` | *(none)* | Returns CLAUDE.md (overview) |
+| `get_handbook` | `ai-providers` | Provider lifecycle, hot-swap, concurrency, multi-instance |
 | `get_handbook_canvas` | `canvas-management` | Agent CRUD, types, content aliases, VFX |
 | `get_handbook_terminal` | `terminal-control` | Read output, restart processes, send signals, scrollback, REST + WS APIs |
 
@@ -62,6 +63,7 @@ Skills are provided by bundles via their own handbook tools.
 All tools are discoverable via `GET /api/schema` and callable via `POST /api/call {"tool": "...", "args": {...}}`.
 
 **Core**: `create_agent`, `list_agents`, `read_agent`, `delete_agent`, `get_state`, `execute_python`, `content_alias_file`, `content_alias_url`, `get_aliases`, `agent_call`, `launch_instance`, `stop_instance`, `list_instances`, `register_instance`, `unregister_instance`, `restart_instance`, `list_registered_instances`, `get_handbook`, `register_template`, `list_templates`, `server_logs`
+**AI**: `ai_status`, `ai_providers`, `ai_models`, `ai_model`, `ai_pull`, `ai_start`, `ai_stop`, `ai_swap`, `ai_configure`, `ai_generate`
 **Canvas**: `move_agent`, `resize_agent`, `rename_agent`, `update_agent`, `post_output`, `refresh_agent`, `scene_vfx`, `scene_vfx_data`, `get_handbook_canvas`
 **Terminal**: `terminal_output`, `terminal_restart`, `terminal_signal`, `get_handbook_terminal`
 **Process (WS)**: `process_create`, `process_input`, `process_resize`, `process_enter`, `process_close`, `process_attach`
