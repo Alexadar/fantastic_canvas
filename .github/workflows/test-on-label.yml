@@ -1,0 +1,30 @@
+name: Test on Label
+
+on:
+  pull_request:
+    types: [labeled, synchronize]
+
+jobs:
+  test:
+    if: >-
+      github.event.action == 'labeled' && github.event.label.name == 'run-tests'
+      || github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'run-tests')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          cd core
+          pip install -e ".[dev]" 2>/dev/null || pip install -e .
+          pip install pytest pytest-asyncio
+
+      - name: Run tests
+        run: |
+          cd core
+          python -m pytest tests/ -v -x
