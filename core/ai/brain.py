@@ -8,6 +8,7 @@ from typing import Callable
 
 from .. import conversation
 from .config import load_config, save_config
+from .messages import AI_MSG
 from .provider import AIProvider, DiscoverResult
 
 logger = logging.getLogger(__name__)
@@ -15,15 +16,24 @@ logger = logging.getLogger(__name__)
 # Registered providers: (class, default_endpoint)
 _PROVIDERS: list[tuple[type, str | None]] = []
 
+# Map of provider_name → (class, default_endpoint) for swap lookups
+_PROVIDER_MAP: dict[str, tuple[type, str | None]] = {}
+
 
 def register_provider(cls: type, default_endpoint: str | None = None) -> None:
     """Register a provider class for auto-discovery."""
     _PROVIDERS.append((cls, default_endpoint))
 
 
-# Register Ollama as first provider
+# Register local_transformers first (default), then Ollama as fallback
+from .local_transformers_provider import LocalTransformersProvider
+register_provider(LocalTransformersProvider, None)
+
 from .ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
 register_provider(OllamaProvider, DEFAULT_ENDPOINT)
+
+_PROVIDER_MAP["local_transformers"] = (LocalTransformersProvider, None)
+_PROVIDER_MAP["ollama"] = (OllamaProvider, DEFAULT_ENDPOINT)
 
 
 class AIBrain:
@@ -33,10 +43,15 @@ class AIBrain:
         self._project_dir = project_dir
         self._provider: AIProvider | None = None
         self._say: Callable[[str, str], dict] = conversation.say
+        self._swapping = False
 
     @property
     def provider(self) -> AIProvider | None:
         return self._provider
+
+    @property
+    def swapping(self) -> bool:
+        return self._swapping
 
     async def ensure_provider(self) -> AIProvider | None:
         """Load from config or auto-discover. Returns provider or None."""
@@ -62,6 +77,10 @@ class AIBrain:
                 endpoint=config.get("endpoint", DEFAULT_ENDPOINT),
                 model=config.get("model", ""),
             )
+        if name == "local_transformers":
+            return LocalTransformersProvider(
+                model=config.get("model", ""),
+            )
         return None
 
     async def _auto_discover(self) -> AIProvider | None:
@@ -78,7 +97,12 @@ class AIBrain:
                     "model": model,
                 }
                 save_config(self._project_dir, config)
-                self._provider = cls(endpoint=result.endpoint, model=model)
+
+                # Instantiate — local_transformers takes model only
+                if result.provider_name == "local_transformers":
+                    self._provider = cls(model=model)
+                else:
+                    self._provider = cls(endpoint=result.endpoint, model=model)
 
                 self._say_ai(f"auto-configured: {result.provider_name} ({model})")
                 return self._provider
@@ -93,11 +117,16 @@ class AIBrain:
             if result.error:
                 logger.debug(f"Provider {result.provider_name}: {result.error}")
 
-        self._say_ai("no AI provider found. Install Ollama: https://ollama.ai")
+        self._say_ai("no AI provider found. Install torch+transformers or Ollama.")
         return None
 
     async def respond(self, user_text: str, print_fn: Callable[[str], None] | None = None) -> str | None:
         """Handle user input: build messages from conversation, stream response."""
+        if self._swapping:
+            if print_fn:
+                print_fn(AI_MSG.PROVIDER_CHANGING)
+            return AI_MSG.PROVIDER_CHANGING
+
         provider = await self.ensure_provider()
         if not provider:
             return None
@@ -190,3 +219,112 @@ class AIBrain:
         if print_fn:
             print_fn(f"\n  pulled {model}")
         self._say_ai(f"pulled model: {model}")
+
+    async def stop_provider(self) -> str:
+        """Stop current provider, free resources (VRAM etc)."""
+        if self._provider is None:
+            return AI_MSG.NO_PROVIDER
+
+        provider_name = self._get_provider_name()
+
+        # Call stop() if the provider supports it (e.g. local_transformers)
+        if hasattr(self._provider, "stop"):
+            self._provider.stop()
+
+        self._provider = None
+        self._say_ai(f"{AI_MSG.PROVIDER_STOPPED}: {provider_name}")
+        return f"stopped {provider_name}"
+
+    async def start_provider(self) -> str:
+        """Start (or restart) provider from saved config or auto-discover."""
+        if self._provider is not None:
+            return f"already running: {self._get_provider_name()}"
+
+        self._say_ai(AI_MSG.PROVIDER_STARTING)
+        provider = await self.ensure_provider()
+        if provider is None:
+            return AI_MSG.NO_PROVIDER
+        name = self._get_provider_name()
+        self._say_ai(f"{AI_MSG.MODEL_READY}: {name}")
+        return f"started {name}"
+
+    async def configure(self) -> str:
+        """Reconfigure: stop current provider, clear config, re-discover."""
+        # Stop current
+        if self._provider is not None:
+            if hasattr(self._provider, "stop"):
+                self._provider.stop()
+            self._provider = None
+
+        # Clear saved config so auto-discover runs fresh
+        save_config(self._project_dir, {})
+
+        self._say_ai(AI_MSG.PROVIDER_CHANGING)
+
+        # Re-discover
+        provider = await self._auto_discover()
+        if provider:
+            name = self._get_provider_name()
+            return f"reconfigured: {name}"
+        return "reconfigure failed — no provider found"
+
+    async def swap_provider(self, target: str, model: str | None = None) -> str:
+        """Hot-swap to a different provider. Returns status string."""
+        if target not in _PROVIDER_MAP:
+            available = ", ".join(_PROVIDER_MAP.keys())
+            return f"unknown provider '{target}'. available: {available}"
+
+        self._swapping = True
+        try:
+            # Stop current provider
+            if self._provider is not None:
+                if hasattr(self._provider, "stop"):
+                    self._provider.stop()
+                self._provider = None
+
+            cls, default_endpoint = _PROVIDER_MAP[target]
+
+            # Discover
+            result = await cls.discover(default_endpoint)
+            if not result.available:
+                self._swapping = False
+                err = result.error or "not available"
+                self._say_ai(f"swap failed: {target} — {err}")
+                return f"swap failed: {err}"
+
+            chosen_model = model or (result.models[0] if result.models else "")
+            if not chosen_model:
+                self._swapping = False
+                self._say_ai(f"{target} available but no models")
+                return f"{target} available but no models"
+
+            # Instantiate
+            if target == "local_transformers":
+                self._provider = cls(model=chosen_model)
+            else:
+                self._provider = cls(endpoint=result.endpoint, model=chosen_model)
+
+            # Save config
+            config = {
+                "provider": target,
+                "endpoint": result.endpoint,
+                "model": chosen_model,
+            }
+            save_config(self._project_dir, config)
+
+            self._say_ai(f"swapped to {target} ({chosen_model})")
+            return f"swapped to {target} ({chosen_model})"
+        finally:
+            self._swapping = False
+
+    def _get_provider_name(self) -> str:
+        """Get the name of the current provider from config or class name."""
+        config = load_config(self._project_dir)
+        if config:
+            return config.get("provider", "unknown")
+        return type(self._provider).__name__ if self._provider else "unknown"
+
+    @staticmethod
+    def available_providers() -> list[str]:
+        """Return list of registered provider names."""
+        return list(_PROVIDER_MAP.keys())

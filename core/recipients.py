@@ -86,13 +86,27 @@ class CoreRecipient(Recipient):
                 return ("ai_model", {"model": parts[2]})
             if subcmd == "pull" and len(parts) >= 3:
                 return ("ai_pull", {"model": parts[2]})
+            if subcmd == "stop":
+                return ("ai_stop", {})
+            if subcmd == "start":
+                return ("ai_start", {})
+            if subcmd == "swap" and len(parts) >= 3:
+                model = parts[3] if len(parts) >= 4 else ""
+                return ("ai_swap", {"provider": parts[2], "model": model})
+            if subcmd == "configure":
+                return ("ai_configure", {})
+            if subcmd == "providers":
+                return ("ai_providers", {})
             return ("ai_status", {})
         return None
 
     async def execute(self, tool_name: str, args: dict[str, Any]) -> Any:
         from .tools._bundles import _add_bundle, _remove_bundle, _list_bundles
         from .tools._conversation import _conversation_log, _conversation_say
-        from .tools._ai import _ai_status, _ai_models, _ai_model, _ai_pull
+        from .tools._ai import (
+            _ai_status, _ai_models, _ai_model, _ai_pull,
+            _ai_stop, _ai_start, _ai_swap, _ai_configure, _ai_providers,
+        )
 
         handlers = {
             "add_bundle": _add_bundle,
@@ -104,6 +118,11 @@ class CoreRecipient(Recipient):
             "ai_models": _ai_models,
             "ai_model": _ai_model,
             "ai_pull": _ai_pull,
+            "ai_stop": _ai_stop,
+            "ai_start": _ai_start,
+            "ai_swap": _ai_swap,
+            "ai_configure": _ai_configure,
+            "ai_providers": _ai_providers,
         }
         fn = handlers.get(tool_name)
         if not fn:
