@@ -88,7 +88,8 @@ _mic_owner: str | None = None
 
 def _chat_json_path(agent_id: str) -> Path:
     """Return path to .fantastic/agents/{agent_id}/chat.json."""
-    return Path(".fantastic") / "agents" / agent_id / "chat.json"
+    base = Path(_engine.project_dir) if _engine and hasattr(_engine, "project_dir") else Path(".")
+    return base / ".fantastic" / "agents" / agent_id / "chat.json"
 
 
 def _save_chat_message(agent_id: str, role: str, text: str, mode: str = "voice"):
