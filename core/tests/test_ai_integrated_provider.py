@@ -1,4 +1,4 @@
-"""Tests for core.ai.local_transformers_provider — all torch/transformers mocked."""
+"""Tests for core.ai.integrated_provider — all torch/transformers mocked."""
 
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -37,11 +37,11 @@ async def test_discover_available_cpu():
     mock_tf = _mock_transformers()
 
     with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}):
-        from core.ai.local_transformers_provider import LocalTransformersProvider
-        result = await LocalTransformersProvider.discover()
+        from core.ai.integrated_provider import IntegratedProvider
+        result = await IntegratedProvider.discover()
 
     assert result.available is True
-    assert result.provider_name == "local_transformers"
+    assert result.provider_name == "integrated"
     assert result.endpoint == "local:cpu"
     assert len(result.models) > 0
 
@@ -51,8 +51,8 @@ async def test_discover_available_cuda():
     mock_tf = _mock_transformers()
 
     with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}):
-        from core.ai.local_transformers_provider import LocalTransformersProvider
-        result = await LocalTransformersProvider.discover()
+        from core.ai.integrated_provider import IntegratedProvider
+        result = await IntegratedProvider.discover()
 
     assert result.available is True
     assert result.endpoint == "local:cuda"
@@ -63,8 +63,8 @@ async def test_discover_available_mps():
     mock_tf = _mock_transformers()
 
     with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}):
-        from core.ai.local_transformers_provider import LocalTransformersProvider
-        result = await LocalTransformersProvider.discover()
+        from core.ai.integrated_provider import IntegratedProvider
+        result = await IntegratedProvider.discover()
 
     assert result.available is True
     assert result.endpoint == "local:mps"
@@ -73,8 +73,8 @@ async def test_discover_available_mps():
 async def test_discover_not_available():
     """When torch is not installed, discover returns unavailable."""
     with patch.dict(sys.modules, {"torch": None}):
-        from core.ai.local_transformers_provider import LocalTransformersProvider
-        result = await LocalTransformersProvider.discover()
+        from core.ai.integrated_provider import IntegratedProvider
+        result = await IntegratedProvider.discover()
 
     assert result.available is False
     assert "missing dependency" in (result.error or "")
@@ -84,22 +84,22 @@ async def test_discover_not_available():
 
 
 def test_model_property():
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="Qwen/Qwen3.5-9B")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="Qwen/Qwen3.5-9B")
     assert provider.model == "Qwen/Qwen3.5-9B"
 
 
 def test_set_model():
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="Qwen/Qwen3.5-4B")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="Qwen/Qwen3.5-4B")
     provider.set_model("Qwen/Qwen3.5-9B")
     assert provider.model == "Qwen/Qwen3.5-9B"
     assert provider.is_ready is False
 
 
 def test_default_model():
-    from core.ai.local_transformers_provider import LocalTransformersProvider, DEFAULT_MODEL
-    provider = LocalTransformersProvider()
+    from core.ai.integrated_provider import IntegratedProvider, DEFAULT_MODEL
+    provider = IntegratedProvider()
     assert provider.model == DEFAULT_MODEL
 
 
@@ -107,8 +107,8 @@ def test_default_model():
 
 
 def test_stop():
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="test")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="test")
     provider._ready = True
     provider._model = MagicMock()
     provider._tokenizer = MagicMock()
@@ -125,8 +125,8 @@ def test_stop():
 
 
 async def test_chat_when_stopped():
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="test")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="test")
     provider._stopped = True
 
     tokens = []
@@ -140,8 +140,8 @@ async def test_chat_when_stopped():
 
 
 async def test_chat_generates_response():
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="test")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="test")
 
     # Simulate a loaded model
     provider._ready = True
@@ -173,8 +173,8 @@ async def test_chat_generates_response():
 
 
 async def test_load_model_calls_status_fn():
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="test")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="test")
 
     statuses = []
 
@@ -194,8 +194,8 @@ async def test_load_model_calls_status_fn():
 
 async def test_load_model_stopped_during_load():
     """If stop() is called during load, model should not be set."""
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="test")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="test")
 
     mock_model = MagicMock()
     mock_tokenizer = MagicMock()
@@ -217,8 +217,8 @@ async def test_load_model_stopped_during_load():
 
 
 async def test_pull_changes_model():
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="old-model")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="old-model")
     provider._ready = True
 
     messages = []
@@ -234,8 +234,8 @@ async def test_pull_changes_model():
 
 
 async def test_list_models():
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="test-model")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="test-model")
     models = await provider.list_models()
     assert models == ["test-model"]
 
@@ -244,8 +244,8 @@ async def test_list_models():
 
 
 def test_initial_state():
-    from core.ai.local_transformers_provider import LocalTransformersProvider
-    provider = LocalTransformersProvider(model="test")
+    from core.ai.integrated_provider import IntegratedProvider
+    provider = IntegratedProvider(model="test")
     assert provider.is_ready is False
     assert provider.is_loading is False
     assert provider.is_stopped is False

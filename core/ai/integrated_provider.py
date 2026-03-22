@@ -1,4 +1,4 @@
-"""LocalTransformersProvider — runs HuggingFace models locally via transformers + torch."""
+"""IntegratedProvider — runs HuggingFace models locally via transformers + torch."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ _NOISY_LOGGERS = [
 ]
 
 
-class LocalTransformersProvider:
+class IntegratedProvider:
     """Loads a HuggingFace model locally with optional 4-bit quantization."""
 
     def __init__(self, model: str = DEFAULT_MODEL):
@@ -53,12 +53,12 @@ class LocalTransformersProvider:
                 available=True,
                 models=[DEFAULT_MODEL],
                 endpoint=f"local:{device}",
-                provider_name="local_transformers",
+                provider_name="integrated",
             )
         except ImportError as e:
             return DiscoverResult(
                 available=False,
-                provider_name="local_transformers",
+                provider_name="integrated",
                 error=f"missing dependency: {e}",
             )
 
