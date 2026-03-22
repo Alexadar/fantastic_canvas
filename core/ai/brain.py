@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import AsyncIterator, Callable
 
 from .. import conversation
 from .config import load_config, save_config
@@ -47,6 +48,8 @@ class AIBrain:
         self._provider: AIProvider | None = None
         self._say: Callable[[str, str], dict] = conversation.say
         self._swapping = False
+        self._lock = asyncio.Lock()
+        self._generation_epoch = 0
 
     @property
     def provider(self) -> AIProvider | None:
@@ -139,23 +142,57 @@ class AIBrain:
         self._say_ai("no AI provider found. Install torch+transformers or Ollama.")
         return None
 
+    @property
+    def generation_epoch(self) -> int:
+        return self._generation_epoch
+
+    # Sentinel: generate() yields this when no provider is available.
+    # Callers compare by identity (``is``) to distinguish from real tokens.
+    NO_PROVIDER_SENTINEL = object()
+
+    async def generate(self, messages: list[dict]) -> AsyncIterator[str | object]:
+        """Run inference with lock + epoch guard. Yields tokens.
+
+        If a force-swap bumps the epoch mid-generation, iteration aborts
+        and yields PROVIDER_CHANGING so the caller knows to stop.
+        If no provider is available, yields NO_PROVIDER_SENTINEL once.
+        """
+        if self._swapping:
+            yield AI_MSG.PROVIDER_CHANGING
+            return
+
+        epoch = self._generation_epoch
+
+        async with self._lock:
+            # Re-check after acquiring lock
+            if self._swapping or epoch != self._generation_epoch:
+                yield AI_MSG.PROVIDER_CHANGING
+                return
+
+            provider = await self.ensure_provider()
+            if not provider:
+                yield self.NO_PROVIDER_SENTINEL
+                return
+
+            async for token in provider.generate(messages):
+                # Epoch changed — a force swap interrupted us
+                if self._generation_epoch != epoch:
+                    yield AI_MSG.PROVIDER_CHANGING
+                    return
+                yield token
+
     async def respond(self, user_text: str, print_fn: Callable[[str], None] | None = None) -> str | None:
         """Handle user input: build messages from conversation, stream response."""
-        if self._swapping:
-            if print_fn:
-                print_fn(AI_MSG.PROVIDER_CHANGING)
-            return AI_MSG.PROVIDER_CHANGING
-
-        provider = await self.ensure_provider()
-        if not provider:
-            return None
-
-        # Build messages from conversation buffer
         messages = self._build_messages(user_text)
 
-        # Stream response
         chunks: list[str] = []
-        async for token in provider.generate(messages):
+        async for token in self.generate(messages):
+            if token is self.NO_PROVIDER_SENTINEL:
+                return None
+            if token == AI_MSG.PROVIDER_CHANGING:
+                if print_fn:
+                    print_fn(AI_MSG.PROVIDER_CHANGING)
+                return AI_MSG.PROVIDER_CHANGING
             chunks.append(token)
             if print_fn:
                 print_fn(token)
@@ -239,57 +276,74 @@ class AIBrain:
             print_fn(f"\n  pulled {model}")
         self._say_ai(f"pulled model: {model}")
 
-    async def stop_provider(self) -> str:
-        """Stop current provider, free resources (VRAM etc)."""
+    async def stop_provider(self, force: bool = False) -> str:
+        """Stop current provider, free resources (VRAM etc).
+
+        If force=True, bumps epoch immediately (interrupts in-flight generations)
+        then acquires lock. Otherwise waits for in-flight generations to finish.
+        """
         if self._provider is None:
             return AI_MSG.NO_PROVIDER
 
-        provider_name = self._get_provider_name()
+        if force:
+            self._generation_epoch += 1
 
-        # Call stop() if the provider supports it (e.g. integrated)
-        if hasattr(self._provider, "stop"):
-            self._provider.stop()
+        async with self._lock:
+            if self._provider is None:
+                return AI_MSG.NO_PROVIDER
 
-        self._provider = None
-        self._say_ai(f"{AI_MSG.PROVIDER_STOPPED}: {provider_name}")
-        return f"stopped {provider_name}"
+            provider_name = self._get_provider_name()
+
+            if hasattr(self._provider, "stop"):
+                self._provider.stop()
+
+            self._provider = None
+            if not force:
+                self._generation_epoch += 1
+            self._say_ai(f"{AI_MSG.PROVIDER_STOPPED}: {provider_name}")
+            return f"stopped {provider_name}"
 
     async def start_provider(self) -> str:
         """Start (or restart) provider from saved config or auto-discover."""
-        if self._provider is not None:
-            return f"already running: {self._get_provider_name()}"
+        async with self._lock:
+            if self._provider is not None:
+                return f"already running: {self._get_provider_name()}"
 
-        self._say_ai(AI_MSG.PROVIDER_STARTING)
-        provider = await self.ensure_provider()
-        if provider is None:
-            return AI_MSG.NO_PROVIDER
-        name = self._get_provider_name()
-        self._say_ai(f"{AI_MSG.MODEL_READY}: {name}")
-        return f"started {name}"
+            self._say_ai(AI_MSG.PROVIDER_STARTING)
+            provider = await self.ensure_provider()
+            if provider is None:
+                return AI_MSG.NO_PROVIDER
+            name = self._get_provider_name()
+            self._say_ai(f"{AI_MSG.MODEL_READY}: {name}")
+            return f"started {name}"
 
     async def configure(self) -> str:
         """Reconfigure: stop current provider, clear config, re-discover."""
-        # Stop current
-        if self._provider is not None:
-            if hasattr(self._provider, "stop"):
-                self._provider.stop()
-            self._provider = None
+        self._generation_epoch += 1
 
-        # Clear saved config so auto-discover runs fresh
-        save_config(self._project_dir, {})
+        async with self._lock:
+            if self._provider is not None:
+                if hasattr(self._provider, "stop"):
+                    self._provider.stop()
+                self._provider = None
 
-        self._say_ai(AI_MSG.PROVIDER_CHANGING)
+            save_config(self._project_dir, {})
+            self._say_ai(AI_MSG.PROVIDER_CHANGING)
 
-        # Re-discover
-        provider = await self._auto_discover()
-        if provider:
-            name = self._get_provider_name()
-            return f"reconfigured: {name}"
-        return "reconfigure failed — no provider found"
+            provider = await self._auto_discover()
+            if provider:
+                name = self._get_provider_name()
+                return f"reconfigured: {name}"
+            return "reconfigure failed — no provider found"
 
     async def swap_provider(self, target: str, model: str | None = None,
-                            instance: str | None = None) -> str:
+                            instance: str | None = None,
+                            force: bool = False) -> str:
         """Hot-swap to a different provider. Returns status string.
+
+        If force=True, bumps epoch immediately so in-flight generations see
+        PROVIDER_CHANGING at their next yield, then acquires the lock.
+        Otherwise waits for in-flight generations to finish first.
 
         For proxy provider, ``instance`` is required (instance ID or name).
         """
@@ -300,56 +354,58 @@ class AIBrain:
         if target == "proxy" and not instance:
             return "proxy requires instance= (registered instance ID or name)"
 
+        # Force: bump epoch before lock — interrupts in-flight generations
+        if force:
+            self._generation_epoch += 1
+
         self._swapping = True
         try:
-            # Stop current provider
-            if self._provider is not None:
-                if hasattr(self._provider, "stop"):
-                    self._provider.stop()
-                self._provider = None
+            async with self._lock:
+                # Stop current provider
+                if self._provider is not None:
+                    if hasattr(self._provider, "stop"):
+                        self._provider.stop()
+                    self._provider = None
 
-            cls, default_endpoint = _PROVIDER_MAP[target]
+                cls, default_endpoint = _PROVIDER_MAP[target]
+                discover_endpoint = instance if target == "proxy" else default_endpoint
 
-            # For proxy, discover via instance ID/name instead of default endpoint
-            discover_endpoint = instance if target == "proxy" else default_endpoint
+                result = await cls.discover(discover_endpoint)
+                if not result.available:
+                    err = result.error or "not available"
+                    self._say_ai(f"swap failed: {target} — {err}")
+                    return f"swap failed: {err}"
 
-            # Discover
-            result = await cls.discover(discover_endpoint)
-            if not result.available:
-                self._swapping = False
-                err = result.error or "not available"
-                self._say_ai(f"swap failed: {target} — {err}")
-                return f"swap failed: {err}"
+                chosen_model = model or (result.models[0] if result.models else "")
+                if not chosen_model:
+                    self._say_ai(f"{target} available but no models")
+                    return f"{target} available but no models"
 
-            chosen_model = model or (result.models[0] if result.models else "")
-            if not chosen_model:
-                self._swapping = False
-                self._say_ai(f"{target} available but no models")
-                return f"{target} available but no models"
+                if target == "integrated":
+                    self._provider = cls(model=chosen_model)
+                elif target == "proxy":
+                    self._provider = cls(
+                        endpoint=result.endpoint, model=chosen_model,
+                        instance=instance,
+                    )
+                else:
+                    self._provider = cls(endpoint=result.endpoint, model=chosen_model)
 
-            # Instantiate
-            if target == "integrated":
-                self._provider = cls(model=chosen_model)
-            elif target == "proxy":
-                self._provider = cls(
-                    endpoint=result.endpoint, model=chosen_model,
-                    instance=instance,
-                )
-            else:
-                self._provider = cls(endpoint=result.endpoint, model=chosen_model)
+                config = {
+                    "provider": target,
+                    "endpoint": result.endpoint,
+                    "model": chosen_model,
+                }
+                if instance:
+                    config["instance"] = instance
+                save_config(self._project_dir, config)
 
-            # Save config
-            config = {
-                "provider": target,
-                "endpoint": result.endpoint,
-                "model": chosen_model,
-            }
-            if instance:
-                config["instance"] = instance
-            save_config(self._project_dir, config)
+                # Bump epoch if we didn't force (normal swap still invalidates old generations)
+                if not force:
+                    self._generation_epoch += 1
 
-            self._say_ai(f"swapped to {target} ({chosen_model})")
-            return f"swapped to {target} ({chosen_model})"
+                self._say_ai(f"swapped to {target} ({chosen_model})")
+                return f"swapped to {target} ({chosen_model})"
         finally:
             self._swapping = False
 
