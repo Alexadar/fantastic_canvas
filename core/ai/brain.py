@@ -35,9 +35,12 @@ register_provider(OllamaProvider, DEFAULT_ENDPOINT)
 
 from .proxy_provider import ProxyProvider
 
+from .anthropic_provider import AnthropicProvider
+
 _PROVIDER_MAP["integrated"] = (IntegratedProvider, None)
 _PROVIDER_MAP["ollama"] = (OllamaProvider, DEFAULT_ENDPOINT)
 _PROVIDER_MAP["proxy"] = (ProxyProvider, None)
+_PROVIDER_MAP["anthropic"] = (AnthropicProvider, None)
 
 
 class AIBrain:
@@ -102,6 +105,10 @@ class AIBrain:
                 endpoint=endpoint,
                 model=config.get("model", ""),
                 instance=instance,
+            )
+        if name == "anthropic":
+            return AnthropicProvider(
+                model=config.get("model", ""),
             )
         return None
 
