@@ -1,6 +1,6 @@
 """AI provider abstraction — pluggable LLM backends.
 
-Provider protocol + auto-discovery. Ollama and integrated implementations.
+Provider protocol + auto-discovery. Ollama, integrated, and Anthropic implementations.
 """
 
 from .provider import AIProvider, DiscoverResult
@@ -9,6 +9,7 @@ from .config import load_config, save_config
 from .messages import AI_MSG
 from .integrated_provider import IntegratedProvider
 from .proxy_provider import ProxyProvider
+from .anthropic_provider import AnthropicProvider
 
 __all__ = [
     "AIProvider",
@@ -16,6 +17,7 @@ __all__ = [
     "AIBrain",
     "IntegratedProvider",
     "ProxyProvider",
+    "AnthropicProvider",
     "load_config",
     "save_config",
     "AI_MSG",
