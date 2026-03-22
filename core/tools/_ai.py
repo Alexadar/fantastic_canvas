@@ -57,9 +57,9 @@ async def ai_pull(**kwargs) -> ToolResult:
 
 
 @register_dispatch("ai_stop")
-async def _ai_stop(**kwargs) -> ToolResult:
+async def _ai_stop(force: bool = False, **kwargs) -> ToolResult:
     brain = _engine.ai
-    result = await brain.stop_provider()
+    result = await brain.stop_provider(force=force)
     return ToolResult(data={"status": result})
 
 
@@ -81,9 +81,12 @@ async def ai_start(**kwargs) -> ToolResult:
 
 
 @register_dispatch("ai_swap")
-async def _ai_swap(provider: str, model: str = "", instance: str = "", **kwargs) -> ToolResult:
+async def _ai_swap(provider: str, model: str = "", instance: str = "",
+                   force: bool = False, **kwargs) -> ToolResult:
     brain = _engine.ai
-    result = await brain.swap_provider(provider, model or None, instance=instance or None)
+    result = await brain.swap_provider(
+        provider, model or None, instance=instance or None, force=force,
+    )
     return ToolResult(data={"status": result})
 
 
@@ -106,15 +109,22 @@ async def ai_configure(**kwargs) -> ToolResult:
 
 @register_dispatch("ai_generate")
 async def _ai_generate(messages: list[dict] | None = None, **kwargs) -> ToolResult:
-    """Run inference on the local provider. Used by ProxyProvider on remote callers."""
+    """Run inference on the local provider. Used by ProxyProvider on remote callers.
+
+    Goes through brain.generate() which holds the lock and respects epoch guards,
+    so a force-swap mid-generation returns PROVIDER_CHANGING cleanly.
+    """
     if not messages:
         return ToolResult(data={"error": "messages required"})
     brain = _engine.ai
-    provider = await brain.ensure_provider()
-    if not provider:
-        return ToolResult(data={"error": "no provider available"})
+    from ..ai.brain import AIBrain
+    from ..ai.messages import AI_MSG
     chunks: list[str] = []
-    async for token in provider.generate(messages):
+    async for token in brain.generate(messages):
+        if token is AIBrain.NO_PROVIDER_SENTINEL:
+            return ToolResult(data={"error": "no provider available"})
+        if token == AI_MSG.PROVIDER_CHANGING:
+            return ToolResult(data={"error": "provider changing", "interrupted": True})
         chunks.append(token)
     return ToolResult(data={"text": "".join(chunks)})
 
