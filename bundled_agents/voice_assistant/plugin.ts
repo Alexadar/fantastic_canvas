@@ -1,7 +1,7 @@
 import { registry } from '@bundles/canvas/web/src/plugins/registry'
 import type { CanvasPlugin } from '@bundles/canvas/web/src/plugins/types'
 import type { WSMessage } from '@bundles/canvas/web/src/types'
-import { createVoiceUi, type VoiceState, type PermissionState } from './web/voice-ui'
+import { createVoiceUi, type VoiceState } from './web/voice-ui'
 
 // ─── Orb CSS (injected once) ──────────────────────────────────
 const STYLE_ID = 'voice-assistant-styles'
@@ -128,54 +128,6 @@ function injectStyles() {
       0%, 100% { transform: scale(0.9); opacity: 0.2; }
       50% { transform: scale(1.1); opacity: 0.4; }
     }
-
-    /* Permission overlay */
-    .voice-perm-overlay {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      background: rgba(0, 0, 0, 0.85);
-      border-radius: 50%;
-      z-index: 10;
-      padding: 16px;
-      text-align: center;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.3s ease;
-    }
-
-    .voice-perm-overlay.visible {
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    .voice-perm-overlay-icon {
-      font-size: 36px;
-      margin-bottom: 8px;
-    }
-
-    .voice-perm-overlay-text {
-      font-size: 11px;
-      font-family: monospace;
-      color: rgba(255, 255, 255, 0.8);
-      line-height: 1.4;
-      max-width: 90%;
-    }
-
-    .voice-perm-overlay[data-perm="checking"] .voice-perm-overlay-icon {
-      animation: voice-spin 1.5s linear infinite;
-    }
-
-    .voice-perm-overlay[data-perm="denied"] {
-      background: rgba(80, 0, 0, 0.9);
-    }
-
-    .voice-perm-overlay[data-perm="unsupported"] {
-      background: rgba(60, 40, 0, 0.9);
-    }
   `
   document.head.appendChild(style)
 }
@@ -229,63 +181,10 @@ export const voiceAssistantPlugin: CanvasPlugin = {
     transcript.textContent = ''
     orb.appendChild(transcript)
 
-    // Permission overlay
-    const permOverlay = document.createElement('div')
-    permOverlay.className = 'voice-perm-overlay'
-    const permIcon = document.createElement('div')
-    permIcon.className = 'voice-perm-overlay-icon'
-    const permText = document.createElement('div')
-    permText.className = 'voice-perm-overlay-text'
-    permOverlay.appendChild(permIcon)
-    permOverlay.appendChild(permText)
-    orb.appendChild(permOverlay)
-
     dom.appendChild(orb)
-
-    // Permission UI state
-    const PERM_UI: Record<PermissionState, { icon: string; text: string; visible: boolean }> = {
-      unknown:     { icon: '',   text: '',                                        visible: false },
-      checking:    { icon: '\u{1F50D}', text: 'Checking mic access...',           visible: true },
-      prompting:   { icon: '\u{1F3A4}', text: 'Allow microphone access\nin the browser prompt above', visible: true },
-      granted:     { icon: '\u{2705}',  text: 'Mic access granted',              visible: false },
-      denied:      { icon: '\u{1F6AB}', text: 'Mic access denied.\nAllow in browser settings\nthen tap again.', visible: true },
-      unsupported: { icon: '\u{26A0}\u{FE0F}',  text: 'Speech recognition\nnot supported in\nthis browser.', visible: true },
-    }
-
-    let permDismissTimer: ReturnType<typeof setTimeout> | null = null
 
     // Create voice UI controller
     const voiceUi = createVoiceUi(ctx.agent.id, ctx.send, {
-      onPermission(perm: PermissionState) {
-        const ui = PERM_UI[perm]
-        permOverlay.dataset.perm = perm
-        permIcon.textContent = ui.icon
-        permText.textContent = ui.text
-
-        if (permDismissTimer) { clearTimeout(permDismissTimer); permDismissTimer = null }
-
-        if (ui.visible) {
-          permOverlay.classList.add('visible')
-          // Auto-dismiss denied/unsupported after 5s
-          if (perm === 'denied' || perm === 'unsupported') {
-            permDismissTimer = setTimeout(() => {
-              permOverlay.classList.remove('visible')
-            }, 5000)
-          }
-        } else {
-          // Brief flash for granted, then hide
-          if (perm === 'granted') {
-            permOverlay.classList.add('visible')
-            permIcon.textContent = '\u{2705}'
-            permText.textContent = 'Mic access granted'
-            permDismissTimer = setTimeout(() => {
-              permOverlay.classList.remove('visible')
-            }, 800)
-          } else {
-            permOverlay.classList.remove('visible')
-          }
-        }
-      },
       onStateChange(state: VoiceState) {
         orb.dataset.state = state
         icon.textContent = STATE_ICONS[state]
@@ -322,10 +221,10 @@ export const voiceAssistantPlugin: CanvasPlugin = {
       },
     })
 
-    // Click to toggle (async — may trigger permission prompt)
+    // Click to toggle
     orb.addEventListener('click', (e) => {
       e.stopPropagation()
-      voiceUi.toggle().catch(() => {})
+      voiceUi.toggle()
     })
 
     // Subscribe to WS messages for this agent

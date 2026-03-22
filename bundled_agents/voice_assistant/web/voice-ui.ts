@@ -22,11 +22,8 @@ import { createAiConnector, type AiConnector } from './ai-connector'
 
 export type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking'
 
-export type PermissionState = 'unknown' | 'checking' | 'prompting' | 'granted' | 'denied' | 'unsupported'
-
 export interface VoiceUiEvents {
   onStateChange: (state: VoiceState, announced: boolean) => void
-  onPermission: (state: PermissionState) => void
   onInterim: (text: string) => void
   onTranscript: (text: string) => void
   onResponse: (text: string, done: boolean) => void
@@ -34,18 +31,17 @@ export interface VoiceUiEvents {
 }
 
 export interface VoiceUi {
-  /** Activate the voice assistant (start listening). Checks permissions first. */
-  activate(): Promise<void>
+  /** Activate the voice assistant (start listening) */
+  activate(): void
   /** Deactivate (go idle, stop everything) */
   deactivate(): void
   /** Toggle active/idle */
-  toggle(): Promise<void>
+  toggle(): void
   /** Feed a WS message from the backend */
   handleWsMessage(msg: any): void
   /** Current state */
   readonly state: VoiceState
   readonly isActive: boolean
-  readonly permissionState: PermissionState
   /** Cleanup */
   destroy(): void
 }
@@ -66,13 +62,13 @@ export function createVoiceUi(
   let state: VoiceState = 'idle'
   let active = false
   let responseChunks: string[] = []
-  let permState: PermissionState = 'unknown'
 
   // Sentence boundary detection for streaming TTS
   const SENTENCE_RE = /[.!?]\s+/
 
   function setState(next: VoiceState) {
     if (state === next) return
+    const prev = state
     state = next
 
     // Announce state change to user (spoken cue)
@@ -82,86 +78,6 @@ export function createVoiceUi(
     }
 
     events.onStateChange(next, !!announcement)
-  }
-
-  function setPermission(next: PermissionState) {
-    permState = next
-    events.onPermission(next)
-  }
-
-  // ─── Permission checks ────────────────────────────────────
-  // Probes mic permission without triggering the browser prompt.
-  // Returns 'granted', 'denied', 'prompt' (ask needed), or 'unsupported'.
-  async function probeMicPermission(): Promise<'granted' | 'denied' | 'prompt' | 'unsupported'> {
-    // Check SpeechRecognition support
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SR) return 'unsupported'
-
-    // navigator.permissions.query for microphone
-    try {
-      const result = await navigator.permissions.query({ name: 'microphone' as PermissionName })
-      if (result.state === 'granted') return 'granted'
-      if (result.state === 'denied') return 'denied'
-      return 'prompt' // browser will ask
-    } catch {
-      // Firefox/Safari don't support permissions.query for microphone
-      // Fall through to 'prompt' — getUserMedia will trigger the real prompt
-      return 'prompt'
-    }
-  }
-
-  // Forces the browser's mic permission dialog via getUserMedia.
-  // This is the only way to get the prompt on first use.
-  async function requestMicPermission(): Promise<boolean> {
-    try {
-      setPermission('prompting')
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      // Got permission — stop the stream immediately (STT manages its own)
-      stream.getTracks().forEach(t => t.stop())
-      setPermission('granted')
-      return true
-    } catch (err: any) {
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setPermission('denied')
-      } else {
-        setPermission('unsupported')
-        events.onError(`Microphone error: ${err.message || err.name}`)
-      }
-      return false
-    }
-  }
-
-  // Full permission gate: probe → prompt if needed → report result.
-  // Returns true if we have mic access.
-  async function ensureMicPermission(): Promise<boolean> {
-    setPermission('checking')
-    const probe = await probeMicPermission()
-
-    if (probe === 'unsupported') {
-      setPermission('unsupported')
-      events.onError('Speech recognition not supported in this browser')
-      return false
-    }
-    if (probe === 'denied') {
-      setPermission('denied')
-      return false
-    }
-    if (probe === 'granted') {
-      setPermission('granted')
-      return true
-    }
-    // probe === 'prompt' — force the browser dialog
-    return await requestMicPermission()
-  }
-
-  // Warm up speechSynthesis (requires user gesture on some browsers)
-  function warmUpTts() {
-    const synth = window.speechSynthesis
-    if (!synth) return
-    // Speak an empty utterance to unlock TTS on user gesture
-    const utt = new SpeechSynthesisUtterance('')
-    utt.volume = 0
-    synth.speak(utt)
   }
 
   // ─── STT ────────────────────────────────────────────────────
@@ -258,16 +174,8 @@ export function createVoiceUi(
   })
 
   return {
-    async activate() {
+    activate() {
       if (active) return
-
-      // Gate on mic permission — force browser prompt if needed
-      const allowed = await ensureMicPermission()
-      if (!allowed) return
-
-      // Warm up TTS on the same user gesture
-      warmUpTts()
-
       active = true
       setState('listening')
       stt.start()
@@ -282,9 +190,9 @@ export function createVoiceUi(
       setState('idle')
     },
 
-    async toggle() {
+    toggle() {
       if (active) this.deactivate()
-      else await this.activate()
+      else this.activate()
     },
 
     handleWsMessage(msg: any) {
@@ -293,7 +201,6 @@ export function createVoiceUi(
 
     get state() { return state },
     get isActive() { return active },
-    get permissionState() { return permState },
 
     destroy() {
       active = false
