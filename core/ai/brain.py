@@ -133,6 +133,8 @@ class AIBrain:
                 else:
                     self._provider = cls(endpoint=result.endpoint, model=model)
 
+                if result.detail:
+                    self._say_ai(result.detail)
                 self._say_ai(f"auto-configured: {result.provider_name} ({model})")
                 return self._provider
 
@@ -411,6 +413,8 @@ class AIBrain:
                 if not force:
                     self._generation_epoch += 1
 
+                if result.detail:
+                    self._say_ai(result.detail)
                 self._say_ai(f"swapped to {target} ({chosen_model})")
                 return f"swapped to {target} ({chosen_model})"
         finally:

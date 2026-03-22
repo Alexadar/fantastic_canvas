@@ -14,6 +14,7 @@ class DiscoverResult:
     endpoint: str = ""
     provider_name: str = ""
     error: str | None = None
+    detail: str | None = None
 
 
 @runtime_checkable

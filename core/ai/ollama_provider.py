@@ -45,7 +45,7 @@ class OllamaProvider:
             return DiscoverResult(
                 available=False,
                 provider_name="ollama",
-                error="ollama package not installed. Run: pip install ollama",
+                error="ollama package not installed. Run: uv pip install ollama",
             )
         except Exception as e:
             return DiscoverResult(

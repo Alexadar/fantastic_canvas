@@ -25,6 +25,68 @@ _NOISY_LOGGERS = [
 ]
 
 
+def _detect_device(torch) -> tuple[str, str]:
+    """Detect the best available device and return (device, detail_message).
+
+    Checks system accelerators vs torch capabilities and produces
+    clear diagnostics for each scenario.
+    """
+    # Detect what the system has vs what torch supports
+    system_has_cuda = _system_has_cuda()
+    system_has_mps = _system_has_mps()
+    torch_cuda = torch.cuda.is_available()
+    torch_mps = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+
+    if torch_cuda:
+        return "cuda", "cuda found, running on cuda"
+
+    if torch_mps:
+        return "mps", "mps found, running on mps"
+
+    # Torch doesn't see any accelerator — check if the system actually has one
+    if system_has_cuda:
+        return "cpu", (
+            "cuda device found but torch not built with CUDA support. "
+            "Reinstall torch with CUDA (uv pip install torch --index-url "
+            "https://download.pytorch.org/whl/cu124). Falling back to cpu"
+        )
+
+    if system_has_mps:
+        return "cpu", (
+            "mps device found but torch not built with MPS support. "
+            "Reinstall torch for macOS Metal (uv pip install torch). "
+            "Falling back to cpu"
+        )
+
+    return "cpu", "system is cpu, running on cpu"
+
+
+def _system_has_cuda() -> bool:
+    """Check if the system has NVIDIA GPU (independent of torch build)."""
+    import shutil
+    import subprocess
+
+    if shutil.which("nvidia-smi"):
+        try:
+            subprocess.run(
+                ["nvidia-smi"], capture_output=True, timeout=5,
+            )
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def _system_has_mps() -> bool:
+    """Check if the system is macOS with Apple Silicon (independent of torch build)."""
+    import platform
+
+    if platform.system() != "Darwin":
+        return False
+    # Apple Silicon = arm64
+    return platform.machine() == "arm64"
+
+
 class IntegratedProvider:
     """Loads a HuggingFace model locally with optional 4-bit quantization."""
 
@@ -38,29 +100,34 @@ class IntegratedProvider:
 
     @classmethod
     async def discover(cls, endpoint: str | None = None) -> DiscoverResult:
-        """Check if torch + transformers are importable."""
+        """Check if torch + transformers are importable, detect device."""
         try:
             import torch
-            import transformers  # noqa: F401
-
-            device = "cpu"
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                device = "mps"
-
-            return DiscoverResult(
-                available=True,
-                models=[DEFAULT_MODEL],
-                endpoint=f"local:{device}",
-                provider_name="integrated",
-            )
-        except ImportError as e:
+        except ImportError:
             return DiscoverResult(
                 available=False,
                 provider_name="integrated",
-                error=f"missing dependency: {e}",
+                error="torch not installed. Run: uv pip install torch",
             )
+
+        try:
+            import transformers  # noqa: F401
+        except ImportError:
+            return DiscoverResult(
+                available=False,
+                provider_name="integrated",
+                error="transformers not installed. Run: uv pip install transformers",
+            )
+
+        device, detail = _detect_device(torch)
+
+        return DiscoverResult(
+            available=True,
+            models=[DEFAULT_MODEL],
+            endpoint=f"local:{device}",
+            provider_name="integrated",
+            detail=detail,
+        )
 
     async def load_model(self, status_fn=None):
         """Download and load model. Calls status_fn with progress strings."""
