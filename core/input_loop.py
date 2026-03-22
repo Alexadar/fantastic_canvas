@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from . import conversation
+from .ai.brain import AIBrain
 from .recipients import CoreRecipient, Recipient
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,9 @@ logger = logging.getLogger(__name__)
 class InputLoop:
     """Interactive conversation loop with @tag routing."""
 
-    def __init__(self, remote_url: str | None = None):
+    def __init__(self, remote_url: str | None = None, ai: AIBrain | None = None):
         self._remote_url = remote_url
+        self._ai = ai
         self._core = CoreRecipient()
         self._recipients: dict[str, Recipient] = {
             "core": self._core,
@@ -61,8 +63,39 @@ class InputLoop:
                     conversation.say("fantastic", f"unknown: @{tag}")
                     print(conversation.format_entry({"who": "fantastic", "message": f"unknown: @{tag}"}))
             else:
-                # Default → @core
-                await self._dispatch_to(self._core, line)
+                # Try as core command first, fall through to AI
+                parsed = self._core.parse(line)
+                if parsed:
+                    await self._dispatch_to(self._core, line)
+                elif self._ai:
+                    await self._respond_ai(line)
+                else:
+                    # No AI, treat as conversation
+                    conversation.say("user", line)
+                    if self._remote_url:
+                        await self._remote_call("conversation_say", {"who": "user", "message": line})
+
+    async def _respond_ai(self, text: str):
+        """Route text to AI brain, stream response to terminal."""
+        conversation.say("user", text)
+        if self._remote_url:
+            await self._remote_call("conversation_say", {"who": "user", "message": text})
+
+        # Print AI label, then stream tokens inline
+        ai_color = conversation.AI_COLOR
+        reset = conversation.RESET
+        name = "ai".ljust(conversation.NAME_PAD)
+        print(f"{ai_color}{name}{reset} : ", end="", flush=True)
+
+        def print_token(token: str):
+            print(token, end="", flush=True)
+
+        response = await self._ai.respond(text, print_fn=print_token)
+        print()  # newline after streaming
+
+        if response is None:
+            # Provider not available — message already printed by brain
+            pass
 
     def _say_system(self, message: str):
         entry = conversation.say("fantastic", message)

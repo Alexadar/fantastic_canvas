@@ -66,11 +66,23 @@ class CoreRecipient(Recipient):
             return ("conversation_log", {"max_lines": max_lines})
         if cmd == "run" and len(parts) >= 2:
             return ("run_bundle", {"bundle_name": parts[1]})
+        if cmd == "ai":
+            subcmd = parts[1].lower() if len(parts) >= 2 else "status"
+            if subcmd == "status":
+                return ("ai_status", {})
+            if subcmd == "models":
+                return ("ai_models", {})
+            if subcmd == "model" and len(parts) >= 3:
+                return ("ai_model", {"model": parts[2]})
+            if subcmd == "pull" and len(parts) >= 3:
+                return ("ai_pull", {"model": parts[2]})
+            return ("ai_status", {})
         return None
 
     async def execute(self, tool_name: str, args: dict[str, Any]) -> Any:
         from .tools._bundles import _add_bundle, _remove_bundle, _list_bundles
         from .tools._conversation import _conversation_log, _conversation_say
+        from .tools._ai import _ai_status, _ai_models, _ai_model, _ai_pull
 
         handlers = {
             "add_bundle": _add_bundle,
@@ -78,6 +90,10 @@ class CoreRecipient(Recipient):
             "list_bundles": _list_bundles,
             "conversation_log": _conversation_log,
             "conversation_say": _conversation_say,
+            "ai_status": _ai_status,
+            "ai_models": _ai_models,
+            "ai_model": _ai_model,
+            "ai_pull": _ai_pull,
         }
         fn = handlers.get(tool_name)
         if not fn:
