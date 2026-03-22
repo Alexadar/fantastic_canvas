@@ -15,3 +15,6 @@ dependencies:
       - httpx>=0.28.0
       - watchfiles>=1.0.0
       - build>=1.0.0
+      - torch
+      - transformers>=4.45.0
+      - accelerate>=0.34.0

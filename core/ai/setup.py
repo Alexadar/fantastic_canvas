@@ -17,6 +17,7 @@ from typing import Callable
 
 from .. import conversation
 from .config import save_config
+from .local_transformers_provider import LocalTransformersProvider
 from .ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
 from .provider import DiscoverResult
 
@@ -132,21 +133,42 @@ async def run_setup(project_dir: Path, say_fn: Callable[[str], None] | None = No
         entry = conversation.say("fantastic", msg)
         print(conversation.format_entry(entry))
 
-    # Probe Ollama
+    # Probe all providers
     say("probing AI providers...")
-    result: DiscoverResult = await OllamaProvider.discover()
 
-    if not result.available:
-        say(f"ollama not available: {result.error}")
-        say("install from https://ollama.ai then run: ai setup")
+    providers: list[str] = []
+    provider_descs: list[str] = []
+    provider_results: dict[str, DiscoverResult] = {}
+
+    # Probe local_transformers first (default)
+    lt_result = await LocalTransformersProvider.discover()
+    if lt_result.available:
+        providers.append("local_transformers")
+        provider_descs.append("HuggingFace local model (default)")
+        provider_results["local_transformers"] = lt_result
+
+    # Probe Ollama
+    ollama_result = await OllamaProvider.discover()
+    if ollama_result.available:
+        providers.append("ollama")
+        provider_descs.append("Ollama local LLM server")
+        provider_results["ollama"] = ollama_result
+
+    if not providers:
+        say("no AI providers available.")
+        say("install torch+transformers or Ollama, then run: ai setup")
         return False
 
     # Build rows
-    provider_row = _Row("Provider", ["ollama"], ["local LLM server"])
+    provider_row = _Row("Provider", providers, provider_descs)
 
-    available = result.models or []
+    # Collect all models from all providers
+    all_models: list[str] = []
+    for name in providers:
+        all_models.extend(provider_results[name].models)
+    available = all_models or []
     if not available:
-        say("no models pulled. Run: ollama pull <model>")
+        say("no models available. Run: ollama pull <model>")
         return False
 
     model_row = _Row("Model", available)
@@ -197,9 +219,11 @@ async def run_setup(project_dir: Path, say_fn: Callable[[str], None] | None = No
     print()
 
     # Save config
+    chosen_provider = provider_row.value
+    chosen_result = provider_results.get(chosen_provider)
     config = {
-        "provider": provider_row.value,
-        "endpoint": result.endpoint,
+        "provider": chosen_provider,
+        "endpoint": chosen_result.endpoint if chosen_result else "",
         "model": model_row.value,
     }
     save_config(project_dir, config)
