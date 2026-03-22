@@ -68,6 +68,8 @@ class CoreRecipient(Recipient):
             return ("run_bundle", {"bundle_name": parts[1]})
         if cmd == "ai":
             subcmd = parts[1].lower() if len(parts) >= 2 else "status"
+            if subcmd == "setup":
+                return ("ai_setup", {})
             if subcmd == "status":
                 return ("ai_status", {})
             if subcmd == "models":
