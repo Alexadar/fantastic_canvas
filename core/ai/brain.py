@@ -25,14 +25,14 @@ def register_provider(cls: type, default_endpoint: str | None = None) -> None:
     _PROVIDERS.append((cls, default_endpoint))
 
 
-# Register local_transformers first (default), then Ollama as fallback
-from .local_transformers_provider import LocalTransformersProvider
-register_provider(LocalTransformersProvider, None)
+# Register integrated first (default), then Ollama as fallback
+from .integrated_provider import IntegratedProvider
+register_provider(IntegratedProvider, None)
 
 from .ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
 register_provider(OllamaProvider, DEFAULT_ENDPOINT)
 
-_PROVIDER_MAP["local_transformers"] = (LocalTransformersProvider, None)
+_PROVIDER_MAP["integrated"] = (IntegratedProvider, None)
 _PROVIDER_MAP["ollama"] = (OllamaProvider, DEFAULT_ENDPOINT)
 
 
@@ -77,8 +77,8 @@ class AIBrain:
                 endpoint=config.get("endpoint", DEFAULT_ENDPOINT),
                 model=config.get("model", ""),
             )
-        if name == "local_transformers":
-            return LocalTransformersProvider(
+        if name == "integrated":
+            return IntegratedProvider(
                 model=config.get("model", ""),
             )
         return None
@@ -98,8 +98,8 @@ class AIBrain:
                 }
                 save_config(self._project_dir, config)
 
-                # Instantiate — local_transformers takes model only
-                if result.provider_name == "local_transformers":
+                # Instantiate — integrated takes model only
+                if result.provider_name == "integrated":
                     self._provider = cls(model=model)
                 else:
                     self._provider = cls(endpoint=result.endpoint, model=model)
@@ -227,7 +227,7 @@ class AIBrain:
 
         provider_name = self._get_provider_name()
 
-        # Call stop() if the provider supports it (e.g. local_transformers)
+        # Call stop() if the provider supports it (e.g. integrated)
         if hasattr(self._provider, "stop"):
             self._provider.stop()
 
@@ -299,7 +299,7 @@ class AIBrain:
                 return f"{target} available but no models"
 
             # Instantiate
-            if target == "local_transformers":
+            if target == "integrated":
                 self._provider = cls(model=chosen_model)
             else:
                 self._provider = cls(endpoint=result.endpoint, model=chosen_model)

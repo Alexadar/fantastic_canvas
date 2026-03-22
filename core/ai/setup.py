@@ -17,7 +17,7 @@ from typing import Callable
 
 from .. import conversation
 from .config import save_config
-from .local_transformers_provider import LocalTransformersProvider
+from .integrated_provider import IntegratedProvider
 from .ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
 from .provider import DiscoverResult
 
@@ -140,12 +140,12 @@ async def run_setup(project_dir: Path, say_fn: Callable[[str], None] | None = No
     provider_descs: list[str] = []
     provider_results: dict[str, DiscoverResult] = {}
 
-    # Probe local_transformers first (default)
-    lt_result = await LocalTransformersProvider.discover()
+    # Probe integrated first (default)
+    lt_result = await IntegratedProvider.discover()
     if lt_result.available:
-        providers.append("local_transformers")
+        providers.append("integrated")
         provider_descs.append("HuggingFace local model (default)")
-        provider_results["local_transformers"] = lt_result
+        provider_results["integrated"] = lt_result
 
     # Probe Ollama
     ollama_result = await OllamaProvider.discover()

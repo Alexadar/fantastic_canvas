@@ -49,7 +49,7 @@ async def test_stop_provider_with_stop_method(project_dir):
     mock_provider.stop = MagicMock()
     brain._provider = mock_provider
 
-    save_config(project_dir, {"provider": "local_transformers", "model": "test"})
+    save_config(project_dir, {"provider": "integrated", "model": "test"})
 
     await brain.stop_provider()
 
@@ -256,16 +256,16 @@ async def test_respond_during_swap(project_dir):
 def test_available_providers():
     providers = AIBrain.available_providers()
     assert "ollama" in providers
-    assert "local_transformers" in providers
+    assert "integrated" in providers
 
 
-# ─── config routing: local_transformers ──────────────────
+# ─── config routing: integrated ──────────────────
 
 
-async def test_provider_from_config_local_transformers(project_dir):
-    """Brain loads local_transformers from config."""
+async def test_provider_from_config_integrated(project_dir):
+    """Brain loads integrated from config."""
     save_config(project_dir, {
-        "provider": "local_transformers",
+        "provider": "integrated",
         "endpoint": "local:cpu",
         "model": "Qwen/Qwen3.5-4B",
     })
