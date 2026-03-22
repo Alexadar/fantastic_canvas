@@ -1,0 +1,8 @@
+{
+  "name": "voice_assistant",
+  "bundle": "voice_assistant",
+  "parameters": {
+    "default_width": 300,
+    "default_height": 300
+  }
+}
