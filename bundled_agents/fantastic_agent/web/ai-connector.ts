@@ -17,7 +17,7 @@ export interface AiConnectorEvents {
 
 export interface AiConnector {
   /** Send committed transcript to AI backend */
-  sendTranscript(text: string): void
+  sendTranscript(text: string, mode?: string): void
   /** Signal that user interrupted (barge-in) */
   sendInterrupt(): void
   /** Process incoming WS message (called by plugin) */
@@ -32,12 +32,13 @@ export function createAiConnector(
   let responseBuffer = ''
 
   return {
-    sendTranscript(text: string) {
+    sendTranscript(text: string, mode: string = 'voice') {
       wsSend({
         type: 'voice_transcript',
         agent_id: agentId,
         text,
         is_final: true,
+        mode,
       })
       events.onStateChange('thinking')
     },

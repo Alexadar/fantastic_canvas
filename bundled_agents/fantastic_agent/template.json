@@ -1,6 +1,6 @@
 {
-  "name": "voice_assistant",
-  "bundle": "voice_assistant",
+  "name": "fantastic_agent",
+  "bundle": "fantastic_agent",
   "parameters": {
     "default_width": 300,
     "default_height": 300

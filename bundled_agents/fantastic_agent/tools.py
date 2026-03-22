@@ -1,7 +1,9 @@
-"""Voice Assistant bundle — always-on voice agent with STT/TTS and AI backend connector."""
+"""Fantastic Agent bundle — voice/chat AI agent with persistent history and mic exclusivity."""
 
 import asyncio
+import json
 import logging
+import time
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -9,7 +11,7 @@ from core.dispatch import ToolResult
 
 _SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 
-log = logging.getLogger("voice_assistant")
+log = logging.getLogger("fantastic_agent")
 
 # ─── AI Backend Connector (stub — real backend TBD) ─────────────
 
@@ -31,14 +33,16 @@ class AiBackendConnector:
     def get_history(self, agent_id: str) -> list[dict]:
         return self._conversations.setdefault(agent_id, [])
 
-    def add_message(self, agent_id: str, role: str, text: str):
+    def add_message(self, agent_id: str, role: str, text: str, mode: str = "voice"):
         history = self.get_history(agent_id)
         history.append({"role": role, "text": text})
         if len(history) > 50:
             self._conversations[agent_id] = history[-50:]
+        # Persist to chat.json
+        _save_chat_message(agent_id, role, text, mode)
 
     async def stream_response(
-        self, agent_id: str, text: str
+        self, agent_id: str, text: str, mode: str = "voice"
     ) -> AsyncIterator[tuple[str, bool]]:
         """Yield (chunk, is_done) tuples.
 
@@ -48,7 +52,7 @@ class AiBackendConnector:
 
         Stub: echoes input with simulated delay.
         """
-        self.add_message(agent_id, "user", text)
+        self.add_message(agent_id, "user", text, mode)
 
         if self.endpoint:
             # TODO: real AI backend call via httpx streaming
@@ -60,7 +64,7 @@ class AiBackendConnector:
             f'I heard you say: "{text}". '
             "The AI backend is not connected yet — this is an echo stub."
         )
-        self.add_message(agent_id, "assistant", response)
+        self.add_message(agent_id, "assistant", response, mode)
 
         words = response.split()
         chunk_size = 5
@@ -75,19 +79,64 @@ class AiBackendConnector:
 _connector = AiBackendConnector()
 _engine = None
 
+# ─── Mic exclusivity state ──────────────────────────────────────
+
+_mic_owner: str | None = None
+
+# ─── Chat persistence ───────────────────────────────────────────
+
+
+def _chat_json_path(agent_id: str) -> Path:
+    """Return path to .fantastic/agents/{agent_id}/chat.json."""
+    return Path(".fantastic") / "agents" / agent_id / "chat.json"
+
+
+def _save_chat_message(agent_id: str, role: str, text: str, mode: str = "voice"):
+    """Append a message to chat.json for the given agent."""
+    path = _chat_json_path(agent_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"messages": []}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                data = {"messages": []}
+        data["messages"].append({
+            "role": role,
+            "text": text,
+            "ts": int(time.time()),
+            "mode": mode,
+        })
+        path.write_text(json.dumps(data, indent=2))
+    except OSError as exc:
+        log.warning("Failed to save chat message for agent=%s: %s", agent_id, exc)
+
+
+def _load_chat_history(agent_id: str) -> list[dict]:
+    """Load chat history from chat.json."""
+    path = _chat_json_path(agent_id)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+        return data.get("messages", [])
+    except (json.JSONDecodeError, OSError):
+        return []
+
 
 # ─── Dispatch handlers (registered into _DISPATCH) ──────────────
 
 
-async def _handle_voice_transcript(agent_id: str = "", text: str = "", **_kw) -> ToolResult:
-    """Handle voice transcript from frontend. Streams AI response via broadcast."""
+async def _handle_voice_transcript(agent_id: str = "", text: str = "", mode: str = "voice", **_kw) -> ToolResult:
+    """Handle voice/chat transcript from frontend. Streams AI response via broadcast."""
     from core.server import broadcast
 
     text = text.strip()
     if not text:
         return ToolResult(data={"error": "empty transcript"})
 
-    log.info("voice_transcript agent=%s text=%r", agent_id, text[:80])
+    log.info("voice_transcript agent=%s mode=%s text=%r", agent_id, mode, text[:80])
 
     # Notify: thinking
     await broadcast({
@@ -99,7 +148,7 @@ async def _handle_voice_transcript(agent_id: str = "", text: str = "", **_kw) ->
     # Stream response chunks via broadcast
     full_response = ""
     try:
-        async for chunk, done in _connector.stream_response(agent_id, text):
+        async for chunk, done in _connector.stream_response(agent_id, text, mode):
             full_response += chunk
             await broadcast({
                 "type": "voice_response",
@@ -131,10 +180,49 @@ async def _handle_voice_interrupt(agent_id: str = "", **_kw) -> ToolResult:
     return ToolResult(data={"ok": True, "agent_id": agent_id})
 
 
+async def _handle_voice_claim_mic(agent_id: str = "", **_kw) -> ToolResult:
+    """Handle mic claim — sets this agent as the exclusive mic owner."""
+    from core.server import broadcast
+
+    global _mic_owner
+    _mic_owner = agent_id
+    log.info("voice_claim_mic agent=%s", agent_id)
+    await broadcast({
+        "type": "voice_mic_owner",
+        "agent_id": agent_id,
+    })
+    return ToolResult(data={"ok": True, "agent_id": agent_id})
+
+
+async def _handle_voice_release_mic(agent_id: str = "", **_kw) -> ToolResult:
+    """Handle mic release — clears mic owner if this agent owns it."""
+    from core.server import broadcast
+
+    global _mic_owner
+    if _mic_owner == agent_id:
+        _mic_owner = None
+        log.info("voice_release_mic agent=%s", agent_id)
+        await broadcast({
+            "type": "voice_mic_owner",
+            "agent_id": None,
+        })
+    return ToolResult(data={"ok": True, "agent_id": agent_id})
+
+
+async def _handle_chat_history(agent_id: str = "", **_kw) -> ToolResult:
+    """Return chat history for an agent."""
+    messages = _load_chat_history(agent_id)
+    return ToolResult(data={
+        "type": "chat_history_response",
+        "agent_id": agent_id,
+        "messages": messages,
+    })
+
+
 # ─── Handbook ────────────────────────────────────────────────────
 
 
-async def _get_handbook_voice_assistant(skill: str = "", **_kw) -> ToolResult:
+async def _get_handbook_fantastic_agent(skill: str = "", **_kw) -> ToolResult:
     if skill:
         skill_file = _SKILLS_DIR / f"{skill}.md"
         if skill_file.exists():
@@ -145,9 +233,9 @@ async def _get_handbook_voice_assistant(skill: str = "", **_kw) -> ToolResult:
     available = sorted(p.stem for p in _SKILLS_DIR.glob("*.md")) if _SKILLS_DIR.exists() else []
     return ToolResult(
         data={
-            "text": "Voice assistant skills: " + ", ".join(available)
+            "text": "Fantastic agent skills: " + ", ".join(available)
             if available
-            else "No voice assistant skills found."
+            else "No fantastic agent skills found."
         }
     )
 
@@ -158,21 +246,24 @@ async def _get_handbook_voice_assistant(skill: str = "", **_kw) -> ToolResult:
 def register_dispatch():
     """Return dispatch functions for _DISPATCH table (WS message handlers)."""
     return {
-        "get_handbook_voice_assistant": _get_handbook_voice_assistant,
+        "get_handbook_fantastic_agent": _get_handbook_fantastic_agent,
         "voice_transcript": _handle_voice_transcript,
         "voice_interrupt": _handle_voice_interrupt,
+        "voice_claim_mic": _handle_voice_claim_mic,
+        "voice_release_mic": _handle_voice_release_mic,
+        "chat_history": _handle_chat_history,
     }
 
 
 def register_tools(engine, fire_broadcasts, process_runner=None):
-    """Register voice assistant user-callable tools."""
+    """Register fantastic agent user-callable tools."""
     global _engine, _connector
     _engine = engine
 
     tools = {}
 
-    async def voice_configure(ai_backend_url: str = "") -> str:
-        """Configure the voice assistant AI backend connection.
+    async def fantastic_agent_configure(ai_backend_url: str = "") -> str:
+        """Configure the fantastic agent AI backend connection.
 
         Args:
             ai_backend_url: URL of the AI backend endpoint.
@@ -181,28 +272,28 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         _connector.config["ai_backend_url"] = ai_backend_url
         _connector.endpoint = ai_backend_url
         if ai_backend_url:
-            return f"Voice assistant AI backend set to: {ai_backend_url}"
-        return "Voice assistant AI backend reset to echo stub."
+            return f"Fantastic agent AI backend set to: {ai_backend_url}"
+        return "Fantastic agent AI backend reset to echo stub."
 
-    tools["voice_configure"] = voice_configure
+    tools["fantastic_agent_configure"] = fantastic_agent_configure
 
-    async def get_handbook_voice_assistant(skill: str = "") -> str:
-        """Get voice assistant handbook.
+    async def get_handbook_fantastic_agent(skill: str = "") -> str:
+        """Get fantastic agent handbook.
 
         Without arguments: lists available skills.
         With skill name: returns that specific skill doc.
 
-        Available skills: voice-assistant
+        Available skills: fantastic-agent
 
         Examples:
-            get_handbook_voice_assistant()
-            get_handbook_voice_assistant(skill="voice-assistant")
+            get_handbook_fantastic_agent()
+            get_handbook_fantastic_agent(skill="fantastic-agent")
         """
-        tr = await _get_handbook_voice_assistant(skill)
+        tr = await _get_handbook_fantastic_agent(skill)
         if "error" in tr.data:
             return f"[ERROR] {tr.data['error']}"
         return tr.data["text"]
 
-    tools["get_handbook_voice_assistant"] = get_handbook_voice_assistant
+    tools["get_handbook_fantastic_agent"] = get_handbook_fantastic_agent
 
     return tools

@@ -14,6 +14,11 @@
  *   speaking   → listening   (barge-in: user talks over AI)
  *   speaking   → listening   (TTS finishes naturally)
  *   any        → idle        (user deactivates)
+ *
+ * Mic exclusivity:
+ *   activate()      → sends voice_claim_mic, waits for voice_mic_owner broadcast
+ *   activateLocal() → directly starts STT (called when mic_owner confirms us)
+ *   deactivate()    → sends voice_release_mic, stops STT/TTS
  */
 
 import { createWebSpeechStt, type SttProvider } from './stt-provider'
@@ -31,9 +36,11 @@ export interface VoiceUiEvents {
 }
 
 export interface VoiceUi {
-  /** Activate the voice assistant (start listening) */
+  /** Activate — claims mic via WS (other agents will be deactivated) */
   activate(): void
-  /** Deactivate (go idle, stop everything) */
+  /** Activate locally without claiming mic (called by plugin on mic_owner confirmation) */
+  activateLocal(): void
+  /** Deactivate (go idle, stop everything, release mic) */
   deactivate(): void
   /** Toggle active/idle */
   toggle(): void
@@ -68,7 +75,6 @@ export function createVoiceUi(
 
   function setState(next: VoiceState) {
     if (state === next) return
-    const prev = state
     state = next
 
     // Announce state change to user (spoken cue)
@@ -176,6 +182,13 @@ export function createVoiceUi(
   return {
     activate() {
       if (active) return
+      // Claim mic via WS — actual activation happens when voice_mic_owner comes back
+      wsSend({ type: 'voice_claim_mic', agent_id: agentId })
+    },
+
+    activateLocal() {
+      // Called by plugin when voice_mic_owner confirms this agent
+      if (active) return
       active = true
       setState('listening')
       stt.start()
@@ -188,6 +201,8 @@ export function createVoiceUi(
       tts.cancel()
       responseChunks = []
       setState('idle')
+      // Release mic
+      wsSend({ type: 'voice_release_mic', agent_id: agentId })
     },
 
     toggle() {
