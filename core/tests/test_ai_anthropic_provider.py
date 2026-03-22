@@ -19,6 +19,7 @@ async def test_discover_no_package():
             result = await AnthropicProvider.discover()
     assert result.available is False
     assert "not installed" in result.error
+    assert "uv pip install" in result.error
 
 
 async def test_discover_no_api_key():

@@ -36,7 +36,7 @@ class AnthropicProvider:
             return DiscoverResult(
                 available=False,
                 provider_name="anthropic",
-                error="anthropic package not installed. Run: pip install anthropic",
+                error="anthropic package not installed. Run: uv pip install anthropic",
             )
 
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")

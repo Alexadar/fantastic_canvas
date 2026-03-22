@@ -77,7 +77,7 @@ async def test_discover_not_available():
         result = await IntegratedProvider.discover()
 
     assert result.available is False
-    assert "missing dependency" in (result.error or "")
+    assert "torch not installed" in (result.error or "")
 
 
 # ─── model property ───────────────────────────────────────
