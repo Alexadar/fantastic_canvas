@@ -157,7 +157,7 @@ async def test_respond_streams_and_saves(project_dir):
             yield token
 
     provider = await brain.ensure_provider()
-    provider.chat = mock_chat
+    provider.generate = mock_chat
 
     printed = []
     response = await brain.respond("hi", print_fn=lambda t: printed.append(t))
@@ -193,7 +193,7 @@ async def test_respond_empty_response(project_dir):
         yield  # make it an async generator that yields nothing
 
     provider = await brain.ensure_provider()
-    provider.chat = mock_chat
+    provider.generate = mock_chat
 
     response = await brain.respond("hi")
     assert response == ""

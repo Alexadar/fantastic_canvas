@@ -142,7 +142,7 @@ class IntegratedProvider:
 
         return model, tokenizer
 
-    async def chat(self, messages: list[dict]) -> AsyncIterator[str]:
+    async def generate(self, messages: list[dict]) -> AsyncIterator[str]:
         """Generate a response from messages. Loads model on first call."""
         if self._stopped:
             yield AI_MSG.PROVIDER_STOPPED

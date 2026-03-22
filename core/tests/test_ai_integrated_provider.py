@@ -124,22 +124,22 @@ def test_stop():
 # ─── chat when stopped ────────────────────────────────────
 
 
-async def test_chat_when_stopped():
+async def test_generate_when_stopped():
     from core.ai.integrated_provider import IntegratedProvider
     provider = IntegratedProvider(model="test")
     provider._stopped = True
 
     tokens = []
-    async for token in provider.chat([{"role": "user", "content": "hi"}]):
+    async for token in provider.generate([{"role": "user", "content": "hi"}]):
         tokens.append(token)
 
     assert tokens == [AI_MSG.PROVIDER_STOPPED]
 
 
-# ─── chat with mocked model ──────────────────────────────
+# ─── generate with mocked model ───────────────────────────
 
 
-async def test_chat_generates_response():
+async def test_generate_produces_response():
     from core.ai.integrated_provider import IntegratedProvider
     provider = IntegratedProvider(model="test")
 
@@ -163,7 +163,7 @@ async def test_chat_generates_response():
         mock_loop.return_value.run_in_executor = AsyncMock(return_value="Hello there!")
 
         tokens = []
-        async for token in provider.chat([{"role": "user", "content": "hi"}]):
+        async for token in provider.generate([{"role": "user", "content": "hi"}]):
             tokens.append(token)
 
     assert tokens == ["Hello there!"]

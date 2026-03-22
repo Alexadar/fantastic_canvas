@@ -84,10 +84,10 @@ async def test_discover_connection_error():
     assert result.error is not None
 
 
-# ─── chat ──────────────────────────────────────────────────
+# ─── generate ──────────────────────────────────────────────
 
 
-async def test_chat_streams_tokens():
+async def test_generate_streams_tokens():
     provider = OllamaProvider(DEFAULT_ENDPOINT, "llama3.2")
 
     chunks = [
@@ -105,7 +105,7 @@ async def test_chat_streams_tokens():
     provider._client = mock_client
 
     tokens = []
-    async for token in provider.chat([{"role": "user", "content": "hi"}]):
+    async for token in provider.generate([{"role": "user", "content": "hi"}]):
         tokens.append(token)
 
     assert tokens == ["Hello", " world"]

@@ -25,8 +25,8 @@ class AIProvider(Protocol):
         """Probe whether this provider is available at the given endpoint."""
         ...
 
-    async def chat(self, messages: list[dict]) -> AsyncIterator[str]:
-        """Stream chat completion tokens."""
+    async def generate(self, messages: list[dict]) -> AsyncIterator[str]:
+        """Stream completion tokens from messages."""
         ...
 
     async def list_models(self) -> list[str]:

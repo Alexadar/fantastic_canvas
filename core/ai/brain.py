@@ -32,8 +32,11 @@ register_provider(IntegratedProvider, None)
 from .ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
 register_provider(OllamaProvider, DEFAULT_ENDPOINT)
 
+from .proxy_provider import ProxyProvider
+
 _PROVIDER_MAP["integrated"] = (IntegratedProvider, None)
 _PROVIDER_MAP["ollama"] = (OllamaProvider, DEFAULT_ENDPOINT)
+_PROVIDER_MAP["proxy"] = (ProxyProvider, None)
 
 
 class AIBrain:
@@ -80,6 +83,22 @@ class AIBrain:
         if name == "integrated":
             return IntegratedProvider(
                 model=config.get("model", ""),
+            )
+        if name == "proxy":
+            # Re-resolve instance URL (tunnel port may have changed)
+            instance = config.get("instance", "")
+            endpoint = config.get("endpoint", "")
+            if instance:
+                from .proxy_provider import resolve_instance
+                resolved = resolve_instance(instance)
+                if resolved:
+                    endpoint = resolved
+            if not endpoint:
+                return None
+            return ProxyProvider(
+                endpoint=endpoint,
+                model=config.get("model", ""),
+                instance=instance,
             )
         return None
 
@@ -136,7 +155,7 @@ class AIBrain:
 
         # Stream response
         chunks: list[str] = []
-        async for token in provider.chat(messages):
+        async for token in provider.generate(messages):
             chunks.append(token)
             if print_fn:
                 print_fn(token)
@@ -268,11 +287,18 @@ class AIBrain:
             return f"reconfigured: {name}"
         return "reconfigure failed — no provider found"
 
-    async def swap_provider(self, target: str, model: str | None = None) -> str:
-        """Hot-swap to a different provider. Returns status string."""
+    async def swap_provider(self, target: str, model: str | None = None,
+                            instance: str | None = None) -> str:
+        """Hot-swap to a different provider. Returns status string.
+
+        For proxy provider, ``instance`` is required (instance ID or name).
+        """
         if target not in _PROVIDER_MAP:
             available = ", ".join(_PROVIDER_MAP.keys())
             return f"unknown provider '{target}'. available: {available}"
+
+        if target == "proxy" and not instance:
+            return "proxy requires instance= (registered instance ID or name)"
 
         self._swapping = True
         try:
@@ -284,8 +310,11 @@ class AIBrain:
 
             cls, default_endpoint = _PROVIDER_MAP[target]
 
+            # For proxy, discover via instance ID/name instead of default endpoint
+            discover_endpoint = instance if target == "proxy" else default_endpoint
+
             # Discover
-            result = await cls.discover(default_endpoint)
+            result = await cls.discover(discover_endpoint)
             if not result.available:
                 self._swapping = False
                 err = result.error or "not available"
@@ -301,6 +330,11 @@ class AIBrain:
             # Instantiate
             if target == "integrated":
                 self._provider = cls(model=chosen_model)
+            elif target == "proxy":
+                self._provider = cls(
+                    endpoint=result.endpoint, model=chosen_model,
+                    instance=instance,
+                )
             else:
                 self._provider = cls(endpoint=result.endpoint, model=chosen_model)
 
@@ -310,6 +344,8 @@ class AIBrain:
                 "endpoint": result.endpoint,
                 "model": chosen_model,
             }
+            if instance:
+                config["instance"] = instance
             save_config(self._project_dir, config)
 
             self._say_ai(f"swapped to {target} ({chosen_model})")
