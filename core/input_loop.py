@@ -6,6 +6,9 @@ Unrecognized input becomes conversation.
 
 import asyncio
 import logging
+import os
+from pathlib import Path
+from typing import Any
 
 from . import conversation
 from .ai.brain import AIBrain
@@ -80,6 +83,16 @@ class InputLoop:
                     conversation.say("user", line)
                     if self._remote_url:
                         await self._remote_call("conversation_say", {"who": "user", "message": line})
+
+    async def _run_ai_setup(self):
+        """Run the interactive AI setup wizard."""
+        from .ai.setup import run_setup
+        project_dir = Path(os.environ.get("PROJECT_DIR", os.getcwd()))
+        saved = await run_setup(project_dir)
+        if saved and self._ai:
+            # Reload provider from new config
+            self._ai._provider = None
+            await self._ai.ensure_provider()
 
     async def _respond_ai(self, text: str):
         """Route text to AI brain, stream response to terminal."""
@@ -160,6 +173,9 @@ class InputLoop:
             tool_name, args = parsed
             if tool_name == "run_bundle":
                 await self._run_chat_agent(args["bundle_name"])
+                return
+            if tool_name == "ai_setup":
+                await self._run_ai_setup()
                 return
             result = await self._execute(recipient, tool_name, args)
             self._print_result(tool_name, result)
