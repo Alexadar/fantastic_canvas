@@ -220,6 +220,15 @@ async def _handle_chat_history(agent_id: str = "", **_kw) -> ToolResult:
     })
 
 
+async def _fantastic_agent_configure(ai_backend_url: str = "", **_kw) -> ToolResult:
+    """Configure the fantastic agent AI backend connection (inner)."""
+    _connector.config["ai_backend_url"] = ai_backend_url
+    _connector.endpoint = ai_backend_url
+    if ai_backend_url:
+        return ToolResult(data={"message": f"Fantastic agent AI backend set to: {ai_backend_url}"})
+    return ToolResult(data={"message": "Fantastic agent AI backend reset to echo stub."})
+
+
 # ─── Handbook ────────────────────────────────────────────────────
 
 
@@ -248,6 +257,7 @@ def register_dispatch():
     """Return dispatch functions for _DISPATCH table (WS message handlers)."""
     return {
         "get_handbook_fantastic_agent": _get_handbook_fantastic_agent,
+        "fantastic_agent_configure": _fantastic_agent_configure,
         "voice_transcript": _handle_voice_transcript,
         "voice_interrupt": _handle_voice_interrupt,
         "voice_claim_mic": _handle_voice_claim_mic,
@@ -270,11 +280,8 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
             ai_backend_url: URL of the AI backend endpoint.
                            Empty string to reset to echo stub.
         """
-        _connector.config["ai_backend_url"] = ai_backend_url
-        _connector.endpoint = ai_backend_url
-        if ai_backend_url:
-            return f"Fantastic agent AI backend set to: {ai_backend_url}"
-        return "Fantastic agent AI backend reset to echo stub."
+        tr = await _fantastic_agent_configure(ai_backend_url=ai_backend_url)
+        return tr.data["message"]
 
     tools["fantastic_agent_configure"] = fantastic_agent_configure
 
