@@ -95,7 +95,7 @@ class InputLoop:
             await self._ai.ensure_provider()
 
     async def _respond_ai(self, text: str):
-        """Route text to AI brain, stream response to terminal."""
+        """Route text to AI brain, stream response to conversation."""
         conversation.say("user", text)
         if self._remote_url:
             await self._remote_call("conversation_say", {"who": "user", "message": text})
