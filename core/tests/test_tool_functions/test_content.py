@@ -44,7 +44,7 @@ async def test_content_alias_file_tool(setup):
     alias_id = result.split("/")[-1]
     assert alias_id in engine.content_aliases
     assert engine.content_aliases[alias_id]["type"] == "file"
-    assert engine.content_aliases[alias_id]["persistent"] is False
+    assert engine.content_aliases[alias_id]["persistent"] is True
 
 
 async def test_content_alias_url_tool(setup):
@@ -54,7 +54,7 @@ async def test_content_alias_url_tool(setup):
     alias_id = result.split("/")[-1]
     assert engine.content_aliases[alias_id]["type"] == "url"
     assert engine.content_aliases[alias_id]["url"] == "https://example.com/lib.js"
-    assert engine.content_aliases[alias_id]["persistent"] is False
+    assert engine.content_aliases[alias_id]["persistent"] is True
 
 
 async def test_content_alias_file_persistent(setup):
@@ -71,19 +71,18 @@ async def test_content_alias_url_persistent(setup):
     assert engine.content_aliases[alias_id]["persistent"] is True
 
 
-async def test_all_aliases_survive_reload(setup):
-    """All aliases (persistent and non-persistent) survive reload from disk."""
+async def test_default_alias_survives_reload(setup):
+    """Default aliases (persistent=True) survive reload from disk."""
     engine, _, _ = setup
-    await content_alias_file("/tmp/persist.png", persistent=True)
+    await content_alias_file("/tmp/persist.png")  # default persistent=True
     await content_alias_file("/tmp/ephemeral.png", persistent=False)
     assert len(engine.content_aliases) == 2
     # Simulate restart: clear cache, reload from disk
     engine._content_aliases = None
     aliases = engine.content_aliases
-    assert len(aliases) == 2
-    paths = {v["path"] for v in aliases.values()}
-    assert "/tmp/persist.png" in paths
-    assert "/tmp/ephemeral.png" in paths
+    assert len(aliases) == 1
+    remaining = list(aliases.values())[0]
+    assert remaining["path"] == "/tmp/persist.png"
 
 
 async def test_get_aliases_empty(setup):

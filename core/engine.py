@@ -228,7 +228,9 @@ class Engine:
 
     def _load_aliases(self) -> dict[str, dict]:
         if self._aliases_path.exists():
-            return json.loads(self._aliases_path.read_text())
+            data = json.loads(self._aliases_path.read_text())
+            # Only keep persistent aliases across restarts
+            return {k: v for k, v in data.items() if v.get("persistent")}
         return {}
 
     def _save_aliases(self) -> None:
