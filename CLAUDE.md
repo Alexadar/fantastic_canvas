@@ -39,14 +39,9 @@ fantastic                                                    # starts input loop
 > log                                                        # show conversation history
 
 # Install globally via uv
-uv tool install .                                            # from source
-uv tool install fantastic                                    # from PyPI
+uv tool install ./core                                       # from source
+uv tool install ./core[torch]                                # with PyTorch (auto: CPU on macOS, CUDA on Linux)
 fantastic add canvas && fantastic --project-dir ~/my-project
-
-# AI features (PyTorch) — pick one for your platform
-uv sync --extra torch                                       # macOS (MPS/Apple Silicon)
-uv sync --extra torch-cpu                                   # Linux/Windows (CPU only)
-uv sync --extra torch-cuda                                  # Linux (NVIDIA CUDA 12.4)
 
 # Docker
 docker-compose up

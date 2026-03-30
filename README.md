@@ -33,16 +33,16 @@ brew install uv
 ## Installation
 
 ```bash
-# From source (recommended)
+# From source (development)
 uv sync                                  # install Python 3.11+, deps, and venv
 uv run fantastic                         # run directly
 
 # Install globally
-uv tool install .                        # from source
-uv tool install fantastic                # from PyPI (after publish)
+uv tool install ./core                   # from source
+uv tool install ./core[torch]            # with PyTorch (auto: CPU on macOS, CUDA on Linux)
 
-# Or with pip
-pip install fantastic
+# Build wheel
+bash scripts/build-core.sh              # builds frontend + Python package
 ```
 
 ## Usage
