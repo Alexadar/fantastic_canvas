@@ -13,18 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
-        run: |
-          cd core
-          pip install -e ".[dev]" 2>/dev/null || pip install -e .
-          pip install pytest pytest-asyncio
+        run: uv sync --dev
 
       - name: Run tests
-        run: |
-          cd core
-          python -m pytest tests/ -v -x
+        run: uv run pytest core/tests/ -v -x

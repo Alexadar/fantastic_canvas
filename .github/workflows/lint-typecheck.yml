@@ -10,18 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
 
       - name: Ruff lint
-        run: ruff check core/
+        run: uvx ruff check core/
 
       - name: Ruff format check
-        run: ruff format --check core/
+        run: uvx ruff format --check core/
 
   frontend-lint-typecheck:
     runs-on: ubuntu-latest
