@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+.vite/
+
+# macOS signing credentials — NEVER commit these
+*.p12
+*.cer
+*.provisionprofile
+*.mobileprovision
+dev-certs/
+signing/
+
+# Electron Forge output
+*.dmg
+*.zip
+*.app
+
+# Environment (may contain signing secrets)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
