@@ -71,8 +71,8 @@ async def test_content_alias_url_persistent(setup):
     assert engine.content_aliases[alias_id]["persistent"] is True
 
 
-async def test_persistent_alias_survives_reload(setup):
-    """Persistent aliases are kept when aliases are reloaded from disk."""
+async def test_all_aliases_survive_reload(setup):
+    """All aliases (persistent and non-persistent) survive reload from disk."""
     engine, _, _ = setup
     await content_alias_file("/tmp/persist.png", persistent=True)
     await content_alias_file("/tmp/ephemeral.png", persistent=False)
@@ -80,9 +80,10 @@ async def test_persistent_alias_survives_reload(setup):
     # Simulate restart: clear cache, reload from disk
     engine._content_aliases = None
     aliases = engine.content_aliases
-    assert len(aliases) == 1
-    remaining = list(aliases.values())[0]
-    assert remaining["path"] == "/tmp/persist.png"
+    assert len(aliases) == 2
+    paths = {v["path"] for v in aliases.values()}
+    assert "/tmp/persist.png" in paths
+    assert "/tmp/ephemeral.png" in paths
 
 
 async def test_get_aliases_empty(setup):
