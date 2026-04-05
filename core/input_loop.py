@@ -8,7 +8,6 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any
 
 from . import conversation
 from .ai.brain import AIBrain
@@ -82,11 +81,14 @@ class InputLoop:
                     # No AI, treat as conversation
                     conversation.say("user", line)
                     if self._remote_url:
-                        await self._remote_call("conversation_say", {"who": "user", "message": line})
+                        await self._remote_call(
+                            "conversation_say", {"who": "user", "message": line}
+                        )
 
     async def _run_ai_setup(self):
         """Run the interactive AI setup wizard."""
         from .ai.setup import run_setup
+
         project_dir = Path(os.environ.get("PROJECT_DIR", os.getcwd()))
         saved = await run_setup(project_dir)
         if saved and self._ai:
@@ -98,7 +100,9 @@ class InputLoop:
         """Route text to AI brain, stream response to conversation."""
         conversation.say("user", text)
         if self._remote_url:
-            await self._remote_call("conversation_say", {"who": "user", "message": text})
+            await self._remote_call(
+                "conversation_say", {"who": "user", "message": text}
+            )
 
         # Print AI label, then stream tokens inline
         ai_color = conversation.AI_COLOR

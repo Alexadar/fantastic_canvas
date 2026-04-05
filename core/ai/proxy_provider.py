@@ -11,7 +11,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from .provider import AIProvider, DiscoverResult
+from .provider import DiscoverResult
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +64,9 @@ class ProxyProvider:
         # If it looks like a URL, use it directly; otherwise resolve from registry
         if endpoint.startswith("http"):
             url = endpoint.rstrip("/")
-            instance = ""
         else:
             # Treat as instance ID or name
             url = resolve_instance(endpoint)
-            instance = endpoint
             if not url:
                 return DiscoverResult(
                     available=False,

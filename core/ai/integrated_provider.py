@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import AsyncIterator
 
-from .provider import AIProvider, DiscoverResult
+from .provider import DiscoverResult
 from .messages import AI_MSG
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,9 @@ def _system_has_cuda() -> bool:
     if shutil.which("nvidia-smi"):
         try:
             subprocess.run(
-                ["nvidia-smi"], capture_output=True, timeout=5,
+                ["nvidia-smi"],
+                capture_output=True,
+                timeout=5,
             )
             return True
         except Exception:

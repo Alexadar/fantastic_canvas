@@ -409,6 +409,7 @@ async def _run_with_server(args, project_dir, port, auto_run_bundle: str | None 
     server = uvicorn.Server(config)
 
     from .ai.brain import AIBrain
+
     ai = AIBrain(Path(project_dir))
     loop = InputLoop(ai=ai)
 
@@ -457,6 +458,7 @@ def _cmd_start(args):
         print()
         from .input_loop import InputLoop
         from .ai.brain import AIBrain
+
         ai = AIBrain(Path(project_dir))
         loop = InputLoop(ai=ai)
         asyncio.run(loop.run())
@@ -595,6 +597,7 @@ async def _run_with_server_and_bundle(args, project_dir):
     server = uvicorn.Server(config)
 
     from .ai.brain import AIBrain
+
     ai = AIBrain(Path(project_dir))
     loop = InputLoop(ai=ai)
 

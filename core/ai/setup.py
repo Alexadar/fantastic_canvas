@@ -18,7 +18,7 @@ from typing import Callable
 from .. import conversation
 from .config import save_config
 from .integrated_provider import IntegratedProvider
-from .ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
+from .ollama_provider import OllamaProvider
 from .provider import DiscoverResult
 
 # ANSI helpers
@@ -31,11 +31,12 @@ SHOW_CURSOR = "\033[?25h"
 UP = "\033[A"
 
 
-
 class _Row:
     """A navigable row with left/right options."""
 
-    def __init__(self, label: str, options: list[str], descriptions: list[str] | None = None):
+    def __init__(
+        self, label: str, options: list[str], descriptions: list[str] | None = None
+    ):
         self.label = label
         self.options = options
         self.descriptions = descriptions or [""] * len(options)
@@ -103,12 +104,18 @@ def _render(rows: list[_Row], current: int, total_lines: int, status: str = ""):
             chips.append(chip)
 
         option_str = "".join(chips)
-        desc = f"  {DIM}{row.description}{RESET}" if row.description and is_active else ""
+        desc = (
+            f"  {DIM}{row.description}{RESET}" if row.description and is_active else ""
+        )
 
         lines.append(f"{CLEAR_LINE}{prefix} {label}: {option_str}{desc}")
 
     # Action row
-    save_label = f"{conversation.AI_COLOR}{BOLD}[ Save ]{RESET}" if current == len(rows) else f"{DIM}[ Save ]{RESET}"
+    save_label = (
+        f"{conversation.AI_COLOR}{BOLD}[ Save ]{RESET}"
+        if current == len(rows)
+        else f"{DIM}[ Save ]{RESET}"
+    )
     cancel_label = f"  {DIM}Esc to cancel{RESET}"
     lines.append(f"{CLEAR_LINE}  {save_label}{cancel_label}")
 
@@ -124,7 +131,9 @@ def _render(rows: list[_Row], current: int, total_lines: int, status: str = ""):
     return len(lines)
 
 
-async def run_setup(project_dir: Path, say_fn: Callable[[str], None] | None = None) -> bool:
+async def run_setup(
+    project_dir: Path, say_fn: Callable[[str], None] | None = None
+) -> bool:
     """Run interactive setup. Returns True if config was saved."""
 
     def say(msg: str):

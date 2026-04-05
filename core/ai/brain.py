@@ -9,8 +9,12 @@ from typing import AsyncIterator, Callable
 
 from .. import conversation
 from .config import load_config, save_config
+from .integrated_provider import IntegratedProvider
 from .messages import AI_MSG
+from .ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
+from .anthropic_provider import AnthropicProvider
 from .provider import AIProvider, DiscoverResult
+from .proxy_provider import ProxyProvider
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +31,8 @@ def register_provider(cls: type, default_endpoint: str | None = None) -> None:
 
 
 # Register integrated first (default), then Ollama as fallback
-from .integrated_provider import IntegratedProvider
 register_provider(IntegratedProvider, None)
-
-from .ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
 register_provider(OllamaProvider, DEFAULT_ENDPOINT)
-
-from .proxy_provider import ProxyProvider
-
-from .anthropic_provider import AnthropicProvider
 
 _PROVIDER_MAP["integrated"] = (IntegratedProvider, None)
 _PROVIDER_MAP["ollama"] = (OllamaProvider, DEFAULT_ENDPOINT)
@@ -96,6 +93,7 @@ class AIBrain:
             endpoint = config.get("endpoint", "")
             if instance:
                 from .proxy_provider import resolve_instance
+
                 resolved = resolve_instance(instance)
                 if resolved:
                     endpoint = resolved
@@ -190,7 +188,9 @@ class AIBrain:
                     return
                 yield token
 
-    async def respond(self, user_text: str, print_fn: Callable[[str], None] | None = None) -> str | None:
+    async def respond(
+        self, user_text: str, print_fn: Callable[[str], None] | None = None
+    ) -> str | None:
         """Handle user input: build messages from conversation, stream response."""
         messages = self._build_messages(user_text)
 
@@ -216,10 +216,12 @@ class AIBrain:
         messages: list[dict] = []
 
         # System message
-        messages.append({
-            "role": "system",
-            "content": "You are a helpful AI assistant in the Fantastic Canvas environment.",
-        })
+        messages.append(
+            {
+                "role": "system",
+                "content": "You are a helpful AI assistant in the Fantastic Canvas environment.",
+            }
+        )
 
         # Recent conversation history
         for entry in conversation.read(max_lines=50):
@@ -273,7 +275,9 @@ class AIBrain:
         save_config(self._project_dir, config)
         self._say_ai(f"model set to {model}")
 
-    async def pull_model(self, model: str, print_fn: Callable[[str], None] | None = None) -> None:
+    async def pull_model(
+        self, model: str, print_fn: Callable[[str], None] | None = None
+    ) -> None:
         """Pull a model from provider."""
         provider = await self.ensure_provider()
         if not provider:
@@ -345,9 +349,13 @@ class AIBrain:
                 return f"reconfigured: {name}"
             return "reconfigure failed — no provider found"
 
-    async def swap_provider(self, target: str, model: str | None = None,
-                            instance: str | None = None,
-                            force: bool = False) -> str:
+    async def swap_provider(
+        self,
+        target: str,
+        model: str | None = None,
+        instance: str | None = None,
+        force: bool = False,
+    ) -> str:
         """Hot-swap to a different provider. Returns status string.
 
         If force=True, bumps epoch immediately so in-flight generations see
@@ -394,7 +402,8 @@ class AIBrain:
                     self._provider = cls(model=chosen_model)
                 elif target == "proxy":
                     self._provider = cls(
-                        endpoint=result.endpoint, model=chosen_model,
+                        endpoint=result.endpoint,
+                        model=chosen_model,
                         instance=instance,
                     )
                 else:

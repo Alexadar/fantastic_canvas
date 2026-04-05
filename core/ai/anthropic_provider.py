@@ -6,7 +6,7 @@ import logging
 import os
 from typing import AsyncIterator
 
-from .provider import AIProvider, DiscoverResult
+from .provider import DiscoverResult
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ class AnthropicProvider:
     def _get_client(self):
         if self._client is None:
             import anthropic
+
             self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
         return self._client
 

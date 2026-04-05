@@ -9,6 +9,7 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 @dataclass
 class DiscoverResult:
     """Result of probing a provider endpoint."""
+
     available: bool
     models: list[str] = field(default_factory=list)
     endpoint: str = ""

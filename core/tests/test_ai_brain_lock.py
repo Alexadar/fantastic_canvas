@@ -15,11 +15,14 @@ def setup_function():
 
 
 def _make_brain(project_dir):
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     return AIBrain(project_dir)
 
 
@@ -51,8 +54,9 @@ async def test_swap_bumps_epoch(project_dir):
         endpoint="http://localhost:11434",
         provider_name="ollama",
     )
-    with patch.object(_PROVIDER_MAP["ollama"][0], "discover",
-                      new=AsyncMock(return_value=mock_result)):
+    with patch.object(
+        _PROVIDER_MAP["ollama"][0], "discover", new=AsyncMock(return_value=mock_result)
+    ):
         await brain.swap_provider("ollama")
 
     assert brain.generation_epoch == epoch_before + 1
@@ -73,7 +77,9 @@ async def test_configure_bumps_epoch(project_dir):
     mock_cls.return_value = MagicMock(model="llama3.2")
 
     with patch("core.ai.brain._PROVIDERS") as mock_providers:
-        mock_providers.__iter__ = lambda self: iter([(mock_cls, "http://localhost:11434")])
+        mock_providers.__iter__ = lambda self: iter(
+            [(mock_cls, "http://localhost:11434")]
+        )
         await brain.configure()
 
     assert brain.generation_epoch > epoch_before
@@ -210,8 +216,11 @@ async def test_normal_swap_waits_for_generation(project_dir):
     async def do_swap():
         nonlocal swap_started, swap_result
         swap_started = True
-        with patch.object(_PROVIDER_MAP["ollama"][0], "discover",
-                          new=AsyncMock(return_value=mock_result)):
+        with patch.object(
+            _PROVIDER_MAP["ollama"][0],
+            "discover",
+            new=AsyncMock(return_value=mock_result),
+        ):
             swap_result = await brain.swap_provider("ollama")
 
     swap_task = asyncio.create_task(do_swap())

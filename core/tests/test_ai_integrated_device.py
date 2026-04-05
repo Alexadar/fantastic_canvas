@@ -40,8 +40,10 @@ def test_detect_device_mps():
 def test_detect_device_cpu_pure():
     """No accelerator on system, no accelerator in torch → cpu."""
     torch = _mock_torch(cuda=False, mps=False)
-    with patch("core.ai.integrated_provider._system_has_cuda", return_value=False), \
-         patch("core.ai.integrated_provider._system_has_mps", return_value=False):
+    with (
+        patch("core.ai.integrated_provider._system_has_cuda", return_value=False),
+        patch("core.ai.integrated_provider._system_has_mps", return_value=False),
+    ):
         device, detail = _detect_device(torch)
     assert device == "cpu"
     assert "system is cpu" in detail
@@ -51,8 +53,10 @@ def test_detect_device_cpu_pure():
 def test_detect_device_cuda_mismatch():
     """System has NVIDIA GPU but torch not built with CUDA."""
     torch = _mock_torch(cuda=False, mps=False)
-    with patch("core.ai.integrated_provider._system_has_cuda", return_value=True), \
-         patch("core.ai.integrated_provider._system_has_mps", return_value=False):
+    with (
+        patch("core.ai.integrated_provider._system_has_cuda", return_value=True),
+        patch("core.ai.integrated_provider._system_has_mps", return_value=False),
+    ):
         device, detail = _detect_device(torch)
     assert device == "cpu"
     assert "cuda device found" in detail
@@ -64,8 +68,10 @@ def test_detect_device_cuda_mismatch():
 def test_detect_device_mps_mismatch():
     """System is Apple Silicon but torch not built with MPS."""
     torch = _mock_torch(cuda=False, mps=False)
-    with patch("core.ai.integrated_provider._system_has_cuda", return_value=False), \
-         patch("core.ai.integrated_provider._system_has_mps", return_value=True):
+    with (
+        patch("core.ai.integrated_provider._system_has_cuda", return_value=False),
+        patch("core.ai.integrated_provider._system_has_mps", return_value=True),
+    ):
         device, detail = _detect_device(torch)
     assert device == "cpu"
     assert "mps device found" in detail
@@ -81,6 +87,7 @@ async def test_discover_torch_missing():
     """discover() fails clearly when torch is not installed."""
     with patch.dict(sys.modules, {"torch": None}):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is False
@@ -96,6 +103,7 @@ async def test_discover_transformers_missing():
     mock_torch = _mock_torch()
     with patch.dict(sys.modules, {"torch": mock_torch, "transformers": None}):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is False
@@ -110,9 +118,12 @@ async def test_discover_cuda_has_detail():
     """discover() on CUDA system returns detail message."""
     mock_torch = _mock_torch(cuda=True, mps=False)
     mock_tf = MagicMock()
-    with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}), \
-         patch("core.ai.integrated_provider._system_has_cuda", return_value=True):
+    with (
+        patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}),
+        patch("core.ai.integrated_provider._system_has_cuda", return_value=True),
+    ):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is True
@@ -125,9 +136,12 @@ async def test_discover_mps_has_detail():
     """discover() on MPS system returns detail message."""
     mock_torch = _mock_torch(cuda=False, mps=True)
     mock_tf = MagicMock()
-    with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}), \
-         patch("core.ai.integrated_provider._system_has_mps", return_value=True):
+    with (
+        patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}),
+        patch("core.ai.integrated_provider._system_has_mps", return_value=True),
+    ):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is True
@@ -139,10 +153,13 @@ async def test_discover_cpu_has_detail():
     """discover() on CPU-only system returns detail message."""
     mock_torch = _mock_torch(cuda=False, mps=False)
     mock_tf = MagicMock()
-    with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}), \
-         patch("core.ai.integrated_provider._system_has_cuda", return_value=False), \
-         patch("core.ai.integrated_provider._system_has_mps", return_value=False):
+    with (
+        patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}),
+        patch("core.ai.integrated_provider._system_has_cuda", return_value=False),
+        patch("core.ai.integrated_provider._system_has_mps", return_value=False),
+    ):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is True
@@ -154,10 +171,13 @@ async def test_discover_cuda_mismatch_still_available():
     """discover() still succeeds on mismatch (falls back to cpu), with warning."""
     mock_torch = _mock_torch(cuda=False, mps=False)
     mock_tf = MagicMock()
-    with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}), \
-         patch("core.ai.integrated_provider._system_has_cuda", return_value=True), \
-         patch("core.ai.integrated_provider._system_has_mps", return_value=False):
+    with (
+        patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}),
+        patch("core.ai.integrated_provider._system_has_cuda", return_value=True),
+        patch("core.ai.integrated_provider._system_has_mps", return_value=False),
+    ):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is True
@@ -172,14 +192,18 @@ async def test_discover_cuda_mismatch_still_available():
 def test_system_has_cuda_with_nvidia_smi():
     """_system_has_cuda returns True when nvidia-smi is found and runs."""
     from core.ai.integrated_provider import _system_has_cuda
-    with patch("shutil.which", return_value="/usr/bin/nvidia-smi"), \
-         patch("subprocess.run"):
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/nvidia-smi"),
+        patch("subprocess.run"),
+    ):
         assert _system_has_cuda() is True
 
 
 def test_system_has_cuda_no_nvidia_smi():
     """_system_has_cuda returns False when nvidia-smi not in PATH."""
     from core.ai.integrated_provider import _system_has_cuda
+
     with patch("shutil.which", return_value=None):
         assert _system_has_cuda() is False
 
@@ -187,29 +211,39 @@ def test_system_has_cuda_no_nvidia_smi():
 def test_system_has_cuda_nvidia_smi_fails():
     """_system_has_cuda returns False when nvidia-smi exists but crashes."""
     from core.ai.integrated_provider import _system_has_cuda
-    with patch("shutil.which", return_value="/usr/bin/nvidia-smi"), \
-         patch("subprocess.run", side_effect=OSError("no such file")):
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/nvidia-smi"),
+        patch("subprocess.run", side_effect=OSError("no such file")),
+    ):
         assert _system_has_cuda() is False
 
 
 def test_system_has_mps_on_darwin_arm64():
     """_system_has_mps returns True on macOS arm64."""
     from core.ai.integrated_provider import _system_has_mps
-    with patch("platform.system", return_value="Darwin"), \
-         patch("platform.machine", return_value="arm64"):
+
+    with (
+        patch("platform.system", return_value="Darwin"),
+        patch("platform.machine", return_value="arm64"),
+    ):
         assert _system_has_mps() is True
 
 
 def test_system_has_mps_on_darwin_x86():
     """_system_has_mps returns False on Intel Mac."""
     from core.ai.integrated_provider import _system_has_mps
-    with patch("platform.system", return_value="Darwin"), \
-         patch("platform.machine", return_value="x86_64"):
+
+    with (
+        patch("platform.system", return_value="Darwin"),
+        patch("platform.machine", return_value="x86_64"),
+    ):
         assert _system_has_mps() is False
 
 
 def test_system_has_mps_on_linux():
     """_system_has_mps returns False on Linux."""
     from core.ai.integrated_provider import _system_has_mps
+
     with patch("platform.system", return_value="Linux"):
         assert _system_has_mps() is False

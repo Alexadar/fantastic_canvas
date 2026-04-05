@@ -81,11 +81,15 @@ async def ai_start(**kwargs) -> ToolResult:
 
 
 @register_dispatch("ai_swap")
-async def _ai_swap(provider: str, model: str = "", instance: str = "",
-                   force: bool = False, **kwargs) -> ToolResult:
+async def _ai_swap(
+    provider: str, model: str = "", instance: str = "", force: bool = False, **kwargs
+) -> ToolResult:
     brain = _engine.ai
     result = await brain.swap_provider(
-        provider, model or None, instance=instance or None, force=force,
+        provider,
+        model or None,
+        instance=instance or None,
+        force=force,
     )
     return ToolResult(data={"status": result})
 
@@ -119,6 +123,7 @@ async def _ai_generate(messages: list[dict] | None = None, **kwargs) -> ToolResu
     brain = _engine.ai
     from ..ai.brain import AIBrain
     from ..ai.messages import AI_MSG
+
     chunks: list[str] = []
     async for token in brain.generate(messages):
         if token is AIBrain.NO_PROVIDER_SENTINEL:
@@ -137,6 +142,7 @@ async def ai_generate(**kwargs) -> ToolResult:
 @register_dispatch("ai_providers")
 async def _ai_providers(**kwargs) -> ToolResult:
     from ..ai.brain import AIBrain
+
     providers = AIBrain.available_providers()
     return ToolResult(data={"providers": providers})
 

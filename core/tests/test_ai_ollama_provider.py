@@ -3,10 +3,8 @@
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from core.ai.ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
-from core.ai.provider import DiscoverResult
 
 
 def _make_ollama_mock(client_mock):

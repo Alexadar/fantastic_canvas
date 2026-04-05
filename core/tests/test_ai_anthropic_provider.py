@@ -1,9 +1,8 @@
 """Tests for core.ai.anthropic_provider — Anthropic API provider."""
 
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import os
 
-import pytest
 
 from core.ai.anthropic_provider import AnthropicProvider, DEFAULT_MODEL
 
@@ -222,10 +221,13 @@ def test_set_model():
 
 def _import_raiser(blocked_name):
     """Return an __import__ replacement that raises ImportError for blocked_name."""
-    real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+    real_import = (
+        __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+    )
 
     def _import(name, *args, **kwargs):
         if name == blocked_name:
             raise ImportError(f"No module named '{blocked_name}'")
         return real_import(name, *args, **kwargs)
+
     return _import

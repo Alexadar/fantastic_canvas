@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import AsyncIterator
 
-from .provider import AIProvider, DiscoverResult
+from .provider import DiscoverResult
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class OllamaProvider:
     def _get_client(self):
         if self._client is None:
             import ollama
+
             self._client = ollama.AsyncClient(host=self._endpoint)
         return self._client
 
@@ -32,6 +33,7 @@ class OllamaProvider:
         ep = endpoint or DEFAULT_ENDPOINT
         try:
             import ollama
+
             client = ollama.AsyncClient(host=ep)
             resp = await client.list()
             models = [m.model for m in resp.models] if resp.models else []

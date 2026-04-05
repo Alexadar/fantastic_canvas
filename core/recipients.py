@@ -104,8 +104,15 @@ class CoreRecipient(Recipient):
         from .tools._bundles import _add_bundle, _remove_bundle, _list_bundles
         from .tools._conversation import _conversation_log, _conversation_say
         from .tools._ai import (
-            _ai_status, _ai_models, _ai_model, _ai_pull,
-            _ai_stop, _ai_start, _ai_swap, _ai_configure, _ai_providers,
+            _ai_status,
+            _ai_models,
+            _ai_model,
+            _ai_pull,
+            _ai_stop,
+            _ai_start,
+            _ai_swap,
+            _ai_configure,
+            _ai_providers,
         )
 
         handlers = {

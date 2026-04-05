@@ -2,7 +2,6 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from core.ai.brain import AIBrain, _PROVIDER_MAP
 from core.ai.config import save_config, load_config
@@ -27,11 +26,14 @@ async def test_stop_provider_none(project_dir):
 
 async def test_stop_provider_ollama(project_dir):
     """Stopping an ollama provider clears it."""
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
     await brain.ensure_provider()
     assert brain.provider is not None
@@ -62,11 +64,14 @@ async def test_stop_provider_with_stop_method(project_dir):
 
 async def test_start_provider_already_running(project_dir):
     """Starting when already running returns already running message."""
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
     await brain.ensure_provider()
 
@@ -76,11 +81,14 @@ async def test_start_provider_already_running(project_dir):
 
 async def test_start_provider_from_config(project_dir):
     """Starting loads provider from saved config."""
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
 
     result = await brain.start_provider()
@@ -94,7 +102,10 @@ async def test_start_provider_no_config(project_dir):
     brain = AIBrain(project_dir)
 
     mock_result = DiscoverResult(available=False, provider_name="test", error="nope")
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         result = await brain.start_provider()
 
     assert result == AI_MSG.NO_PROVIDER
@@ -121,8 +132,9 @@ async def test_swap_to_ollama(project_dir):
         provider_name="ollama",
     )
 
-    with patch.object(_PROVIDER_MAP["ollama"][0], "discover",
-                      new=AsyncMock(return_value=mock_result)):
+    with patch.object(
+        _PROVIDER_MAP["ollama"][0], "discover", new=AsyncMock(return_value=mock_result)
+    ):
         result = await brain.swap_provider("ollama")
 
     assert "swapped to ollama" in result
@@ -148,8 +160,9 @@ async def test_swap_stops_current_provider(project_dir):
         provider_name="ollama",
     )
 
-    with patch.object(_PROVIDER_MAP["ollama"][0], "discover",
-                      new=AsyncMock(return_value=mock_result)):
+    with patch.object(
+        _PROVIDER_MAP["ollama"][0], "discover", new=AsyncMock(return_value=mock_result)
+    ):
         await brain.swap_provider("ollama")
 
     mock_old.stop.assert_called_once()
@@ -165,8 +178,9 @@ async def test_swap_unavailable_provider(project_dir):
         error="connection refused",
     )
 
-    with patch.object(_PROVIDER_MAP["ollama"][0], "discover",
-                      new=AsyncMock(return_value=mock_result)):
+    with patch.object(
+        _PROVIDER_MAP["ollama"][0], "discover", new=AsyncMock(return_value=mock_result)
+    ):
         result = await brain.swap_provider("ollama")
 
     assert "swap failed" in result
@@ -184,8 +198,9 @@ async def test_swap_with_specific_model(project_dir):
         provider_name="ollama",
     )
 
-    with patch.object(_PROVIDER_MAP["ollama"][0], "discover",
-                      new=AsyncMock(return_value=mock_result)):
+    with patch.object(
+        _PROVIDER_MAP["ollama"][0], "discover", new=AsyncMock(return_value=mock_result)
+    ):
         result = await brain.swap_provider("ollama", model="qwen2.5")
 
     assert "qwen2.5" in result
@@ -198,11 +213,14 @@ async def test_swap_with_specific_model(project_dir):
 
 async def test_configure_clears_config_and_rediscovers(project_dir):
     """Configure clears saved config and runs auto-discover."""
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
     await brain.ensure_provider()
 
@@ -218,7 +236,9 @@ async def test_configure_clears_config_and_rediscovers(project_dir):
     mock_cls.return_value = MagicMock(model="new-model")
 
     with patch("core.ai.brain._PROVIDERS") as mock_providers:
-        mock_providers.__iter__ = lambda self: iter([(mock_cls, "http://localhost:11434")])
+        mock_providers.__iter__ = lambda self: iter(
+            [(mock_cls, "http://localhost:11434")]
+        )
         result = await brain.configure()
 
     assert "reconfigured" in result
@@ -229,7 +249,10 @@ async def test_configure_no_provider_found(project_dir):
     brain = AIBrain(project_dir)
 
     mock_result = DiscoverResult(available=False, provider_name="test", error="nope")
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         result = await brain.configure()
 
     assert "failed" in result
@@ -264,11 +287,14 @@ def test_available_providers():
 
 async def test_provider_from_config_integrated(project_dir):
     """Brain loads integrated from config."""
-    save_config(project_dir, {
-        "provider": "integrated",
-        "endpoint": "local:cpu",
-        "model": "Qwen/Qwen3.5-4B",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "integrated",
+            "endpoint": "local:cpu",
+            "model": "Qwen/Qwen3.5-4B",
+        },
+    )
     brain = AIBrain(project_dir)
     provider = await brain.ensure_provider()
 

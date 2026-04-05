@@ -18,11 +18,14 @@ def setup_function():
 
 
 async def test_ensure_provider_from_config(project_dir):
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
     provider = await brain.ensure_provider()
     assert provider is not None
@@ -30,11 +33,14 @@ async def test_ensure_provider_from_config(project_dir):
 
 
 async def test_ensure_provider_caches(project_dir):
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
     p1 = await brain.ensure_provider()
     p2 = await brain.ensure_provider()
@@ -55,7 +61,9 @@ async def test_ensure_provider_auto_discover(project_dir):
         mock_cls = MagicMock()
         mock_cls.discover = AsyncMock(return_value=mock_result)
         mock_cls.return_value = MagicMock(model="llama3.2")
-        mock_providers.__iter__ = lambda self: iter([(mock_cls, "http://localhost:11434")])
+        mock_providers.__iter__ = lambda self: iter(
+            [(mock_cls, "http://localhost:11434")]
+        )
 
         provider = await brain.ensure_provider()
 
@@ -71,7 +79,10 @@ async def test_ensure_provider_no_provider(project_dir):
         error="not running",
     )
 
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         provider = await brain.ensure_provider()
 
     assert provider is None
@@ -87,7 +98,10 @@ async def test_auto_discover_available_no_models(project_dir):
         provider_name="ollama",
     )
 
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         provider = await brain.ensure_provider()
 
     assert provider is None
@@ -97,17 +111,23 @@ async def test_auto_discover_available_no_models(project_dir):
 
 
 async def test_ensure_provider_unknown_provider_in_config(project_dir):
-    save_config(project_dir, {
-        "provider": "unknown_provider",
-        "endpoint": "http://localhost:9999",
-        "model": "foo",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "unknown_provider",
+            "endpoint": "http://localhost:9999",
+            "model": "foo",
+        },
+    )
     brain = AIBrain(project_dir)
 
     # Config has unknown provider, so _provider_from_config returns None.
     # Then auto-discover runs. Mock it to also fail.
     mock_result = DiscoverResult(available=False, provider_name="ollama", error="nope")
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         provider = await brain.ensure_provider()
 
     assert provider is None
@@ -145,11 +165,14 @@ def test_build_messages_empty_history(project_dir):
 
 
 async def test_respond_streams_and_saves(project_dir):
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
 
     async def mock_chat(messages):
@@ -174,18 +197,24 @@ async def test_respond_no_provider(project_dir):
     brain = AIBrain(project_dir)
 
     mock_result = DiscoverResult(available=False, provider_name="ollama", error="nope")
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         result = await brain.respond("hi")
 
     assert result is None
 
 
 async def test_respond_empty_response(project_dir):
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
 
     async def mock_chat(messages):
@@ -206,7 +235,10 @@ async def test_status_unconfigured(project_dir):
     brain = AIBrain(project_dir)
 
     mock_result = DiscoverResult(available=False, provider_name="ollama", error="nope")
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         status = await brain.status()
 
     assert status["configured"] is False
@@ -216,11 +248,14 @@ async def test_status_unconfigured(project_dir):
 
 
 async def test_status_configured(project_dir):
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
     status = await brain.status()
 
@@ -235,11 +270,14 @@ async def test_status_configured(project_dir):
 
 
 async def test_models_with_provider(project_dir):
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
     provider = await brain.ensure_provider()
     provider.list_models = AsyncMock(return_value=["llama3.2", "qwen2.5"])
@@ -252,7 +290,10 @@ async def test_models_no_provider(project_dir):
     brain = AIBrain(project_dir)
 
     mock_result = DiscoverResult(available=False, provider_name="ollama", error="nope")
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         models = await brain.models()
 
     assert models == []
@@ -262,11 +303,14 @@ async def test_models_no_provider(project_dir):
 
 
 async def test_set_model(project_dir):
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
     await brain.ensure_provider()
 
@@ -275,6 +319,7 @@ async def test_set_model(project_dir):
     assert brain.provider.model == "qwen2.5"
     # Check config was persisted
     from core.ai.config import load_config
+
     config = load_config(project_dir)
     assert config["model"] == "qwen2.5"
 
@@ -287,7 +332,10 @@ async def test_set_model_no_provider(project_dir):
     brain = AIBrain(project_dir)
 
     mock_result = DiscoverResult(available=False, provider_name="ollama", error="nope")
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         with pytest.raises(RuntimeError, match="No AI provider"):
             await brain.set_model("foo")
 
@@ -296,11 +344,14 @@ async def test_set_model_no_provider(project_dir):
 
 
 async def test_pull_model(project_dir):
-    save_config(project_dir, {
-        "provider": "ollama",
-        "endpoint": "http://localhost:11434",
-        "model": "llama3.2",
-    })
+    save_config(
+        project_dir,
+        {
+            "provider": "ollama",
+            "endpoint": "http://localhost:11434",
+            "model": "llama3.2",
+        },
+    )
     brain = AIBrain(project_dir)
     provider = await brain.ensure_provider()
 
@@ -323,6 +374,9 @@ async def test_pull_model_no_provider(project_dir):
     brain = AIBrain(project_dir)
 
     mock_result = DiscoverResult(available=False, provider_name="ollama", error="nope")
-    with patch("core.ai.brain._PROVIDERS", [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)]):
+    with patch(
+        "core.ai.brain._PROVIDERS",
+        [(MagicMock(discover=AsyncMock(return_value=mock_result)), None)],
+    ):
         with pytest.raises(RuntimeError, match="No AI provider"):
             await brain.pull_model("foo")

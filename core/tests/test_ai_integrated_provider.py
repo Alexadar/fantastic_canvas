@@ -3,7 +3,6 @@
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from core.ai.messages import AI_MSG
 
@@ -38,6 +37,7 @@ async def test_discover_available_cpu():
 
     with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is True
@@ -52,6 +52,7 @@ async def test_discover_available_cuda():
 
     with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is True
@@ -64,6 +65,7 @@ async def test_discover_available_mps():
 
     with patch.dict(sys.modules, {"torch": mock_torch, "transformers": mock_tf}):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is True
@@ -74,6 +76,7 @@ async def test_discover_not_available():
     """When torch is not installed, discover returns unavailable."""
     with patch.dict(sys.modules, {"torch": None}):
         from core.ai.integrated_provider import IntegratedProvider
+
         result = await IntegratedProvider.discover()
 
     assert result.available is False
@@ -85,12 +88,14 @@ async def test_discover_not_available():
 
 def test_model_property():
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="Qwen/Qwen3.5-9B")
     assert provider.model == "Qwen/Qwen3.5-9B"
 
 
 def test_set_model():
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="Qwen/Qwen3.5-4B")
     provider.set_model("Qwen/Qwen3.5-9B")
     assert provider.model == "Qwen/Qwen3.5-9B"
@@ -99,6 +104,7 @@ def test_set_model():
 
 def test_default_model():
     from core.ai.integrated_provider import IntegratedProvider, DEFAULT_MODEL
+
     provider = IntegratedProvider()
     assert provider.model == DEFAULT_MODEL
 
@@ -108,6 +114,7 @@ def test_default_model():
 
 def test_stop():
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="test")
     provider._ready = True
     provider._model = MagicMock()
@@ -126,6 +133,7 @@ def test_stop():
 
 async def test_generate_when_stopped():
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="test")
     provider._stopped = True
 
@@ -141,6 +149,7 @@ async def test_generate_when_stopped():
 
 async def test_generate_produces_response():
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="test")
 
     # Simulate a loaded model
@@ -153,7 +162,9 @@ async def test_generate_produces_response():
 
     mock_model = MagicMock()
     mock_model.device = "cpu"
-    mock_model.generate.return_value = MagicMock(__getitem__=lambda s, i: list(range(15)))
+    mock_model.generate.return_value = MagicMock(
+        __getitem__=lambda s, i: list(range(15))
+    )
 
     provider._model = mock_model
     provider._tokenizer = mock_tokenizer
@@ -174,6 +185,7 @@ async def test_generate_produces_response():
 
 async def test_load_model_calls_status_fn():
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="test")
 
     statuses = []
@@ -195,6 +207,7 @@ async def test_load_model_calls_status_fn():
 async def test_load_model_stopped_during_load():
     """If stop() is called during load, model should not be set."""
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="test")
 
     mock_model = MagicMock()
@@ -218,6 +231,7 @@ async def test_load_model_stopped_during_load():
 
 async def test_pull_changes_model():
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="old-model")
     provider._ready = True
 
@@ -235,6 +249,7 @@ async def test_pull_changes_model():
 
 async def test_list_models():
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="test-model")
     models = await provider.list_models()
     assert models == ["test-model"]
@@ -245,6 +260,7 @@ async def test_list_models():
 
 def test_initial_state():
     from core.ai.integrated_provider import IntegratedProvider
+
     provider = IntegratedProvider(model="test")
     assert provider.is_ready is False
     assert provider.is_loading is False

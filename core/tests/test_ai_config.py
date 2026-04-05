@@ -1,7 +1,5 @@
 """Tests for core.ai.config — load/save from .fantastic/ai/config.json."""
 
-import json
-
 from core.ai.config import load_config, save_config, _config_path
 
 
@@ -15,7 +13,11 @@ def test_load_config_missing(project_dir):
 
 
 def test_save_and_load(project_dir):
-    config = {"provider": "ollama", "endpoint": "http://localhost:11434", "model": "llama3.2"}
+    config = {
+        "provider": "ollama",
+        "endpoint": "http://localhost:11434",
+        "model": "llama3.2",
+    }
     save_config(project_dir, config)
     loaded = load_config(project_dir)
     assert loaded == config
