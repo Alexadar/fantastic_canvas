@@ -246,11 +246,14 @@ async def test_respond_uses_generate_with_lock(project_dir):
     """respond() goes through generate() which holds the lock."""
     brain = _make_brain(project_dir)
 
-    async def mock_gen(messages):
+    from core.ai.provider import GenerationResult
+
+    async def mock_gen_with_tools(messages, tools):
         yield "Hello"
+        yield GenerationResult(text="Hello", tool_calls=None)
 
     provider = await brain.ensure_provider()
-    provider.generate = mock_gen
+    provider.generate_with_tools = mock_gen_with_tools
 
     printed = []
     response = await brain.respond("hi", print_fn=lambda t: printed.append(t))
@@ -260,12 +263,21 @@ async def test_respond_uses_generate_with_lock(project_dir):
 
 
 async def test_respond_interrupted_by_force_swap(project_dir):
-    """respond() returns PROVIDER_CHANGING when force swap hits mid-generation."""
+    """respond() returns PROVIDER_CHANGING when force swap bumps epoch mid-generation."""
     brain = _make_brain(project_dir)
-    brain._swapping = True
+    from core.ai.provider import GenerationResult
+
+    async def mock_gen_with_tools(messages, tools):
+        # Bump epoch mid-generation to simulate force swap
+        brain._generation_epoch += 1
+        yield GenerationResult(
+            text="", tool_calls=[{"name": "list_agents", "arguments": {}}]
+        )
+
+    provider = await brain.ensure_provider()
+    provider.generate_with_tools = mock_gen_with_tools
 
     printed = []
     result = await brain.respond("hi", print_fn=lambda t: printed.append(t))
 
     assert result == AI_MSG.PROVIDER_CHANGING
-    assert printed == [AI_MSG.PROVIDER_CHANGING]

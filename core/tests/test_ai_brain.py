@@ -175,12 +175,15 @@ async def test_respond_streams_and_saves(project_dir):
     )
     brain = AIBrain(project_dir)
 
-    async def mock_chat(messages):
+    from core.ai.provider import GenerationResult
+
+    async def mock_generate_with_tools(messages, tools):
         for token in ["Hello", " world"]:
             yield token
+        yield GenerationResult(text="Hello world", tool_calls=None)
 
     provider = await brain.ensure_provider()
-    provider.generate = mock_chat
+    provider.generate_with_tools = mock_generate_with_tools
 
     printed = []
     response = await brain.respond("hi", print_fn=lambda t: printed.append(t))
@@ -217,12 +220,13 @@ async def test_respond_empty_response(project_dir):
     )
     brain = AIBrain(project_dir)
 
-    async def mock_chat(messages):
-        return
-        yield  # make it an async generator that yields nothing
+    from core.ai.provider import GenerationResult
+
+    async def mock_generate_with_tools(messages, tools):
+        yield GenerationResult(text="", tool_calls=None)
 
     provider = await brain.ensure_provider()
-    provider.generate = mock_chat
+    provider.generate_with_tools = mock_generate_with_tools
 
     response = await brain.respond("hi")
     assert response == ""

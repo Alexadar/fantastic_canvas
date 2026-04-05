@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import AsyncIterator
 
-from .provider import DiscoverResult
+from .provider import DiscoverResult, GenerationResult
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,40 @@ class OllamaProvider:
             content = chunk.get("message", {}).get("content", "")
             if content:
                 yield content
+
+    async def generate_with_tools(
+        self, messages: list[dict], tools: list[dict]
+    ) -> AsyncIterator[str | GenerationResult]:
+        """Stream tokens, then yield GenerationResult with tool_calls if any."""
+        client = self._get_client()
+        stream = await client.chat(
+            model=self._model,
+            messages=messages,
+            tools=tools,
+            stream=True,
+        )
+        text_parts: list[str] = []
+        tool_calls: list[dict] = []
+        async for chunk in stream:
+            msg = chunk.get("message", {})
+            content = msg.get("content", "")
+            if content:
+                text_parts.append(content)
+                yield content
+            calls = msg.get("tool_calls")
+            if calls:
+                for c in calls:
+                    fn = c.get("function", {})
+                    tool_calls.append(
+                        {
+                            "name": fn.get("name", ""),
+                            "arguments": fn.get("arguments", {}),
+                        }
+                    )
+        yield GenerationResult(
+            text="".join(text_parts),
+            tool_calls=tool_calls or None,
+        )
 
     async def list_models(self) -> list[str]:
         """List available models."""

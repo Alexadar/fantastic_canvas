@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import AsyncIterator, Callable
@@ -13,8 +14,11 @@ from .integrated_provider import IntegratedProvider
 from .messages import AI_MSG
 from .ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
 from .anthropic_provider import AnthropicProvider
-from .provider import AIProvider, DiscoverResult
+from .provider import AIProvider, DiscoverResult, GenerationResult
 from .proxy_provider import ProxyProvider
+from .tool_schema import build_ollama_tools
+
+MAX_TOOL_ROUNDS = 20  # max agentic loop iterations per response
 
 logger = logging.getLogger(__name__)
 
@@ -191,25 +195,102 @@ class AIBrain:
     async def respond(
         self, user_text: str, print_fn: Callable[[str], None] | None = None
     ) -> str | None:
-        """Handle user input: build messages from conversation, stream response."""
-        messages = self._build_messages(user_text)
+        """Handle user input with agentic tool-calling loop.
 
-        chunks: list[str] = []
-        async for token in self.generate(messages):
-            if token is self.NO_PROVIDER_SENTINEL:
-                return None
-            if token == AI_MSG.PROVIDER_CHANGING:
+        Streams text tokens to print_fn. When the model calls tools,
+        executes them and feeds results back. Loops until no more tool
+        calls or MAX_TOOL_ROUNDS reached.
+        """
+        if self._swapping:
+            if print_fn:
+                print_fn(AI_MSG.PROVIDER_CHANGING)
+            return AI_MSG.PROVIDER_CHANGING
+
+        provider = await self.ensure_provider()
+        if not provider:
+            return None
+
+        messages = self._build_messages(user_text)
+        tools = build_ollama_tools()
+        epoch = self._generation_epoch
+        all_text: list[str] = []
+
+        for round_num in range(MAX_TOOL_ROUNDS):
+            # Epoch check — abort if provider swapped mid-loop
+            if self._generation_epoch != epoch:
                 if print_fn:
                     print_fn(AI_MSG.PROVIDER_CHANGING)
                 return AI_MSG.PROVIDER_CHANGING
-            chunks.append(token)
-            if print_fn:
-                print_fn(token)
 
-        response = "".join(chunks)
+            # Stream from provider with tools
+            result: GenerationResult | None = None
+            async for token in provider.generate_with_tools(messages, tools):
+                if isinstance(token, GenerationResult):
+                    result = token
+                else:
+                    all_text.append(token)
+                    if print_fn:
+                        print_fn(token)
+
+            if result is None:
+                break
+
+            # No tool calls — model is done
+            if not result.tool_calls:
+                break
+
+            # Execute each tool call
+            # Append assistant message with tool_calls to messages
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": result.text,
+                    "tool_calls": [
+                        {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                        for tc in result.tool_calls
+                    ],
+                }
+            )
+
+            for tc in result.tool_calls:
+                name = tc["name"]
+                args = tc["arguments"]
+                tool_result = await self._execute_tool(name, args)
+
+                # Append tool result to messages
+                messages.append(
+                    {
+                        "role": "tool",
+                        "content": tool_result,
+                    }
+                )
+
+                # Log to conversation
+                args_short = json.dumps(args, default=str)[:100]
+                result_short = tool_result[:200]
+                self._say_ai(f"[tool: {name}({args_short})] → {result_short}")
+                if print_fn:
+                    print_fn(f"\n[tool: {name}] → {result_short}\n")
+
+        response = "".join(all_text)
         if response:
             self._say_ai(response)
         return response
+
+    async def _execute_tool(self, name: str, arguments: dict) -> str:
+        """Execute a Fantastic tool by name. Returns result as string."""
+        from ..dispatch import _TOOL_DISPATCH
+
+        fn = _TOOL_DISPATCH.get(name)
+        if not fn:
+            return f"Error: unknown tool '{name}'"
+        try:
+            result = await fn(**arguments)
+            if isinstance(result, (dict, list)):
+                return json.dumps(result, default=str)
+            return str(result)
+        except Exception as e:
+            return f"Error executing {name}: {e}"
 
     def _build_messages(self, current_input: str) -> list[dict]:
         """Convert conversation buffer to chat messages."""
@@ -219,7 +300,11 @@ class AIBrain:
         messages.append(
             {
                 "role": "system",
-                "content": "You are a helpful AI assistant in the Fantastic Canvas environment.",
+                "content": (
+                    "You are a helpful AI assistant in the Fantastic Canvas environment. "
+                    "You have access to tools for creating agents, executing code, managing the canvas, "
+                    "and more. Use tools when the user's request requires taking actions."
+                ),
             }
         )
 

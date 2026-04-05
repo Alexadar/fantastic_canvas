@@ -7,6 +7,14 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 
 
 @dataclass
+class GenerationResult:
+    """Result from a single generation round (may include tool calls)."""
+
+    text: str
+    tool_calls: list[dict] | None = None  # [{"name": ..., "arguments": {...}}]
+
+
+@dataclass
 class DiscoverResult:
     """Result of probing a provider endpoint."""
 
@@ -29,6 +37,12 @@ class AIProvider(Protocol):
 
     async def generate(self, messages: list[dict]) -> AsyncIterator[str]:
         """Stream completion tokens from messages."""
+        ...
+
+    async def generate_with_tools(
+        self, messages: list[dict], tools: list[dict]
+    ) -> AsyncIterator[str | GenerationResult]:
+        """Stream tokens, then yield GenerationResult with tool_calls if any."""
         ...
 
     async def list_models(self) -> list[str]:
