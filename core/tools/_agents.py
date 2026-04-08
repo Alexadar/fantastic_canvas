@@ -354,3 +354,72 @@ async def get_state(scope: str = "") -> dict:
     """
     tr = await _get_full_state(scope=scope)
     return tr.data
+
+
+# ─── Agent memory ────────────────────────────────────────────────────────
+
+
+@register_dispatch("read_agent_memory")
+async def _read_agent_memory(
+    agent_id: str = "", from_ts: float = 0, to_ts: float = 0
+) -> ToolResult:
+    agent = _state._engine.get_agent(agent_id)
+    if agent is None:
+        return ToolResult(data={"error": f"Agent {agent_id} not found"})
+    entries = _state._engine.store.read_memory(
+        agent_id,
+        from_ts=from_ts or None,
+        to_ts=to_ts or None,
+    )
+    return ToolResult(
+        data={"agent_id": agent_id, "entries": entries, "count": len(entries)}
+    )
+
+
+@register_tool("read_agent_memory")
+async def read_agent_memory(
+    agent_id: str, from_ts: float = 0, to_ts: float = 0
+) -> dict:
+    """Read an agent's long-term memory (execution history, notes).
+
+    Returns JSONL entries with ts (epoch), type (author), message (data).
+    Use from_ts/to_ts (epoch floats) to filter by time range.
+
+    Args:
+        agent_id: The agent whose memory to read.
+        from_ts: Start of time range (epoch). 0 = no lower bound.
+        to_ts: End of time range (epoch). 0 = no upper bound.
+    """
+    tr = await _read_agent_memory(agent_id, from_ts, to_ts)
+    return tr.data
+
+
+@register_dispatch("append_agent_memory")
+async def _append_agent_memory(
+    agent_id: str = "", author_type: int = 0, message: dict | None = None
+) -> ToolResult:
+    agent = _state._engine.get_agent(agent_id)
+    if agent is None:
+        return ToolResult(data={"error": f"Agent {agent_id} not found"})
+    if not message:
+        return ToolResult(data={"error": "message is required"})
+    entry = await _state._engine.store.append_memory(agent_id, author_type, message)
+    return ToolResult(data={"agent_id": agent_id, "entry": entry})
+
+
+@register_tool("append_agent_memory")
+async def append_agent_memory(
+    agent_id: str, author_type: int = 0, message: dict | None = None
+) -> dict:
+    """Append an entry to an agent's long-term memory.
+
+    Each entry has ts (auto), type (author_type int), and message (free-form dict).
+    Memory persists in .fantastic/agents/{id}/memory_long.jsonl.
+
+    Args:
+        agent_id: The agent to write memory to.
+        author_type: Integer identifying the author (0=system, 1=user, 2=ai).
+        message: Free-form dict to store (e.g. {"note": "...", "context": "..."}).
+    """
+    tr = await _append_agent_memory(agent_id, author_type, message)
+    return tr.data

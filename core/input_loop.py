@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from . import conversation
+from .ai.brain import AIBrain
 from .recipients import CoreRecipient, Recipient
 
 logger = logging.getLogger(__name__)
@@ -16,8 +17,9 @@ logger = logging.getLogger(__name__)
 class InputLoop:
     """Interactive conversation loop with @tag routing."""
 
-    def __init__(self, remote_url: str | None = None):
+    def __init__(self, remote_url: str | None = None, ai: AIBrain | None = None):
         self._remote_url = remote_url
+        self._ai = ai
         self._core = CoreRecipient()
         self._recipients: dict[str, Recipient] = {
             "core": self._core,
@@ -55,9 +57,14 @@ class InputLoop:
             # @tag routing
             if line.startswith("@"):
                 tag, _, rest = line[1:].partition(" ")
+                tag = tag.lower()
                 rest = rest.strip()
-                recipient = self._recipients.get(tag)
-                if recipient:
+                if tag == "ai":
+                    handled = await self._handle_ai_command(rest)
+                    if not handled:
+                        pass  # already printed error or help
+                elif tag in self._recipients:
+                    recipient = self._recipients[tag]
                     await self._dispatch_to(recipient, rest)
                 else:
                     conversation.say("fantastic", f"unknown: @{tag}")
@@ -67,8 +74,93 @@ class InputLoop:
                         )
                     )
             else:
-                # Default → @core
-                await self._dispatch_to(self._core, line)
+                # Try as core command first, fall through to AI
+                parsed = self._core.parse(line)
+                if parsed:
+                    await self._dispatch_to(self._core, line)
+                elif self._ai:
+                    await self._respond_ai(line)
+                else:
+                    # No AI, treat as conversation
+                    conversation.say("user", line)
+                    if self._remote_url:
+                        await self._remote_call(
+                            "conversation_say", {"who": "user", "message": line}
+                        )
+
+    async def _handle_ai_command(self, text: str) -> bool:
+        """Parse @ai commands. Returns True if handled."""
+        parts = text.strip().split() if text.strip() else []
+        cmd = parts[0].lower() if parts else ""
+
+        # @ai start <provider> <model> [instance]
+        if cmd == "start" and len(parts) >= 3:
+            provider_name = parts[1]
+            model_or_instance = parts[2]
+            extra = parts[3] if len(parts) >= 4 else None
+            if self._ai:
+                try:
+                    if provider_name == "proxy":
+                        result = await self._ai.swap_provider(
+                            provider_name, instance=model_or_instance
+                        )
+                    else:
+                        result = await self._ai.swap_provider(
+                            provider_name, model=model_or_instance
+                        )
+                    self._say_system(result)
+                except Exception as e:
+                    self._say_system(f"Error: {e}")
+            return True
+
+        if cmd == "start":
+            self._say_system("Usage: @ai start <provider> <model>")
+            return True
+
+        # @ai stop
+        if cmd == "stop":
+            if self._ai and self._ai._provider:
+                if hasattr(self._ai._provider, "unload"):
+                    self._ai._provider.unload()
+                if hasattr(self._ai._provider, "stop"):
+                    self._ai._provider.stop()
+                self._ai._provider = None
+                from .ai.config import save_config
+
+                save_config(self._ai._project_dir, {})
+                self._say_system("AI stopped")
+            else:
+                self._say_system("No active provider")
+            return True
+
+        # @ai <text> — chat
+        if text.strip():
+            if self._ai:
+                await self._respond_ai(text.strip())
+            return True
+
+        # @ai (empty)
+        if self._ai:
+            msg = self._ai._no_provider_message()
+            self._say_system(msg)
+        return True
+
+    async def _respond_ai(self, text: str):
+        """Route text to AI brain, print complete response atomically."""
+        conversation.say("user", text)
+        if self._remote_url:
+            await self._remote_call(
+                "conversation_say", {"who": "user", "message": text}
+            )
+
+        response = await self._ai.respond(text)
+
+        if response:
+            entry = conversation.say("ai", "")  # placeholder for format
+            ai_color = conversation.AI_COLOR
+            reset = conversation.RESET
+            name = "ai".ljust(conversation.NAME_PAD)
+            print(f"{ai_color}{name}{reset} : {response}")
 
     def _say_system(self, message: str):
         entry = conversation.say("fantastic", message)

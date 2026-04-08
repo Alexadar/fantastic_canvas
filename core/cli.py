@@ -407,7 +407,11 @@ async def _run_with_server(args, project_dir, port, auto_run_bundle: str | None 
         log_level="warning",
     )
     server = uvicorn.Server(config)
-    loop = InputLoop()
+
+    from .ai.brain import AIBrain
+
+    ai = AIBrain(Path(project_dir))
+    loop = InputLoop(ai=ai)
 
     # Ensure server shuts down on SIGTERM/SIGINT (process kill, Ctrl+C)
     aloop = asyncio.get_event_loop()
@@ -453,8 +457,11 @@ def _cmd_start(args):
         print(conversation.format_entry(entry))
         print()
         from .input_loop import InputLoop
+        from .ai.brain import AIBrain
+        import core.tools  # noqa: F401 — triggers @register_tool decorators
 
-        loop = InputLoop()
+        ai = AIBrain(Path(project_dir))
+        loop = InputLoop(ai=ai)
         asyncio.run(loop.run())
         return
 
@@ -589,7 +596,11 @@ async def _run_with_server_and_bundle(args, project_dir):
         "core.server:app", host=args.host, port=port, log_level="warning"
     )
     server = uvicorn.Server(config)
-    loop = InputLoop()
+
+    from .ai.brain import AIBrain
+
+    ai = AIBrain(Path(project_dir))
+    loop = InputLoop(ai=ai)
 
     server_task = asyncio.create_task(server.serve())
     await asyncio.sleep(0.5)
@@ -673,6 +684,7 @@ def main():
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     if args.command == "add":
         _cmd_add(args)
