@@ -130,3 +130,9 @@ class OllamaProvider:
 
     def set_model(self, model: str) -> None:
         self._model = model
+
+    def stop(self) -> None:
+        self._client = None
+
+    def unload(self) -> None:
+        self.stop()

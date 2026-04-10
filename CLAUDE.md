@@ -25,6 +25,9 @@ uv run fantastic                                             # adaptive: Core+Se
 cd bundled_agents/canvas/web && npm run dev                  # port 3000
 cd core && uv run pytest tests/ -v -x                        # core tests
 cd bundled_agents/canvas/web && npx vitest run               # frontend tests
+# Manual test scenarios:
+# bundled_agents/canvas/tests/ai/selftest.md   — 58-point API selftest
+# core/tests/ai/README.md                      — AI/Ollama integration tests
 
 # CLI subcommands (offline use)
 fantastic list                                               # show bundles + status
@@ -37,6 +40,15 @@ fantastic                                                    # starts input loop
 > list                                                       # show bundles
 > add canvas                                                 # add canvas bundle
 > log                                                        # show conversation history
+
+# AI providers (@ai commands in interactive mode)
+> @ai start ollama qwen3:8b-q4_K_M                          # connect Ollama
+> @ai start anthropic claude-sonnet-4-20250514               # connect Claude API (needs ANTHROPIC_API_KEY in .env)
+> @ai start integrated Qwen/Qwen3.5-4B                      # local torch model
+> @ai start proxy http://other-fantastic:8888                # proxy to remote instance
+> @ai stop                                                   # disconnect provider
+> @ai hello                                                  # chat with AI
+> @ai create a terminal and run ls                           # AI uses tools
 
 # Install globally via uv
 uv tool install ./core                                       # from source

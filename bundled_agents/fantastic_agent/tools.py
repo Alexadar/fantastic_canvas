@@ -1,5 +1,6 @@
 """Fantastic Agent bundle — voice/chat AI agent with persistent history and mic exclusivity."""
 
+import asyncio
 import json
 import logging
 import time
@@ -14,6 +15,11 @@ _SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 log = logging.getLogger("fantastic_agent")
 
 _engine = None
+
+# ─── Per-agent concurrency control ─────────────────────────────
+
+_agent_locks: dict[str, asyncio.Lock] = {}
+_agent_abort: dict[str, bool] = {}
 
 # ─── Mic exclusivity state ──────────────────────────────────────
 
@@ -72,6 +78,21 @@ async def _handle_voice_transcript(agent_id: str = "", text: str = "", mode: str
 
     log.info("voice_transcript agent=%s mode=%s text=%r", agent_id, mode, text[:80])
 
+    # Per-agent lock — reject if already processing
+    lock = _agent_locks.setdefault(agent_id, asyncio.Lock())
+    if lock.locked():
+        await broadcast({"type": "voice_error", "agent_id": agent_id, "error": "busy"})
+        return ToolResult(data={"error": "busy"})
+
+    async with lock:
+        return await _handle_voice_transcript_inner(agent_id, text, mode, broadcast)
+
+
+async def _handle_voice_transcript_inner(agent_id: str, text: str, mode: str, broadcast) -> ToolResult:
+    """Inner handler — runs under per-agent lock."""
+    # Clear abort flag
+    _agent_abort[agent_id] = False
+
     # Save user message
     _save_chat_message(agent_id, "user", text, mode)
 
@@ -102,6 +123,10 @@ async def _handle_voice_transcript(agent_id: str = "", text: str = "", mode: str
         for _ in range(max_rounds):
             result: GenerationResult | None = None
             async for token in provider.generate_with_tools(messages, tools):
+                # Check abort flag (set by voice_interrupt)
+                if _agent_abort.get(agent_id):
+                    _agent_abort[agent_id] = False
+                    break
                 if isinstance(token, GenerationResult):
                     result = token
                 else:
@@ -195,6 +220,7 @@ def _build_messages_from_history(agent_id: str, current_text: str) -> list[dict]
 async def _handle_voice_interrupt(agent_id: str = "", **_kw) -> ToolResult:
     from core.server import broadcast
     log.info("voice_interrupt agent=%s", agent_id)
+    _agent_abort[agent_id] = True
     await broadcast({"type": "voice_state", "agent_id": agent_id, "state": "idle"})
     return ToolResult(data={"ok": True, "agent_id": agent_id})
 

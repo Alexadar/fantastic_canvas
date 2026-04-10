@@ -57,6 +57,21 @@ Start in the project dir. In console you will see url of your canvas
 fantastic                    # start (auto-adds canvas on first run)
 ```
 
+### AI Providers
+
+```bash
+# In the interactive prompt:
+> @ai start ollama qwen3:8b-q4_K_M          # Ollama (local)
+> @ai start anthropic claude-sonnet-4-20250514   # Claude API
+> @ai start integrated Qwen/Qwen3.5-4B      # Local torch model
+> @ai start proxy http://remote:8888        # Remote Fantastic instance
+> @ai stop                                   # Disconnect
+> @ai <text>                                 # Chat (with tool calling)
+```
+
+Ollama: install from [ollama.com](https://ollama.com), pull a model, then `@ai start ollama <model>`.
+Anthropic: set `ANTHROPIC_API_KEY` in `.env`, then `@ai start anthropic <model>`.
+
 Double-click on free space to create a terminal. Launch your coding agent and ask it to read the `.fantastic/` folder and pull the handbook. Then the coding agent is ready to spawn HTML agents with two-way binding to the server, creating dynamic interfaces.
 
 Agents live in `.fantastic/agents` as ephemeral entities. Visually they look like windows, but under the hood they may contain execution scripts and two-way bindings between themselves, all wired by coding agents.
@@ -68,6 +83,12 @@ What happens next is limited only by your imagination. This process is similar t
 It can be 3D-based workflows, interface prototyping, musical creation, multi-agent orchestration.
 
 Coding agents should be asked what they can do and described a task you want to accomplish. The most fantastic thing is how the coding agent, combining new skills, spawns parts of interface scaffolding. New buttons don't always work, but with some practice you'll feel that this tool can help you do everyday work, removing spatial limits and settings overload of a classical IDE. You scaffold your own applications here, assembling from zero.
+
+## Testing
+
+- `bash scripts/test-core.sh` — backend + frontend unit tests
+- `bundled_agents/canvas/tests/ai/selftest.md` — 58-point API selftest
+- `core/tests/ai/README.md` — AI/Ollama integration test scenarios
 
 ## Security
 

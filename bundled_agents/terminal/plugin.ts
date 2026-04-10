@@ -54,7 +54,7 @@ export const terminalPlugin: CanvasPlugin = {
   // Inject into canvas: own double-click handler
   injectCanvas: (dom, ctx) => {
     const handler = (e: MouseEvent) => {
-      // Ignore clicks on agents
+      if (e.shiftKey) return  // Shift+dblclick handled by fantastic_agent
       if ((e.target as HTMLElement).closest('.agent-wrapper')) return
       const { x, y } = ctx.screenToCanvas(e)
       ctx.send({ type: 'create_agent', template: 'terminal', options: { x, y } })

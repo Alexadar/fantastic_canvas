@@ -228,6 +228,16 @@ app.get("/api/schema")(api_schema)
 app.get("/api/agents/{agent_id}/memory")(get_agent_memory)
 app.post("/api/agents/{agent_id}/memory")(post_agent_memory)
 app.get("/favicon.ico")(favicon_redirect)
+
+
+@app.get("/favicon.png")
+async def serve_favicon_png():
+    """Serve favicon.png from web dist or public."""
+    from .._paths import web_dist_dir
+    for path in [web_dist_dir() / "favicon.png", bundled_agents_dir() / "canvas" / "web" / "public" / "favicon.png"]:
+        if path.exists():
+            return FileResponse(str(path), media_type="image/png")
+    return Response(status_code=404)
 app.get("/content/{alias_id}")(serve_content_alias)
 
 

@@ -180,6 +180,12 @@ class AnthropicProvider:
     def set_model(self, model: str) -> None:
         self._model = model
 
+    def stop(self) -> None:
+        self._client = None
+
+    def unload(self) -> None:
+        self.stop()
+
 
 async def _list_models(client) -> list[str]:
     """Fetch model list from the API. Returns IDs sorted newest-first."""

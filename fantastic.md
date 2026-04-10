@@ -104,3 +104,4 @@ opencode --prompt "$(cat .fantastic/fantastic.md)"
 - **Frontend code** must always use `window.parent.location.origin` for API calls — port may be forwarded
 - **Skill deep-dives**: `get_handbook_canvas(skill="canvas-management")`, `get_handbook_terminal(skill="terminal-control")`
 - **Plugin skills**: `get_handbook_canvas(skill="canvas-management")`, `get_handbook_terminal(skill="terminal-control")`
+- **AI providers**: `@ai start ollama <model>`, `@ai start anthropic <model>`, `@ai start integrated <model>`, `@ai start proxy <url>`. Config at `.fantastic/ai/config.json`

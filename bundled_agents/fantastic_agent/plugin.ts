@@ -269,6 +269,18 @@ export const fantasticAgentPlugin: CanvasPlugin = {
 
   matchAgent: (agent) => agent.bundle === 'fantastic_agent',
 
+  // Ctrl/Cmd+dblclick on canvas creates AI agent
+  injectCanvas: (dom, ctx) => {
+    const handler = (e: MouseEvent) => {
+      if (!e.shiftKey) return  // only Shift+dblclick
+      if ((e.target as HTMLElement).closest('.agent-wrapper')) return
+      const { x, y } = ctx.screenToCanvas(e)
+      ctx.send({ type: 'create_agent', template: 'fantastic_agent', options: { x, y } })
+    }
+    dom.addEventListener('dblclick', handler)
+    return () => dom.removeEventListener('dblclick', handler)
+  },
+
   injectHeader: (dom, ctx) => {
     const toggle = document.createElement('div')
     toggle.className = 'fa-mode-toggle'
@@ -434,13 +446,13 @@ export const fantasticAgentPlugin: CanvasPlugin = {
 
       // Chat history response
       if (msg.type === 'chat_history_response' && msg.agent_id === agentId) {
-        chatUi.loadHistory(msg.messages || [])
+        chatUi.loadHistory((msg.messages || []) as Array<{ role: string; text: string; ts?: number; mode?: string }>)
         return
       }
 
       // Voice response also goes to chat UI for history display
       if (msg.agent_id === agentId && msg.type === 'voice_response' && msg.done) {
-        chatUi.appendMessage('assistant', msg.text || '')
+        chatUi.appendMessage('assistant', (msg.text || '') as string)
       }
 
       // Forward to voice UI

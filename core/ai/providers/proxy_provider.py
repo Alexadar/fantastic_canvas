@@ -182,3 +182,9 @@ class ProxyProvider:
 
     def set_model(self, model: str) -> None:
         self._model = model
+
+    def stop(self) -> None:
+        pass
+
+    def unload(self) -> None:
+        pass
