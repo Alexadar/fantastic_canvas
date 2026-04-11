@@ -191,11 +191,8 @@ export function Canvas({ canvasName }: CanvasProps = {}) {
             const next = new Map(prev)
             const existing = next.get(id)
             if (existing) {
-              const updates: Partial<CanvasAgent> = {}
-              if (msg.display_name != null) updates.display_name = msg.display_name as string
-              if (msg.url != null) updates.url = msg.url as string
-              if (msg.delete_lock != null) updates.delete_lock = msg.delete_lock as boolean
-              next.set(id, { ...existing, ...updates })
+              const { type: _, agent_id: __, ...updates } = msg
+              next.set(id, { ...existing, ...updates } as CanvasAgent)
             }
             return next
           })

@@ -100,6 +100,50 @@ async def test_update_agent(setup):
     assert tr.data["display_name"] == "Updated"
 
 
+async def test_delete_lock_persists_on_toggle(setup):
+    """Click writes delete_lock; reload reads it back."""
+    engine, _, _ = setup
+    await _create_agent(agent_id="ul1")
+    # Click lock → writes True
+    tr = await _update_agent("ul1", options={"delete_lock": True})
+    assert tr.data["delete_lock"] is True
+    assert any(b["delete_lock"] is True for b in tr.broadcast)
+    # Reload: engine.get_agent reads from disk (simulates reconnect)
+    agent = engine.get_agent("ul1")
+    assert agent["delete_lock"] is True
+    # Click unlock → writes False
+    tr = await _update_agent("ul1", options={"delete_lock": False})
+    assert tr.data["delete_lock"] is False
+    agent = engine.get_agent("ul1")
+    assert agent["delete_lock"] is False
+
+
+async def test_autoscroll_persists_on_click(setup):
+    """Click writes autoscroll; plugin reads ctx.agent.autoscroll on start."""
+    engine, _, _ = setup
+    await _create_agent(agent_id="as1")
+    # Default: no autoscroll in agent.json
+    agent = engine.get_agent("as1")
+    assert agent.get("autoscroll") is None
+    # Click toggle → writes True (plugin sends update_agent)
+    tr = await _update_agent("as1", options={"autoscroll": True})
+    assert tr.data["autoscroll"] is True
+    assert any(b.get("autoscroll") is True for b in tr.broadcast)
+    # Start: plugin reads ctx.agent from get_state → get_agent (full dict from disk)
+    agent = engine.get_agent("as1")
+    assert agent["autoscroll"] is True
+    # Click toggle again → writes False
+    tr = await _update_agent("as1", options={"autoscroll": False})
+    assert tr.data["autoscroll"] is False
+    agent = engine.get_agent("as1")
+    assert agent["autoscroll"] is False
+
+
+async def test_update_agent_not_found(setup):
+    tr = await _update_agent("nonexistent", options={"delete_lock": True})
+    assert "error" in tr.data
+
+
 async def test_update_agent_no_options(setup):
     tr = await _update_agent("u1")
     assert "error" in tr.data

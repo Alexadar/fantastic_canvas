@@ -12,13 +12,12 @@ export const terminalPlugin: CanvasPlugin = {
     send({ type: 'process_restart', agent_id: agentId })
   },
 
-  // Autoscroll toggle in header
+  // Autoscroll toggle in header (persisted to agent.json)
   injectHeader: (dom, ctx) => {
     const btn = document.createElement('button')
     btn.className = 'agent-header-btn'
     btn.title = 'Toggle autoscroll'
     btn.textContent = '⇣'
-    btn.style.opacity = '0.5'
     dom.appendChild(btn)
 
     let active = false
@@ -27,10 +26,14 @@ export const terminalPlugin: CanvasPlugin = {
     const getIframe = () =>
       btn.closest('.agent-shape')?.querySelector('iframe') as HTMLIFrameElement | null
 
+    const applyStyle = () => {
+      btn.style.opacity = active ? '1' : '0.5'
+      btn.style.background = active ? 'rgba(255,255,255,0.15)' : ''
+    }
+
     const start = () => {
       active = true
-      btn.style.opacity = '1'
-      btn.style.background = 'rgba(255,255,255,0.15)'
+      applyStyle()
       timer = setInterval(() => {
         getIframe()?.contentWindow?.postMessage({ type: 'scroll_bottom' }, '*')
       }, 100)
@@ -38,14 +41,21 @@ export const terminalPlugin: CanvasPlugin = {
 
     const stop = () => {
       active = false
-      btn.style.opacity = '0.5'
-      btn.style.background = ''
+      applyStyle()
       if (timer) { clearInterval(timer); timer = null }
+    }
+
+    // Restore persisted state
+    if ((ctx.agent as any).autoscroll) {
+      start()
+    } else {
+      applyStyle()
     }
 
     btn.addEventListener('click', (e) => {
       e.stopPropagation()
       active ? stop() : start()
+      ctx.send({ type: 'update_agent', agent_id: ctx.agent.id, options: { autoscroll: active } })
     })
 
     return () => { stop(); btn.remove() }
