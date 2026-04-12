@@ -110,6 +110,18 @@ async def lifespan(app: FastAPI):
         await hook(_state, broadcast)
     _state._lifespan_hooks_ran = len(_state._lifespan_hooks)
 
+    # Start persistent scheduler
+    from ..scheduler import Scheduler
+    from ..dispatch import _DISPATCH
+    from ..tools import _state as _tools_state
+
+    _scheduler = Scheduler(_state.engine.project_dir / ".fantastic" / "agents")
+    _scheduler.load_all()
+    _state.engine.store.on_agent_deleted(lambda aid: _scheduler._cache.pop(aid, None))
+    await _scheduler.start(_DISPATCH, broadcast)
+    _tools_state._scheduler = _scheduler
+    _state.scheduler = _scheduler
+
     # Template-render fantastic.md into .fantastic/ (re-render every startup for correct port)
     fantastic_dest = _state.engine.project_dir / ".fantastic" / "fantastic.md"
     src = fantastic_md_path()
@@ -201,6 +213,9 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"Server started on port {server_port}")
     yield
+    # Stop scheduler
+    if hasattr(_state, "scheduler") and _state.scheduler:
+        await _state.scheduler.stop()
     instance_monitor_task.cancel()
     try:
         await instance_monitor_task

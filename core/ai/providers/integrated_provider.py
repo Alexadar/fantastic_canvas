@@ -281,8 +281,20 @@ class IntegratedProvider:
     def model(self) -> str:
         return self._model_name
 
+    @property
+    def context_length(self) -> int:
+        if self._tokenizer and hasattr(self._tokenizer, "model_max_length"):
+            val = self._tokenizer.model_max_length
+            # transformers sometimes returns a huge int for "unlimited"
+            if isinstance(val, int) and val < 10_000_000:
+                return val
+        return 4096  # conservative default for small local models
+
     def set_model(self, model: str) -> None:
         self._model_name = model
+
+    def __str__(self) -> str:
+        return f"integrated ({self._model_name})"
         self._ready = False
         self._model = None
         self._tokenizer = None

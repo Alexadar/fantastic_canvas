@@ -15,9 +15,10 @@ DEFAULT_ENDPOINT = "http://localhost:11434"
 class OllamaProvider:
     """Wraps ollama.AsyncClient to implement AIProvider."""
 
-    def __init__(self, endpoint: str, model: str):
+    def __init__(self, endpoint: str, model: str, context_length: int = 0):
         self._endpoint = endpoint
         self._model = model
+        self._context_length = context_length
         self._client = None
 
     def _get_client(self):
@@ -37,11 +38,25 @@ class OllamaProvider:
             client = ollama.AsyncClient(host=ep)
             resp = await client.list()
             models = [m.model for m in resp.models] if resp.models else []
+            # Try to get context length from first model
+            ctx_len = 0
+            if models:
+                try:
+                    info = await client.show(models[0])
+                    params = getattr(info, "model_info", {}) or {}
+                    if isinstance(params, dict):
+                        for k, v in params.items():
+                            if "context_length" in k:
+                                ctx_len = int(v)
+                                break
+                except Exception:
+                    pass
             return DiscoverResult(
                 available=True,
                 models=models,
                 endpoint=ep,
                 provider_name="ollama",
+                context_length=ctx_len,
             )
         except ImportError:
             return DiscoverResult(
@@ -128,8 +143,15 @@ class OllamaProvider:
     def model(self) -> str:
         return self._model
 
+    @property
+    def context_length(self) -> int:
+        return self._context_length
+
     def set_model(self, model: str) -> None:
         self._model = model
+
+    def __str__(self) -> str:
+        return f"ollama ({self._model})"
 
     def stop(self) -> None:
         self._client = None

@@ -16,6 +16,10 @@ from .providers.ollama_provider import OllamaProvider, DEFAULT_ENDPOINT
 from .providers.anthropic_provider import AnthropicProvider
 from .provider import AIProvider, GenerationResult
 from .providers.proxy_provider import ProxyProvider
+from .providers.openai_compat_provider import (
+    OpenAICompatibleProvider,
+    DEFAULT_ENDPOINT as DEFAULT_ENDPOINT_OPENAI,
+)
 from .tool_schema import build_ollama_tools
 
 MAX_TOOL_ROUNDS = 20  # max agentic loop iterations per response
@@ -42,6 +46,7 @@ _PROVIDER_MAP["integrated"] = (IntegratedProvider, None)
 _PROVIDER_MAP["ollama"] = (OllamaProvider, DEFAULT_ENDPOINT)
 _PROVIDER_MAP["proxy"] = (ProxyProvider, None)
 _PROVIDER_MAP["anthropic"] = (AnthropicProvider, None)
+_PROVIDER_MAP["openai"] = (OpenAICompatibleProvider, DEFAULT_ENDPOINT_OPENAI)
 
 
 class AIBrain:
@@ -87,6 +92,7 @@ class AIBrain:
             return OllamaProvider(
                 endpoint=pc.get("endpoint", DEFAULT_ENDPOINT),
                 model=pc.get("model", ""),
+                context_length=pc.get("context_length", 0),
             )
         if name == "integrated":
             return IntegratedProvider(
@@ -111,6 +117,12 @@ class AIBrain:
         if name == "anthropic":
             return AnthropicProvider(
                 model=pc.get("model", ""),
+            )
+        if name == "openai":
+            return OpenAICompatibleProvider(
+                endpoint=pc.get("endpoint", DEFAULT_ENDPOINT_OPENAI),
+                model=pc.get("model", ""),
+                context_length=pc.get("context_length", 0),
             )
         return None
 
@@ -184,7 +196,13 @@ class AIBrain:
         epoch = self._generation_epoch
         all_text: list[str] = []
 
+        budget = self._get_budget()
+
         for round_num in range(MAX_TOOL_ROUNDS):
+            # Compact if approaching budget (90%)
+            if self._estimate_tokens(messages) > budget * 0.9:
+                messages = self._compact_messages(messages, budget)
+
             # Epoch check — abort if provider swapped mid-loop
             if self._generation_epoch != epoch:
                 if print_fn:
@@ -230,7 +248,7 @@ class AIBrain:
                     "role": "assistant",
                     "content": result.text,
                     "tool_calls": [
-                        {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                        {"type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
                         for tc in result.tool_calls
                     ],
                 }
@@ -276,43 +294,101 @@ class AIBrain:
         except Exception as e:
             return f"Error executing {name}: {e}"
 
+    @staticmethod
+    def _estimate_tokens(messages: list[dict]) -> int:
+        """Estimate token count: ~4 chars per token."""
+        total = 0
+        for m in messages:
+            total += len(m.get("content", ""))
+            for tc in m.get("tool_calls", []):
+                fn = tc.get("function", {})
+                total += len(fn.get("name", ""))
+                args = fn.get("arguments", "")
+                total += len(str(args))
+        return total // 4
+
+    def _get_budget(self) -> int:
+        """Get token budget for context (context_length - output reserve)."""
+        ctx = 0
+        if self._provider and hasattr(self._provider, "context_length"):
+            ctx = self._provider.context_length
+        if not ctx:
+            ctx = 8192  # safe default
+        return ctx - 2048  # reserve for output + tool calls
+
     def _build_messages(self, current_input: str) -> list[dict]:
-        """Convert conversation buffer to chat messages."""
-        messages: list[dict] = []
+        """Convert conversation buffer to chat messages with budget-aware truncation."""
+        budget = self._get_budget()
 
-        # System message
-        messages.append(
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful AI assistant in the Fantastic Canvas environment. "
-                    "You have access to tools for creating agents, executing code, managing the canvas, "
-                    "and more. Use tools when the user's request requires taking actions."
-                ),
-            }
-        )
+        system_msg = {
+            "role": "system",
+            "content": (
+                "You are a helpful AI assistant in the Fantastic Canvas environment. "
+                "You have access to tools for creating agents, executing code, managing the canvas, "
+                "and more. Use tools when the user's request requires taking actions. "
+                "IMPORTANT: Never spawn cascades of fantastic_agent agents — you cannot communicate with them programmatically. "
+                "If unsure whether to create agents or run code autonomously, ask the user first. "
+                "When creating files, write them to the agent's own folder (.fantastic/agents/{agent_id}/) unless the user specifies a project path. "
+                "This keeps the project directory clean."
+            ),
+        }
+        user_msg = {"role": "user", "content": current_input}
+        used = self._estimate_tokens([system_msg, user_msg])
 
-        # Recent conversation history
-        for entry in conversation.read(max_lines=50):
+        # Fill remaining budget with history (newest first)
+        history_msgs: list[dict] = []
+        for entry in reversed(conversation.read(max_lines=200)):
             who = entry["who"].lower()
             content = entry["message"]
-
             if who == "user":
-                messages.append({"role": "user", "content": content})
+                msg = {"role": "user", "content": content}
             elif who == "ai":
-                messages.append({"role": "assistant", "content": content})
-            # Skip system/fantastic messages — they're internal
+                msg = {"role": "assistant", "content": content}
+            else:
+                continue
+            cost = len(content) // 4
+            if used + cost > budget:
+                break
+            history_msgs.append(msg)
+            used += cost
 
-        # Current input (if not already in buffer)
-        messages.append({"role": "user", "content": current_input})
+        return [system_msg] + list(reversed(history_msgs)) + [user_msg]
 
-        return messages
+    @staticmethod
+    def _compact_messages(messages: list[dict], budget: int) -> list[dict]:
+        """Compact messages by truncating older tool results when over budget."""
+        # Keep system (first) and last 4 messages intact
+        if len(messages) <= 5:
+            return messages
+        head = messages[:1]  # system
+        tail = messages[-4:]  # last 2 rounds
+        middle = messages[1:-4]
+        # Truncate tool results and long assistant text in middle
+        compacted = []
+        for m in middle:
+            if m["role"] == "tool":
+                content = m["content"]
+                if len(content) > 200:
+                    compacted.append({"role": "tool", "content": content[:200] + "...[truncated]"})
+                else:
+                    compacted.append(m)
+            elif m["role"] == "assistant" and m.get("tool_calls"):
+                # Keep tool_calls, truncate text
+                compacted.append({
+                    "role": "assistant",
+                    "content": m["content"][:100] + "..." if len(m.get("content", "")) > 100 else m.get("content", ""),
+                    "tool_calls": m["tool_calls"],
+                })
+            else:
+                compacted.append(m)
+        return head + compacted + tail
 
     # Default model examples per provider (for help message)
     _PROVIDER_EXAMPLES: dict[str, str] = {
         "ollama": "qwen3:8b-q4_K_M",
         "anthropic": "claude-sonnet-4-20250514",
         "integrated": "Qwen/Qwen3.5-4B",
+        "openai": "my-model",
         "proxy": "<instance_url>",
     }
 
@@ -508,6 +584,8 @@ class AIBrain:
                     "endpoint": result.endpoint,
                     "model": chosen_model,
                 }
+                if result.context_length:
+                    pc["context_length"] = result.context_length
                 if instance:
                     pc["instance"] = instance
                 save_config(

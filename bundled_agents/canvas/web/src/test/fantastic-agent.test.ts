@@ -8,6 +8,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createAiConnector } from '@bundles/fantastic_agent/web/ai-connector'
 import { createChatUi } from '@bundles/fantastic_agent/web/chat-ui'
+import { fantasticAgentPlugin } from '@bundles/fantastic_agent/plugin'
+
+// ─── plugin registration ──────────────────────────────────────────
+
+describe('fantasticAgentPlugin', () => {
+  it('does not have injectCanvas (no canvas-level click handler)', () => {
+    expect(fantasticAgentPlugin.injectCanvas).toBeUndefined()
+  })
+
+  it('matches agents with bundle fantastic_agent', () => {
+    expect(fantasticAgentPlugin.matchAgent!({ bundle: 'fantastic_agent' } as any)).toBe(true)
+    expect(fantasticAgentPlugin.matchAgent!({ bundle: 'terminal' } as any)).toBe(false)
+  })
+})
 
 // ─── ai-connector ─────────────────────────────────────────────────
 

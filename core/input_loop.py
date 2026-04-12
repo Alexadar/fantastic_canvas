@@ -153,7 +153,11 @@ class InputLoop:
                 "conversation_say", {"who": "user", "message": text}
             )
 
-        response = await self._ai.respond(text)
+        try:
+            response = await self._ai.respond(text)
+        except Exception as exc:
+            self._say_system(f"AI error: {exc}")
+            return
 
         if response:
             entry = conversation.say("ai", "")  # placeholder for format

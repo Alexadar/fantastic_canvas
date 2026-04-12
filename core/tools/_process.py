@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 
-from ..dispatch import ToolResult, register_dispatch, register_tool
+from ..dispatch import ToolResult, _DISPATCH, register_dispatch, register_tool
 from . import _fire_broadcasts
 from . import _state
 
@@ -26,6 +26,7 @@ async def _agent_call(
     timestamp = time.time()
 
     delivered_to_process = False
+    delivered_to_chat = False
     has_process = _state._process_runner and _state._process_runner.exists(target)
     logger.info(f"agent_call: target={target}, has_process={has_process}")
     if has_process:
@@ -36,11 +37,24 @@ async def _agent_call(
         await _state._process_runner.write(target, "\r")
         logger.info(f"agent_call: typed {len(message)} chars + Enter to pty")
         delivered_to_process = True
+    elif agent.get("bundle") == "fantastic_agent":
+        # Route through the chat/voice handler for AI processing
+        handler = _DISPATCH.get("voice_transcript")
+        if handler:
+            await handler(
+                agent_id=target,
+                text=message,
+                is_final=True,
+                mode="chat",
+            )
+            delivered_to_chat = True
+            logger.info("agent_call: routed to fantastic_agent chat handler")
 
     return ToolResult(
         data={
             "delivered": True,
             "delivered_to_process": delivered_to_process,
+            "delivered_to_chat": delivered_to_chat,
             "target_agent_id": target,
             "timestamp": timestamp,
         },

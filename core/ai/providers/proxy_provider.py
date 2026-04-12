@@ -180,8 +180,15 @@ class ProxyProvider:
     def model(self) -> str:
         return self._model
 
+    @property
+    def context_length(self) -> int:
+        return 0  # unknown — proxied provider manages its own limits
+
     def set_model(self, model: str) -> None:
         self._model = model
+
+    def __str__(self) -> str:
+        return f"proxy ({self._instance or self._model})"
 
     def stop(self) -> None:
         pass

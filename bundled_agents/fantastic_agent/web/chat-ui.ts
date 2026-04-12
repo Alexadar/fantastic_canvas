@@ -5,6 +5,15 @@
  * Messages are persisted to chat.json via the backend.
  */
 
+import { marked } from 'marked'
+
+// Configure marked for safe, synchronous rendering
+marked.setOptions({ async: false, breaks: true })
+
+function renderMarkdown(text: string): string {
+  return marked.parse(text) as string
+}
+
 export interface ChatUiEvents {
   onError: (error: string) => void
 }
@@ -57,7 +66,11 @@ export function createChatUi(
   function addMessageEl(role: string, text: string, mode?: string) {
     const msg = document.createElement('div')
     msg.className = `fa-chat-msg ${role}`
-    msg.textContent = text
+    if (role === 'assistant') {
+      msg.innerHTML = renderMarkdown(text)
+    } else {
+      msg.textContent = text
+    }
     if (mode) {
       const tag = document.createElement('span')
       tag.className = 'fa-chat-mode-tag'

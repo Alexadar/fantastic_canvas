@@ -146,7 +146,9 @@ async def test_release_mic_wrong_agent_noop(setup):
 async def test_chat_history_empty(setup):
     handler = _DISPATCH["chat_history"]
     result = await handler(agent_id="no_history")
-    assert result.data["messages"] == []
+    assert len(result.reply) == 1
+    assert result.reply[0]["type"] == "chat_history_response"
+    assert result.reply[0]["messages"] == []
 
 
 async def test_chat_history_after_transcript(setup):
@@ -156,7 +158,7 @@ async def test_chat_history_after_transcript(setup):
     await _DISPATCH["voice_transcript"](agent_id="ch1", text="hello", mode="voice")
     result = await _DISPATCH["chat_history"](agent_id="ch1")
 
-    messages = result.data["messages"]
+    messages = result.reply[0]["messages"]
     assert len(messages) == 2  # user + assistant
     assert messages[0]["role"] == "user"
     assert messages[0]["text"] == "hello"

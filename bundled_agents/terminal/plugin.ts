@@ -58,13 +58,32 @@ export const terminalPlugin: CanvasPlugin = {
       ctx.send({ type: 'update_agent', agent_id: ctx.agent.id, options: { autoscroll: active } })
     })
 
-    return () => { stop(); btn.remove() }
+    // AI agent button (robot icon)
+    const aiBtn = document.createElement('button')
+    aiBtn.className = 'agent-header-btn'
+    aiBtn.title = 'Open AI agent'
+    const img = document.createElement('img')
+    img.src = '/favicon.png'
+    img.style.cssText = 'width:14px;height:14px;vertical-align:middle;'
+    aiBtn.appendChild(img)
+    aiBtn.style.opacity = '0.5'
+    dom.appendChild(aiBtn)
+
+    aiBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      ctx.send({
+        type: 'create_agent',
+        template: 'fantastic_agent',
+        options: { x: ctx.agent.x + ctx.agent.width + 20, y: ctx.agent.y },
+      })
+    })
+
+    return () => { stop(); btn.remove(); aiBtn.remove() }
   },
 
   // Inject into canvas: own double-click handler
   injectCanvas: (dom, ctx) => {
     const handler = (e: MouseEvent) => {
-      if (e.shiftKey) return  // Shift+dblclick handled by fantastic_agent
       if ((e.target as HTMLElement).closest('.agent-wrapper')) return
       const { x, y } = ctx.screenToCanvas(e)
       ctx.send({ type: 'create_agent', template: 'terminal', options: { x, y } })

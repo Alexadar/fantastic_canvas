@@ -157,7 +157,7 @@ async def _handle_voice_transcript_inner(agent_id: str, text: str, mode: str, br
                 "role": "assistant",
                 "content": result.text,
                 "tool_calls": [
-                    {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                    {"type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
                     for tc in result.tool_calls
                 ],
             })
@@ -187,6 +187,24 @@ async def _handle_voice_transcript_inner(agent_id: str, text: str, mode: str, br
     })
     await broadcast({"type": "voice_state", "agent_id": agent_id, "state": "idle"})
 
+    # Broadcast context usage + schedule info
+    ctx_used = sum(len(m.get("content", "")) for m in messages) // 4
+    ctx_max = 0
+    if brain and brain.provider and hasattr(brain.provider, "context_length"):
+        ctx_max = brain.provider.context_length
+    from core.tools._state import _scheduler
+    schedules = _scheduler.list_for_agent(agent_id) if _scheduler else []
+    await broadcast({
+        "type": "context_usage",
+        "agent_id": agent_id,
+        "used": ctx_used,
+        "max": ctx_max,
+        "provider": str(brain.provider) if brain and brain.provider else None,
+        "provider_online": brain.provider is not None if brain else False,
+        "schedules": len(schedules),
+        "total_runs": sum(s.get("run_count", 0) for s in schedules),
+    })
+
     # Save AI response
     if full_response:
         _save_chat_message(agent_id, "assistant", full_response, mode)
@@ -194,27 +212,50 @@ async def _handle_voice_transcript_inner(agent_id: str, text: str, mode: str, br
     return ToolResult(data={"ok": True, "agent_id": agent_id})
 
 
+def _get_context_budget() -> int:
+    """Get token budget from the AI brain's provider."""
+    brain = _engine.ai if _engine else None
+    if brain and brain.provider and hasattr(brain.provider, "context_length"):
+        ctx = brain.provider.context_length
+        if ctx:
+            return ctx - 2048
+    return 8192 - 2048  # default
+
+
 def _build_messages_from_history(agent_id: str, current_text: str) -> list[dict]:
-    """Build LLM messages from chat history + current input."""
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a helpful AI assistant in the Fantastic Canvas environment. "
-                "You have access to tools for creating agents, executing code, managing the canvas, "
-                "and more. Use tools when the user's request requires taking actions."
-            ),
-        }
-    ]
-    # Recent history
+    """Build LLM messages from chat history + budget-aware truncation."""
+    budget = _get_context_budget()
+
+    system_msg = {
+        "role": "system",
+        "content": (
+            "You are a helpful AI assistant in the Fantastic Canvas environment. "
+            "You have access to tools for creating agents, executing code, managing the canvas, "
+            "and more. Use tools when the user's request requires taking actions. "
+            "IMPORTANT: Never spawn cascades of fantastic_agent agents — you cannot communicate with them programmatically. "
+            "If unsure whether to create agents or run code autonomously, ask the user first. "
+            "When creating files, write them to the agent's own folder (.fantastic/agents/{agent_id}/) unless the user specifies a project path. "
+            "This keeps the project directory clean."
+        ),
+    }
+    user_msg = {"role": "user", "content": current_text}
+    used = (len(system_msg["content"]) + len(current_text)) // 4
+
+    # Fill remaining budget with history (newest first)
     history = _load_chat_history(agent_id)
-    for msg in history[-20:]:
+    history_msgs: list[dict] = []
+    for msg in reversed(history):
         role = msg.get("role", "user")
-        if role in ("user", "assistant"):
-            messages.append({"role": role, "content": msg.get("text", "")})
-    # Current input
-    messages.append({"role": "user", "content": current_text})
-    return messages
+        if role not in ("user", "assistant"):
+            continue
+        text = msg.get("text", "")
+        cost = len(text) // 4
+        if used + cost > budget:
+            break
+        history_msgs.append({"role": role, "content": text})
+        used += cost
+
+    return [system_msg] + list(reversed(history_msgs)) + [user_msg]
 
 
 async def _handle_voice_interrupt(agent_id: str = "", **_kw) -> ToolResult:
@@ -246,11 +287,14 @@ async def _handle_voice_release_mic(agent_id: str = "", **_kw) -> ToolResult:
 
 async def _handle_chat_history(agent_id: str = "", **_kw) -> ToolResult:
     messages = _load_chat_history(agent_id)
-    return ToolResult(data={
-        "type": "chat_history_response",
-        "agent_id": agent_id,
-        "messages": messages,
-    })
+    return ToolResult(
+        data={"ok": True},
+        reply=[{
+            "type": "chat_history_response",
+            "agent_id": agent_id,
+            "messages": messages,
+        }],
+    )
 
 
 # ─── Handbook ────────────────────────────────────────────────────

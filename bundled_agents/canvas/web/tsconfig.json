@@ -17,9 +17,10 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
     "paths": {
-      "@bundles/*": ["../../*"]
+      "@bundles/*": ["../../*"],
+      "marked": ["./node_modules/marked/lib/marked.d.ts"]
     }
   },
-  "include": ["src", "../../terminal/plugin.ts"],
+  "include": ["src", "../../terminal/plugin.ts", "../../fantastic_agent/plugin.ts", "../../fantastic_agent/web"],
   "exclude": ["src/test"]
 }

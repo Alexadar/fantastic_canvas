@@ -10,6 +10,7 @@ from .messages import AI_MSG
 from .providers.integrated_provider import IntegratedProvider
 from .providers.proxy_provider import ProxyProvider
 from .providers.anthropic_provider import AnthropicProvider
+from .providers.openai_compat_provider import OpenAICompatibleProvider
 
 __all__ = [
     "AIProvider",
@@ -18,6 +19,7 @@ __all__ = [
     "IntegratedProvider",
     "ProxyProvider",
     "AnthropicProvider",
+    "OpenAICompatibleProvider",
     "load_config",
     "save_config",
     "AI_MSG",

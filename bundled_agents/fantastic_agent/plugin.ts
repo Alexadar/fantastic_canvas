@@ -174,6 +174,34 @@ function injectStyles() {
       border-bottom-left-radius: 2px;
     }
 
+    /* Markdown inside assistant messages */
+    .fa-chat-msg.assistant p { margin: 0 0 8px 0; }
+    .fa-chat-msg.assistant p:last-child { margin-bottom: 0; }
+    .fa-chat-msg.assistant h1, .fa-chat-msg.assistant h2, .fa-chat-msg.assistant h3 {
+      margin: 8px 0 4px 0; font-size: 14px; color: #e8e8ff;
+    }
+    .fa-chat-msg.assistant h1 { font-size: 16px; }
+    .fa-chat-msg.assistant ul, .fa-chat-msg.assistant ol { margin: 4px 0; padding-left: 20px; }
+    .fa-chat-msg.assistant li { margin: 2px 0; }
+    .fa-chat-msg.assistant code {
+      background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 3px; font-size: 12px;
+    }
+    .fa-chat-msg.assistant pre {
+      background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; overflow-x: auto; margin: 6px 0;
+    }
+    .fa-chat-msg.assistant pre code { background: none; padding: 0; }
+    .fa-chat-msg.assistant strong { color: #fff; }
+    .fa-chat-msg.assistant hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 8px 0; }
+
+    .fa-ctx-bar {
+      font-size: 10px;
+      font-family: monospace;
+      color: rgba(255,255,255,0.45);
+      text-align: right;
+      padding: 2px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+
     .fa-chat-msg .fa-chat-mode-tag {
       font-size: 9px;
       opacity: 0.5;
@@ -269,29 +297,17 @@ export const fantasticAgentPlugin: CanvasPlugin = {
 
   matchAgent: (agent) => agent.bundle === 'fantastic_agent',
 
-  // Ctrl/Cmd+dblclick on canvas creates AI agent
-  injectCanvas: (dom, ctx) => {
-    const handler = (e: MouseEvent) => {
-      if (!e.shiftKey) return  // only Shift+dblclick
-      if ((e.target as HTMLElement).closest('.agent-wrapper')) return
-      const { x, y } = ctx.screenToCanvas(e)
-      ctx.send({ type: 'create_agent', template: 'fantastic_agent', options: { x, y } })
-    }
-    dom.addEventListener('dblclick', handler)
-    return () => dom.removeEventListener('dblclick', handler)
-  },
-
   injectHeader: (dom, ctx) => {
     const toggle = document.createElement('div')
     toggle.className = 'fa-mode-toggle'
 
     const voiceBtn = document.createElement('button')
-    voiceBtn.className = 'fa-mode-btn active'
+    voiceBtn.className = 'fa-mode-btn'
     voiceBtn.textContent = '\u{1F3A4}'  // microphone
     voiceBtn.title = 'Voice mode'
 
     const chatBtn = document.createElement('button')
-    chatBtn.className = 'fa-mode-btn'
+    chatBtn.className = 'fa-mode-btn active'
     chatBtn.textContent = '\u{1F4AC}'  // speech bubble
     chatBtn.title = 'Chat mode'
 
@@ -320,7 +336,7 @@ export const fantasticAgentPlugin: CanvasPlugin = {
   injectAgent: (dom, ctx) => {
     injectStyles()
 
-    let currentMode: AgentMode = 'voice'
+    let currentMode: AgentMode = 'chat'
     const agentId = ctx.agent.id
 
     // ── Voice DOM ──
@@ -352,8 +368,16 @@ export const fantasticAgentPlugin: CanvasPlugin = {
     // ── Chat DOM ──
     const chatContainer = document.createElement('div')
     chatContainer.className = 'fa-chat-container'
-    chatContainer.style.display = 'none'
     dom.appendChild(chatContainer)
+
+    // Context usage bar
+    const ctxBar = document.createElement('div')
+    ctxBar.className = 'fa-ctx-bar'
+    ctxBar.style.display = 'none'
+    chatContainer.appendChild(ctxBar)
+
+    // Default to chat mode: hide orb
+    orb.style.display = 'none'
 
     // ── Voice UI controller ──
     const voiceUi = createVoiceUi(agentId, ctx.send, {
@@ -392,9 +416,6 @@ export const fantasticAgentPlugin: CanvasPlugin = {
       },
     })
     chatContainer.appendChild(chatUi.dom)
-
-    // Load chat history on init
-    ctx.send({ type: 'chat_history', agent_id: agentId })
 
     // ── Click to toggle voice ──
     orb.addEventListener('click', (e) => {
@@ -450,14 +471,48 @@ export const fantasticAgentPlugin: CanvasPlugin = {
         return
       }
 
+      // Context usage update
+      if (msg.type === 'context_usage' && msg.agent_id === agentId) {
+        const used = msg.used as number
+        const max = msg.max as number
+        const provider = msg.provider as string | null
+        const online = msg.provider_online as boolean
+        const schCount = (msg.schedules as number) || 0
+        const totalRuns = (msg.total_runs as number) || 0
+        const parts: string[] = []
+        if (provider) {
+          parts.push(`${provider} ${online ? '\u25CF' : '\u25CB'}`)
+        }
+        if (max > 0) {
+          const pct = Math.round((used / max) * 100)
+          parts.push(`${used.toLocaleString()} / ${max.toLocaleString()} (${pct}%)`)
+          ctxBar.style.color = pct > 80 ? '#ff6b6b' : pct > 50 ? '#ffa94d' : ''
+        } else {
+          ctxBar.style.color = ''
+        }
+        if (schCount > 0) {
+          parts.push(`schedules: ${schCount} (${totalRuns} runs)`)
+        }
+        if (parts.length) {
+          ctxBar.textContent = parts.join(' | ')
+          ctxBar.style.display = ''
+        }
+        return
+      }
+
       // Voice response also goes to chat UI for history display
       if (msg.agent_id === agentId && msg.type === 'voice_response' && msg.done) {
         chatUi.appendMessage('assistant', (msg.text || '') as string)
       }
 
-      // Forward to voice UI
-      voiceUi.handleWsMessage(msg)
+      // Forward to voice UI only in voice mode (prevents TTS in chat mode)
+      if (currentMode === 'voice') {
+        voiceUi.handleWsMessage(msg)
+      }
     })
+
+    // Load chat history AFTER subscribe to avoid race condition
+    ctx.send({ type: 'chat_history', agent_id: agentId })
 
     return () => {
       voiceUi.destroy()

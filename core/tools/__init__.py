@@ -106,6 +106,7 @@ from . import _registry  # noqa: F401, E402
 from . import _instances  # noqa: F401, E402
 from . import _server_log  # noqa: F401, E402
 from . import _bundles  # noqa: F401, E402
+from . import _schedules  # noqa: F401, E402
 
 # Re-exports used by other modules (lifespan, recipients, tests)
 from ._instance_tracking import (  # noqa: F401, E402

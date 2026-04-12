@@ -117,6 +117,7 @@ WS `/ws` is the primary transport — `{"type": "<tool_name>", ...args}` maps di
 
 - **Never inline base64 in `post_output`** — payloads over 512KB crash the canvas. Use `content_alias_file(file_path)` to get a `/content/{id}` URL, reference it in HTML via `window.parent.location.origin + alias_path`.
 - **Large assets** (images, plots, data): save to project dir → `content_alias_file` → URL in HTML. Lightweight HTML, assets served via HTTP.
+- **Never spawn cascades of `fantastic_agent`** — they are user-facing chat/voice endpoints, not API-callable agents. `agent_call` cannot reach them (no PTY). If unsure whether to create agents or run code autonomously, ask the user first.
 
 ## Architecture
 

@@ -16,6 +16,13 @@ DEFAULT_MODEL = "claude-sonnet-4-20250514"
 class AnthropicProvider:
     """Streams completions from the Anthropic Messages API."""
 
+    # Claude models all support 200k context
+    _CONTEXT_LENGTHS: dict[str, int] = {
+        "claude-opus-4": 200000,
+        "claude-sonnet-4": 200000,
+        "claude-haiku-4": 200000,
+    }
+
     def __init__(self, model: str = DEFAULT_MODEL, api_key: str = ""):
         self._model = model
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -177,8 +184,18 @@ class AnthropicProvider:
     def model(self) -> str:
         return self._model
 
+    @property
+    def context_length(self) -> int:
+        for prefix, ctx in self._CONTEXT_LENGTHS.items():
+            if self._model.startswith(prefix):
+                return ctx
+        return 200000  # safe default for Claude models
+
     def set_model(self, model: str) -> None:
         self._model = model
+
+    def __str__(self) -> str:
+        return f"anthropic ({self._model})"
 
     def stop(self) -> None:
         self._client = None

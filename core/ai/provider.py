@@ -24,6 +24,7 @@ class DiscoverResult:
     provider_name: str = ""
     error: str | None = None
     detail: str | None = None
+    context_length: int = 0  # 0 = unknown
 
 
 @runtime_checkable
@@ -56,6 +57,11 @@ class AIProvider(Protocol):
     @property
     def model(self) -> str:
         """Current model name."""
+        ...
+
+    @property
+    def context_length(self) -> int:
+        """Max context window in tokens. 0 = unknown."""
         ...
 
     def set_model(self, model: str) -> None:

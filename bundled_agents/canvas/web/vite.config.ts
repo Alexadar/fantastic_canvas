@@ -9,6 +9,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@bundles': path.resolve(__dirname, '../..'),  // → bundled_agents/
+      'marked': path.resolve(__dirname, 'node_modules/marked/lib/marked.esm.js'),
     },
   },
   server: {

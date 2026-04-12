@@ -16,3 +16,6 @@ _bundle_loaded: dict[str, bool] = {}
 
 # Hook called after an agent is created (for layout persistence etc.)
 _on_agent_created: list[Callable] = []
+
+# Scheduler instance — wired in lifespan
+_scheduler = None
