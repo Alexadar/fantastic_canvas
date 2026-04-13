@@ -11,10 +11,16 @@ with its own display_name and VFX state.
 import math
 from pathlib import Path
 
+from core.chat_run import chat_run
 from core.dispatch import ToolResult
 from core.tools._agents import (
-    _rename_agent, _update_agent, _post_output, _refresh_agent,
+    _rename_agent,
+    _update_agent,
+    _post_output,
+    _refresh_agent,
 )
+
+NAME = "canvas"
 
 _SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 _BUNDLE_DIR = Path(__file__).resolve().parent
@@ -31,6 +37,7 @@ def _seed_default_vfx(agent_dir: Path) -> None:
     src = _BUNDLE_DIR / "default_vfx.js"
     if src.exists():
         import shutil
+
         shutil.copy2(src, vfx_dest)
 
 
@@ -60,12 +67,26 @@ async def _get_handbook_canvas(skill: str = "") -> ToolResult:
     if skill:
         skill_file = _SKILLS_DIR / f"{skill}.md"
         if skill_file.exists():
-            return ToolResult(data={"text": f"# SKILL: {skill}\n\n{skill_file.read_text()}"})
-        available = [p.stem for p in _SKILLS_DIR.glob("*.md")] if _SKILLS_DIR.exists() else []
+            return ToolResult(
+                data={"text": f"# SKILL: {skill}\n\n{skill_file.read_text()}"}
+            )
+        available = (
+            [p.stem for p in _SKILLS_DIR.glob("*.md")] if _SKILLS_DIR.exists() else []
+        )
         avail_str = ", ".join(sorted(available)) or "(none)"
-        return ToolResult(data={"error": f"Skill '{skill}' not found. Available: {avail_str}"})
-    available = sorted(p.stem for p in _SKILLS_DIR.glob("*.md")) if _SKILLS_DIR.exists() else []
-    return ToolResult(data={"text": "Canvas skills: " + ", ".join(available) if available else "No canvas skills found."})
+        return ToolResult(
+            data={"error": f"Skill '{skill}' not found. Available: {avail_str}"}
+        )
+    available = (
+        sorted(p.stem for p in _SKILLS_DIR.glob("*.md")) if _SKILLS_DIR.exists() else []
+    )
+    return ToolResult(
+        data={
+            "text": "Canvas skills: " + ", ".join(available)
+            if available
+            else "No canvas skills found."
+        }
+    )
 
 
 # ─── Layout-aware inner functions (for _DISPATCH) ────────────────────────
@@ -116,7 +137,9 @@ def _rect_distance(a: dict, b: dict) -> float:
     return math.sqrt(dx * dx + dy * dy)
 
 
-async def _spatial_discovery(agent_id: str = "", radius: float | None = None) -> ToolResult:
+async def _spatial_discovery(
+    agent_id: str = "", radius: float | None = None
+) -> ToolResult:
     target = _engine.get_agent(agent_id)
     if not target:
         return ToolResult(data=[])
@@ -131,12 +154,16 @@ async def _spatial_discovery(agent_id: str = "", radius: float | None = None) ->
         dist = _rect_distance(target, a)
         if radius is not None and dist > radius:
             continue
-        results.append({
-            "agent_id": a["id"],
-            "distance": round(dist, 1),
-            "x": a.get("x", 0), "y": a.get("y", 0),
-            "width": a.get("width", 800), "height": a.get("height", 600),
-        })
+        results.append(
+            {
+                "agent_id": a["id"],
+                "distance": round(dist, 1),
+                "x": a.get("x", 0),
+                "y": a.get("y", 0),
+                "width": a.get("width", 800),
+                "height": a.get("height", 600),
+            }
+        )
     results.sort(key=lambda r: r["distance"])
     if radius is None:
         return ToolResult(data=results[:1])
@@ -162,7 +189,9 @@ def _find_canvas_agent_dir(canvas_name: str = "") -> Path | None:
 async def _scene_vfx_data(data: dict, canvas_name: str = "") -> ToolResult:
     return ToolResult(
         data={"ok": True},
-        broadcast=[{"type": "scene_vfx_data", "data": data, "canvas_name": canvas_name}],
+        broadcast=[
+            {"type": "scene_vfx_data", "data": data, "canvas_name": canvas_name}
+        ],
     )
 
 
@@ -172,7 +201,9 @@ async def _scene_vfx(js_code: str, canvas_name: str = "") -> ToolResult:
         (canvas_dir / "scene_vfx.js").write_text(js_code, encoding="utf-8")
     return ToolResult(
         data={"ok": True},
-        broadcast=[{"type": "scene_vfx_updated", "js": js_code, "canvas_name": canvas_name}],
+        broadcast=[
+            {"type": "scene_vfx_updated", "js": js_code, "canvas_name": canvas_name}
+        ],
     )
 
 
@@ -192,121 +223,6 @@ def _get_scene_vfx() -> str | None:
     if default.exists():
         return default.read_text(encoding="utf-8")
     return None
-
-
-def _register_server_hooks(engine):
-    """Register canvas-specific server hooks (routes, broadcast resolver, lifespan)."""
-    from core.server._state import register_route_hook, register_broadcast_resolver, register_lifespan_hook
-
-    # ─── Broadcast resolver: route messages to the correct canvas ──
-    def _resolve_canvas_broadcast(message: dict) -> str:
-        aid = message.get("agent_id", "")
-        if not aid:
-            return ""
-        agent = engine.store.get_agent(aid)
-        if not agent:
-            return ""
-        if agent.get("is_container"):
-            return agent.get("display_name", "")
-        parent_id = agent.get("parent", "")
-        if not parent_id:
-            return ""
-        parent = engine.store.get_agent(parent_id)
-        return parent.get("display_name", "") if parent and parent.get("is_container") else ""
-
-    register_broadcast_resolver(_resolve_canvas_broadcast)
-
-    # ─── Routes: serve canvas web UI ──
-    def _canvas_routes(app, state):
-        import mimetypes as _mt
-        from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-        from starlette.responses import Response
-        from core._paths import web_dist_dir, default_shell_path
-
-        def _list_canvases():
-            return [a for a in state.engine.store.list_agents() if a.get("is_container")]
-
-        def _find_canvas(name):
-            return next((a for a in state.engine.store.list_agents()
-                         if a.get("is_container") and a.get("display_name") == name), None)
-
-        @app.get("/canvas/{canvas_name}")
-        async def serve_canvas_redirect(canvas_name: str):
-            return RedirectResponse(url=f"/canvas/{canvas_name}/", status_code=301)
-
-        @app.get("/canvas/{canvas_name}/")
-        @app.get("/canvas/{canvas_name}/{path:path}")
-        async def serve_canvas(canvas_name: str, path: str = ""):
-            canvas = _find_canvas(canvas_name)
-            if not canvas:
-                return Response(status_code=404, content=f"Canvas '{canvas_name}' not found")
-            _wd = web_dist_dir()
-            if not _wd.exists():
-                return Response(status_code=503, content="Canvas web UI not built")
-            if not path or not (_wd / path).exists():
-                return FileResponse(str(_wd / "index.html"), media_type="text/html")
-            asset_path = _wd / path
-            if asset_path.exists() and asset_path.is_file():
-                mt, _ = _mt.guess_type(str(asset_path))
-                return FileResponse(str(asset_path), media_type=mt or "application/octet-stream")
-            return Response(status_code=404, content=f"Asset not found: {path}")
-
-        # Root page — adaptive: single canvas redirect, multi-canvas links, or default shell
-        has_canvas = bool(_list_canvases()) and web_dist_dir().exists()
-        if has_canvas:
-            @app.get("/", name="root_page")
-            async def _root_page():
-                canvases = _list_canvases()
-                if len(canvases) == 1:
-                    name = canvases[0].get("display_name") or canvases[0]["id"]
-                    return RedirectResponse(url=f"/canvas/{name}", status_code=302)
-                links = ""
-                if canvases:
-                    links += "<h2>Canvas</h2><ul>" + "\n".join(
-                        f'<li><a href="/canvas/{c.get("display_name") or c["id"]}">'
-                        f'{c.get("display_name") or c["id"]}</a></li>'
-                        for c in canvases
-                    ) + "</ul>"
-                if links:
-                    return HTMLResponse(
-                        f"<html><body style='font-family:monospace;padding:2em'>"
-                        f"<h1>Fantastic</h1>{links}</body></html>"
-                    )
-                return HTMLResponse(
-                    "<html><body style='font-family:monospace;padding:2em'>"
-                    "<h1>Fantastic</h1><p>No canvases.</p></body></html>"
-                )
-        else:
-            _shell = default_shell_path()
-            if _shell.exists():
-                @app.get("/", name="default_shell")
-                async def _default_shell():
-                    return FileResponse(str(_shell), media_type="text/html")
-
-    register_route_hook(_canvas_routes)
-
-    # ─── Lifespan: announce canvas URLs ──
-    import asyncio
-    import logging
-    import os
-
-    _logger = logging.getLogger(__name__)
-
-    async def _canvas_startup(state, broadcast_fn):
-        server_port = os.getenv("SERVER_PORT", "8888")
-        canvases = [a for a in state.engine.store.list_agents() if a.get("is_container")]
-        if not canvases:
-            return
-        _logger.info(f"canvas web ui on http://localhost:{server_port}")
-        from core.tools._conversation import _core_chat_message
-        for c in canvases:
-            name = c.get("display_name") or c["id"]
-            url = f"http://localhost:{server_port}/canvas/{name}"
-            asyncio.get_event_loop().call_soon(
-                lambda msg=url, n=name: asyncio.ensure_future(_core_chat_message(who=n, message=msg))
-            )
-
-    register_lifespan_hook(_canvas_startup)
 
 
 def register_dispatch():
@@ -329,13 +245,8 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
     _engine = engine
     tools = {}
 
-    # ─── At least one canvas agent must exist ──
-    canvas_agent = engine.store.find_by_bundle("canvas")
-    if canvas_agent is None:
-        raise RuntimeError("Canvas bundle loaded but canvas agent not found. Run: fantastic add canvas")
-
-    # ─── Server hooks: routes, broadcast resolver, lifespan ──
-    _register_server_hooks(engine)
+    # Canvas agent may not exist yet (quickstart creates it after bundle load).
+    # That's fine — tools still work; auto-parent hook gates on canvas presence.
 
     # ─── Seed default VFX for existing canvases that don't have it yet ──
     for a in engine.store.list_agents():
@@ -362,7 +273,9 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
                     engine.store.update_agent_meta(agent_id, **defaults)
                     agent_dict.update(defaults)
             return
-        canvases = [a for a in engine.store.list_agents() if a.get("bundle") == "canvas"]
+        canvases = [
+            a for a in engine.store.list_agents() if a.get("bundle") == "canvas"
+        ]
         if len(canvases) == 1:
             engine.store.update_agent_meta(agent_id, parent=canvases[0]["id"])
             agent_dict["parent"] = canvases[0]["id"]
@@ -432,6 +345,7 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         tr = await _move_agent(agent_id, x, y)
         await fire_broadcasts(tr)
         return tr.data
+
     tools["move_agent"] = move_agent
 
     async def resize_agent(
@@ -449,6 +363,7 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         tr = await _resize_agent(agent_id, width=width, height=height)
         await fire_broadcasts(tr)
         return tr.data
+
     tools["resize_agent"] = resize_agent
 
     async def rename_agent(agent_id: str, display_name: str) -> dict:
@@ -461,6 +376,7 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         tr = await _rename_agent(agent_id, display_name)
         await fire_broadcasts(tr)
         return tr.data
+
     tools["rename_agent"] = rename_agent
 
     async def update_agent(agent_id: str, options: dict) -> dict:
@@ -475,6 +391,7 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
             return tr.data
         await fire_broadcasts(tr)
         return tr.data
+
     tools["update_agent"] = update_agent
 
     async def post_output(agent_id: str, html: str) -> str:
@@ -488,6 +405,7 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         if "error" in tr.data:
             return f"[ERROR] {tr.data['error']}"
         return f"Output posted to agent {agent_id}"
+
     tools["post_output"] = post_output
 
     async def refresh_agent(agent_id: str) -> str:
@@ -504,6 +422,7 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         if action == "process_restarted":
             return f"Process in {agent_id} restarted"
         return f"Agent {agent_id} refreshed"
+
     tools["refresh_agent"] = refresh_agent
 
     async def scene_vfx(js_code: str, canvas_name: str = "") -> str:
@@ -528,6 +447,7 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         tr = await _scene_vfx(js_code, canvas_name=canvas_name)
         await fire_broadcasts(tr)
         return "Scene VFX updated and live-reloaded"
+
     tools["scene_vfx"] = scene_vfx
 
     async def scene_vfx_data(data: dict, canvas_name: str = "") -> str:
@@ -544,6 +464,7 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         tr = await _scene_vfx_data(data, canvas_name=canvas_name)
         await fire_broadcasts(tr)
         return "ok"
+
     tools["scene_vfx_data"] = scene_vfx_data
 
     async def get_handbook_canvas(skill: str = "") -> str:
@@ -562,6 +483,7 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         if "error" in tr.data:
             return f"[ERROR] {tr.data['error']}"
         return tr.data["text"]
+
     tools["get_handbook_canvas"] = get_handbook_canvas
 
     async def spatial_discovery(
@@ -581,12 +503,10 @@ def register_tools(engine, fire_broadcasts, process_runner=None):
         """
         tr = await _spatial_discovery(agent_id, radius)
         return tr.data
+
     tools["spatial_discovery"] = spatial_discovery
 
     return tools
-
-
-from core.chat_run import chat_run
 
 
 @chat_run

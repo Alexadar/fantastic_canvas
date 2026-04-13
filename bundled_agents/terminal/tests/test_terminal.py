@@ -1,7 +1,5 @@
 """Tests for terminal tool inner functions."""
 
-import pytest
-
 from core.tools._process import (
     _agent_call,
     _process_output,

@@ -18,8 +18,8 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 
-def new_agent_id() -> str:
-    return f"agent_{secrets.token_hex(3)}"
+def new_agent_id(bundle: str) -> str:
+    return f"{bundle}_{secrets.token_hex(3)}"
 
 
 class AgentStore:
@@ -69,14 +69,25 @@ class AgentStore:
 
     def create_agent(
         self,
-        agent_id: str | None = None,
         bundle: str | None = None,
+        agent_id: str | None = None,
         parent: str | None = None,
         author_type: int = 0,
         created_by: str | None = None,
     ) -> dict[str, Any]:
-        """Create a new agent directory and return its full state dict."""
-        aid = agent_id or new_agent_id()
+        """Create a new agent directory and return its full state dict.
+
+        Agent ID format: `{bundle}_{hex6}`. Bundle is required unless you pass
+        an explicit `agent_id` (e.g. for tests or migrations).
+        """
+        if agent_id is None:
+            if not bundle:
+                raise ValueError(
+                    "bundle is required to create an agent (used in ID prefix)"
+                )
+            aid = new_agent_id(bundle)
+        else:
+            aid = agent_id
         agent_dir = self._agents_dir / aid
 
         if agent_dir.exists():
@@ -91,10 +102,10 @@ class AgentStore:
             "created_at": time.time(),
             "author_type": author_type,
         }
-        if created_by:
-            agent_json["created_by"] = created_by
         if bundle:
             agent_json["bundle"] = bundle
+        if created_by:
+            agent_json["created_by"] = created_by
         if parent:
             agent_json["parent"] = parent
         (agent_dir / "agent.json").write_text(

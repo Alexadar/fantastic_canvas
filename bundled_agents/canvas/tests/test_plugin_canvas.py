@@ -1,7 +1,5 @@
 """Tests for canvas bundle plugin wrappers (tool-level functions)."""
 
-import pytest
-
 from core.tools import _TOOL_DISPATCH
 from core.tools._agents import _create_agent
 
@@ -63,7 +61,9 @@ async def test_update_agent_success(setup):
     await _create_agent(agent_id="up1")
     bc.clear()
 
-    result = await _TOOL_DISPATCH["update_agent"](agent_id="up1", options={"display_name": "X"})
+    result = await _TOOL_DISPATCH["update_agent"](
+        agent_id="up1", options={"display_name": "X"}
+    )
     assert isinstance(result, dict)
     assert result["display_name"] == "X"
     assert bc.of_type("agent_updated")
@@ -73,7 +73,9 @@ async def test_update_agent_error(setup):
     engine, bc, _ = setup
     bc.clear()
 
-    result = await _TOOL_DISPATCH["update_agent"](agent_id="nonexistent", options={"display_name": "X"})
+    result = await _TOOL_DISPATCH["update_agent"](
+        agent_id="nonexistent", options={"display_name": "X"}
+    )
     assert "error" in result
     # no broadcast on error
     assert not bc.of_type("agent_updated")
@@ -159,9 +161,15 @@ async def test_spatial_discovery_closest(setup):
 
 async def test_spatial_discovery_with_radius(setup):
     """spatial_discovery with radius returns all within range."""
-    await _create_agent(agent_id="sr1", options={"x": 0, "y": 0, "width": 100, "height": 100})
-    await _create_agent(agent_id="sr2", options={"x": 200, "y": 0, "width": 100, "height": 100})
-    await _create_agent(agent_id="sr3", options={"x": 5000, "y": 5000, "width": 100, "height": 100})
+    await _create_agent(
+        agent_id="sr1", options={"x": 0, "y": 0, "width": 100, "height": 100}
+    )
+    await _create_agent(
+        agent_id="sr2", options={"x": 200, "y": 0, "width": 100, "height": 100}
+    )
+    await _create_agent(
+        agent_id="sr3", options={"x": 5000, "y": 5000, "width": 100, "height": 100}
+    )
 
     result = await _TOOL_DISPATCH["spatial_discovery"](agent_id="sr1", radius=500)
     assert isinstance(result, list)

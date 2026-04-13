@@ -23,9 +23,16 @@ import logging
 import os
 import signal
 import socket
+import sys
 from pathlib import Path
 
-import uvicorn
+# Ensure the project root (which contains `bundled_agents/`) is importable when
+# launched via the `fantastic` console script — sys.path[0] is the script dir,
+# not cwd, so `from bundled_agents...` fails otherwise.
+_project_root = str(Path.cwd())
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 
 # ─── Banner ────────────────────────────────────────────────────
 
@@ -41,24 +48,14 @@ _G = "\033[32m"  # green
 _Y = "\033[33m"  # yellow
 
 
-def _banner(project_dir: str = "", status: dict | None = None):
-    """Print the Fantastic banner — Diia-style asymmetric + system status."""
+def _banner(project_dir: str = ""):
+    """Print the Fantastic banner — logo + project dir."""
     print()
     print(f"  {_NM}█{_R}")
     print(f"  {_NM}█{_R}  {_BM}{_B}FANTASTIC{_R}")
     print(f"  {_NM}█{_R}")
     if project_dir:
         print(f"     {_D}{project_dir}{_R}")
-    if status:
-        parts = []
-        for key, val in status.items():
-            if val is True:
-                parts.append(f"{_G}{key}{_R}")
-            elif val is False:
-                parts.append(f"{_D}{key}{_R}")
-            else:
-                parts.append(f"{_G}{key}{_R} {_D}{val}{_R}")
-        print(f"     {' · '.join(parts)}")
     print()
 
 
@@ -383,11 +380,25 @@ def _install_conversation_log_handler():
 # ─── Adaptive start ────────────────────────────────────────────
 
 
-async def _run_with_server(args, project_dir, port, auto_run_bundle: str | None = None):
-    """Core + Server: server and input loop as concurrent tasks."""
-    from .input_loop import InputLoop
+async def _generic_process_output_bus(agent_id: str, data: str):
+    """Generic PTY output handler — emits process_output via bus."""
+    if data:
+        from .bus import bus
 
-    # Route server logs through conversation buffer (padded + aligned)
+        await bus.emit(agent_id, "process_output", {"agent_id": agent_id, "data": data})
+
+
+async def _run_with_server(args, project_dir, port, auto_run_bundle: str | None = None):
+    """Core + Web bundle: orchestrator + web-as-agent as concurrent tasks."""
+    from .input_loop import InputLoop
+    from .engine import Engine
+    from .process_runner import ProcessRunner
+    from .tools import init_tools
+    from .scheduler import Scheduler
+    from .bus import bus
+    from .dispatch import _DISPATCH
+    from .tools import _state as _tools_state
+
     _install_conversation_log_handler()
 
     os.environ["PROJECT_DIR"] = project_dir
@@ -400,32 +411,75 @@ async def _run_with_server(args, project_dir, port, auto_run_bundle: str | None 
     if cli_cmd:
         os.environ["FANTASTIC_CLI"] = cli_cmd
 
-    config = uvicorn.Config(
-        "core.server:app",
-        host=args.host,
-        port=port,
-        log_level="warning",
+    # 1. Engine + process runner
+    engine = Engine(project_dir=project_dir, broadcast=bus.broadcast)
+    await engine.start()
+    process_runner = ProcessRunner(
+        on_output=_generic_process_output_bus,
+        agents_dir=engine.project_dir / ".fantastic" / "agents",
     )
-    server = uvicorn.Server(config)
 
-    from .ai.brain import AIBrain
+    # 2. Tools (loads bundles, registers dispatch)
+    init_tools(engine, bus.broadcast, process_runner)
+    # 2a. Post-load hooks (e.g. web announces canvas URLs)
+    from .tools import fire_subagents_loaded
 
-    ai = AIBrain(Path(project_dir))
-    loop = InputLoop(ai=ai)
+    # 3. Scheduler
+    scheduler = Scheduler(engine.project_dir / ".fantastic" / "agents")
+    scheduler.load_all()
+    engine.store.on_agent_deleted(lambda aid: scheduler._cache.pop(aid, None))
+    await scheduler.start(_DISPATCH, bus.broadcast)
+    _tools_state._scheduler = scheduler
 
-    # Ensure server shuts down on SIGTERM/SIGINT (process kill, Ctrl+C)
+    # 4. Use whatever web agents the user has explicitly added. Do NOT auto-create.
+    web_agents = [a for a in engine.store.list_agents() if a.get("bundle") == "web"]
+
+    # 4b. Fire post-load hooks NOW (all bundles loaded)
+    await fire_subagents_loaded(engine)
+
+    # 5. Launch web bundle's serve task per web agent (none if user hasn't added any)
+    web_tasks = []
+    if web_agents:
+        from bundled_agents.web.tools import serve
+
+        web_tasks = [asyncio.create_task(serve(a["id"])) for a in web_agents]
+
+    # 6. Input loop
+    loop = InputLoop(engine=engine)
+
+    # Empty project hint — do NOT auto-run anything; just tell the user how to start.
+    if not engine.store.list_agents():
+        from . import conversation
+
+        msg = (
+            "No agents yet. To bootstrap a default canvas+web, type:\n"
+            "    add quickstart\n"
+            "Or add bundles individually, e.g. `add web`, `add canvas`, `add ollama`."
+        )
+        print(conversation.format_entry(conversation.say("fantastic", msg)))
+
+    # Signal handlers — cancel web tasks cleanly
     aloop = asyncio.get_event_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        aloop.add_signal_handler(sig, lambda: _shutdown_server(server))
 
-    server_task = asyncio.create_task(server.serve())
-    # Small delay so server starts before input loop prints
-    await asyncio.sleep(0.5)
+    def _shutdown():
+        for t in web_tasks:
+            t.cancel()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        aloop.add_signal_handler(sig, _shutdown)
+
+    await asyncio.sleep(0.3)  # let web start
     if auto_run_bundle:
         await loop._run_chat_agent(auto_run_bundle)
-    await loop.run()
-    server.should_exit = True
-    await server_task
+
+    try:
+        await loop.run()
+    finally:
+        _shutdown()
+        await asyncio.gather(*web_tasks, return_exceptions=True)
+        await scheduler.stop()
+        await process_runner.close_all()
+        await engine.stop()
 
 
 def _shutdown_server(server):
@@ -443,25 +497,16 @@ def _cmd_start(args):
     if saved_pid and _pid_alive(saved_pid):
         saved_port = saved.get("port", 8888)
         url = f"http://{args.host}:{saved_port}"
-        _banner(
-            project_dir=project_dir,
-            status={
-                "core": True,
-                "server": True,
-                "ai": False,
-            },
-        )
+        _banner(project_dir=project_dir)
         from . import conversation
 
         entry = conversation.say("fantastic", f"server already running at {url}")
         print(conversation.format_entry(entry))
         print()
         from .input_loop import InputLoop
-        from .ai.brain import AIBrain
         import core.tools  # noqa: F401 — triggers @register_tool decorators
 
-        ai = AIBrain(Path(project_dir))
-        loop = InputLoop(ai=ai)
+        loop = InputLoop()
         asyncio.run(loop.run())
         return
 
@@ -485,24 +530,10 @@ def _cmd_start(args):
         port = _find_free_port(args.host)
 
     url = f"http://{args.host}:{port}"
-    _banner(
-        project_dir=project_dir,
-        status={
-            "core": True,
-            "server": True,
-            "ai": False,
-        },
-    )
+    _banner(project_dir=project_dir)
 
-    # Fresh project? Auto-add + run quickstart wizard
-    bundle_name = None
-    if not _has_agents(project_dir):
-        from ._paths import bundled_agents_dir
-
-        _call_bundle_hook(bundled_agents_dir() / "quickstart", "on_add", project_dir)
-        bundle_name = "quickstart"
-
-    asyncio.run(_run_with_server(args, project_dir, port, auto_run_bundle=bundle_name))
+    # Fresh project: add nothing automatically. User issues every `add` explicitly.
+    asyncio.run(_run_with_server(args, project_dir, port, auto_run_bundle=None))
 
 
 def _cmd_serve(args):
@@ -515,14 +546,7 @@ def _cmd_serve(args):
     if saved_pid and _pid_alive(saved_pid):
         saved_port = saved.get("port", 8888)
         url = f"http://{args.host}:{saved_port}"
-        _banner(
-            project_dir=project_dir,
-            status={
-                "core": True,
-                "server": True,
-                "ai": False,
-            },
-        )
+        _banner(project_dir=project_dir)
         print(f"  {_D}Already running at {url}{_R}")
         return
 
@@ -556,27 +580,13 @@ def _cmd_serve(args):
         os.environ["FANTASTIC_CLI"] = cli_cmd
 
     url = f"http://{args.host}:{port}"
-    _banner(
-        project_dir=project_dir,
-        status={
-            "core": True,
-            "server": True,
-            "ai": False,
-        },
-    )
+    _banner(project_dir=project_dir)
 
-    uvicorn.run(
-        "core.server:app",
-        host=args.host,
-        port=port,
-        reload=False,
-        log_level=args.log_level,
-    )
+    asyncio.run(_run_with_server(args, project_dir, port))
 
 
 async def _run_with_server_and_bundle(args, project_dir):
     """Start server, run the chat agent, then continue input loop."""
-    from .input_loop import InputLoop
 
     _install_conversation_log_handler()
     os.environ["PROJECT_DIR"] = project_dir
@@ -591,29 +601,13 @@ async def _run_with_server_and_bundle(args, project_dir):
     else:
         port = _find_free_port(args.host)
 
-    os.environ["SERVER_PORT"] = str(port)
-    config = uvicorn.Config(
-        "core.server:app", host=args.host, port=port, log_level="warning"
-    )
-    server = uvicorn.Server(config)
-
-    from .ai.brain import AIBrain
-
-    ai = AIBrain(Path(project_dir))
-    loop = InputLoop(ai=ai)
-
-    server_task = asyncio.create_task(server.serve())
-    await asyncio.sleep(0.5)
-    await loop._run_chat_agent(args.bundle)
-    await loop.run()
-    server.should_exit = True
-    await server_task
+    await _run_with_server(args, project_dir, port, auto_run_bundle=args.bundle)
 
 
 def _cmd_run(args):
     """Run a bundle's @chat_run hook, starting engine if needed."""
     project_dir = os.path.abspath(args.project_dir)
-    _banner(project_dir=project_dir, status={"core": True, "server": True, "ai": False})
+    _banner(project_dir=project_dir)
     asyncio.run(_run_with_server_and_bundle(args, project_dir))
 
 

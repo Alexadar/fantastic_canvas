@@ -1,22 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { CanvasAgent, WSMessage } from '../types'
-import { useWebSocket } from '../hooks/useWebSocket'
+import type { CanvasAgent, TransportMessage } from '../types'
+import { useTransport } from '../hooks/useTransport'
 import { AgentShape } from './AgentShape'
 import { registry } from '../plugins/registry'
 import { WebGLLayer } from './WebGLLayer'
 import type { ViewState, WorldClick } from './WebGLLayer'
 import { domToWorld } from './coordBridge'
 
-// Detect broadcast viewer mode from URL params
-const urlParams = new URLSearchParams(window.location.search)
-const broadcastToken = urlParams.get('broadcast')
-const isViewer = !!broadcastToken
-
-const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-const wsHost = window.location.host  // includes port if non-default
-const WS_URL = isViewer
-  ? `${wsProto}//${wsHost}/ws/broadcast?token=${broadcastToken}`
-  : `${wsProto}//${wsHost}/ws`
+// No WS here — all transport is hidden inside fantastic_transport() (see useTransport).
+// Broadcast viewer mode becomes a separate readonly web agent in the new model (# later).
+const isViewer = false
 
 const INITIAL_ZOOM = 1
 const DEFAULT_ANCHOR: [number, number, number] = [0, 0, 0]
@@ -53,7 +46,7 @@ interface CanvasProps {
 }
 
 export function Canvas({ canvasName }: CanvasProps = {}) {
-  const { send, subscribe } = useWebSocket(WS_URL)
+  const { send, subscribe } = useTransport()
   const [agents, setAgents] = useState<Map<string, CanvasAgent>>(new Map())
   const [view, setView] = useState<ViewState>({ offsetX: 0, offsetY: 0, zoom: 1, anchor: DEFAULT_ANCHOR, domVisible: true })
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null)
@@ -102,7 +95,7 @@ export function Canvas({ canvasName }: CanvasProps = {}) {
 
   // ─── Subscribe to WS messages ───────────────────────
   useEffect(() => {
-    return subscribe((msg: WSMessage) => {
+    return subscribe((msg: TransportMessage) => {
       switch (msg.type) {
         case 'state': {
           const state = msg.state as { agents: CanvasAgent[]; scene_vfx_js?: string; bg_vfx_js?: string }

@@ -27,7 +27,7 @@ torch = ["torch>=2.2.0"]
 fantastic = "core.cli:main"
 
 [tool.setuptools]
-packages = ["core", "core.tools", "core.server", "core.ai"]
+packages = ["core", "core.tools"]
 
 [tool.setuptools.package-dir]
 core = "."

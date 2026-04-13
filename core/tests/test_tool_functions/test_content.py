@@ -15,7 +15,7 @@ from core.tools import (
 async def test_post_output_tool(setup):
     engine, bc, _ = setup
     post_output = _TOOL_DISPATCH["post_output"]
-    tr = await _create_agent()
+    tr = await _create_agent(template="terminal")
     agent_id = tr.data["id"]
     result = await post_output(agent_id, "<h1>Hello</h1>")
     assert "posted" in result.lower()

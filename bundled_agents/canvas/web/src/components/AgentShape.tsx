@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { CanvasAgent, WSMessage } from '../types'
+import type { CanvasAgent, TransportMessage } from '../types'
 import { HtmlAgentBody } from './base'
 import { registry } from '../plugins/registry'
 
 interface AgentShapeProps {
   agent: CanvasAgent
   onDragStart: (agentId: string, x: number, y: number, e: React.MouseEvent) => void
-  send: (msg: WSMessage) => void
-  subscribe: (fn: (msg: WSMessage) => void) => () => void
+  send: (msg: TransportMessage) => void
+  subscribe: (fn: (msg: TransportMessage) => void) => () => void
   readonly?: boolean
   zoom?: number
 }

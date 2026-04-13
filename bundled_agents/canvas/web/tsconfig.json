@@ -21,6 +21,10 @@
       "marked": ["./node_modules/marked/lib/marked.d.ts"]
     }
   },
-  "include": ["src", "../../terminal/plugin.ts", "../../fantastic_agent/plugin.ts", "../../fantastic_agent/web"],
+  "include": [
+    "src",
+    "../../terminal/plugin.ts",
+    "../../fantastic_agent/plugin.ts"
+  ],
   "exclude": ["src/test"]
 }

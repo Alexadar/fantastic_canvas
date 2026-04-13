@@ -1,68 +1,69 @@
 # Canvas Management
 
-Agent lifecycle, content aliases, and visual effects.
+Agent lifecycle, layout, content aliases, and visual effects.
 
 ## Getting Started
 
 ```bash
-fantastic add canvas        # creates canvas agent, marks bundle as added
-fantastic                   # starts server with canvas loaded
+fantastic add web          # transport bundle (auto-added on first run)
+fantastic add canvas       # spatial host
+fantastic                  # start
+# Open http://localhost:8888/{canvas_agent_id}/
 ```
 
-## Agent Types
+## Agent types on a canvas
 
-| Type | Description | Terminal? | Default Size |
-|------|-------------|-----------|-------------|
-| `terminal` | Plain shell | Yes | 600x350 |
-| `html` | HTML content or URL in iframe | No | 800x600 |
+| Bundle | Purpose | Default size |
+|---|---|---|
+| `terminal` | PTY shell (xterm) | 600×350 |
+| `html` | Static HTML in iframe | 800×600 |
+| `fantastic_agent` | Chat UI fronting an AI backend | 400×500 |
+| `ollama`/`openai`/`anthropic`/`integrated` | Headless AI backends (no UI) | — |
+| `canvas` | Another spatial host (nestable) | — |
 
-## Agent CRUD (Tools)
+## Dispatch (symmetric on frontend via `d.{name}(args)`)
 
-### `create_agent(x, y, template, url, html_content, options)`
-Create agent on canvas. `template` sets the type (`"terminal"` or `"html"`). Returns `{agent_id, bundle, x, y, width, height}`.
+### `create_agent({ template, parent?, options: {x, y, width, height}, url?, html_content? })`
+Create agent. `template` = bundle name. Returns the full agent dict.
+Directory auto-named `{template}_{hex6}`. Bundle is required (see conventions).
 
-### `read_agent(agent_id)`
-Get full agent state: source, output_html, position.
+### `read_agent({ agent_id })`
+Full agent state.
 
-### `delete_agent(agent_id)`
-Delete agent. Cleans up terminal. Respects `delete_lock` property.
+### `delete_agent({ agent_id })`
+Delete. Respects `delete_lock`.
 
-### `move_agent(agent_id, x, y)` / `resize_agent(agent_id, width, height)`
-Reposition or resize an agent on the canvas.
+### `move_agent({ agent_id, x, y })` / `resize_agent({ agent_id, width, height })`
+Reposition / resize.
 
-### `rename_agent(agent_id, display_name)`
-Set display name in agent header. Empty string resets to default.
+### `rename_agent({ agent_id, display_name })` / `update_agent({ agent_id, options })`
+Set display name / bulk property update (e.g. `{autostart, delete_lock, autoscroll}`).
 
-### `update_agent(agent_id, options)`
-Bulk property update (e.g. `{"autostart": true, "delete_lock": true}`).
+### `refresh_agent({ agent_id })`
+Restart terminal or reload iframe. Emits `process_closed`/`process_started` or `agent_refresh`.
 
-### `refresh_agent(agent_id)`
-Restart terminal or reload iframe. Broadcasts process lifecycle events.
+### `spatial_discovery({ agent_id, radius? })`
+Find nearby agents by rectangular distance.
 
 ## Code Execution
 
-### `execute_python(code, agent_id)`
-Execute Python via subprocess. Stateless — each call is independent. `agent_id` is required.
-
-**Subprocess cwd = project directory.** Always use relative paths in code: `open("notebooks/config.yaml")`, not `os.path.expanduser("~/Projects/.../config.yaml")`. Relative paths work locally and in Docker containers.
+### `execute_python({ agent_id, code })`
+Stateless subprocess. `cwd` = project dir — always use relative paths in code.
 
 ## Content Aliases
 
-### `content_alias_file(file_path, persistent=True)` → `/content/{id}`
-Serve a local file via HTTP. Auto-detects MIME type.
+### `content_alias_file({ file_path, persistent: true })` → `{ alias_path: "/content/{id}" }`
+### `content_alias_url({ url, persistent: true })` → `{ alias_path: "/content/{id}" }`
 
-### `content_alias_url(url, persistent=True)` → `/content/{id}`
-Create a redirect alias for an external URL.
-
-Aliases are persisted to `.fantastic/aliases.json`. Use the returned path in HTML `<img>`, `<script>`, `<link>` tags. By default `persistent=True` — aliases survive server restarts. Pass `persistent=False` for temporary aliases that are cleaned up on reload.
+Use returned path in HTML `<img>`, `<script>`, `<link>` tags. Persistent aliases survive restarts. Files are served at `/content/{id}` by the web bundle (the only HTTP endpoint besides agent pages).
 
 ## Scene VFX
 
-### `scene_vfx(js_code)`
-Set canvas scene VFX (THREE.js). The JS receives `scene`, `THREE`, `camera`, `renderer`, `clock`. Use `this.onFrame = (delta, elapsed) => { ... }` for animation loops. Return a cleanup function to dispose resources. Stored in the canvas agent's `scene_vfx.js`.
+### `scene_vfx({ js_code, canvas_name? })`
+Set canvas 3D VFX (THREE.js). JS receives `scene, THREE, camera, renderer, clock`. Use `this.onFrame = (dt, t) => {...}` for animation. Return a cleanup function. Stored in the canvas agent's `scene_vfx.js`. Emits `scene_vfx_updated` event.
 
 ```python
-scene_vfx("""
+d.scene_vfx({ "js_code": """
 const geo = new THREE.TorusKnotGeometry(20, 6, 64, 16)
 const mat = new THREE.MeshStandardMaterial({ color: '#ff4488', wireframe: true })
 const mesh = new THREE.Mesh(geo, mat)
@@ -70,89 +71,67 @@ mesh.position.set(0, 100, 0)
 scene.add(mesh)
 this.onFrame = (dt, t) => { mesh.rotation.y += 0.01 }
 return () => { scene.remove(mesh); geo.dispose(); mat.dispose() }
-""")
+""" })
 ```
 
-### `scene_vfx_data(data)`
-Push live data to the VFX animation loop. Available in VFX code as `window.__vfxData`. Call at 10-30fps from a music/audio panel to drive reactive visuals.
+### `scene_vfx_data({ data, canvas_name? })`
+Push live runtime data to the VFX loop. Available in VFX as `window.__vfxData`. Call at 10-30fps to drive reactive visuals. Emits `scene_vfx_data` event.
 
-```python
-# From an HTML agent (e.g. music panel with Web Audio API):
-scene_vfx_data({"bass": 0.8, "mid": 0.3, "treble": 0.1, "bpm": 120})
-```
+## Events (subscribe via `t.on(name, handler)`)
 
-```python
-# VFX code that reads the live data:
-scene_vfx("""
-var d = window.__vfxData || {};
-var bass = d.bass || 0;
-var geo = new THREE.SphereGeometry(50 + bass * 200, 32, 32);
-var mat = new THREE.MeshStandardMaterial({ color: '#7c83ff', wireframe: true, transparent: true, opacity: 0.2 + bass * 0.6 });
-var mesh = new THREE.Mesh(geo, mat);
-scene.add(mesh);
-this.onFrame = (dt, t) => {
-  var b = (window.__vfxData || {}).bass || 0;
-  mesh.scale.setScalar(1 + b * 2);
-  mesh.rotation.y += 0.01;
-};
-return () => { scene.remove(mesh); geo.dispose(); mat.dispose(); };
-""")
-```
+- `agent_created` — `{agent: {...}}`
+- `agent_moved` — `{agent_id, x, y}`
+- `agent_resized` — `{agent_id, width, height}`
+- `agent_updated` — `{agent_id, ...changed_fields}`
+- `agent_deleted` — `{agent_id}`
+- `agent_output` — `{agent_id, html}` (post_output fired)
+- `agent_refresh` — `{agent_id}`
+- `scene_vfx_updated` / `scene_vfx_data`
 
-## Canvas State
+## State queries
 
-### `get_canvas_state()`
-Returns full state: all agents with positions, sizes, types, sources, outputs.
+### `get_state({ scope: '' })` / `get_full_state()`
+Full state: all agents with positions, sizes, bundles, sources, outputs. `scope` can filter by display_name.
 
-### `list_agents()`
-Returns agent list with id, display_name, bundle, position, source.
+### `list_agents({ parent: '' })`
+Agent list. `parent='canvas_main'` for children of a specific canvas.
 
-## Persistent State
+## Persistent state layout
 
 ```
 .fantastic/
-  fantastic.md
   config.json                # Server config (port, PID)
   registry.json              # Server registry
-  aliases.json               # Content alias registry
+  aliases.json               # Content aliases
   instances.json             # Instance tracking
   agents/
-    {canvas_agent_id}/       # Canvas (real agent, bundle="canvas")
+    canvas_{hex}/            # A canvas agent
       agent.json             # {id, bundle: "canvas", ...}
-      layout.json            # {agent_id: {x, y, width, height}}
-      canvasbg.js            # Background VFX
-    {agent_id}/              # Per agent
-      agent.json             # identity, type, metadata
-      source.py              # last executed code
-      output.html            # HTML output
-      terminal.log           # scrollback (terminal-type only)
+      scene_vfx.js           # VFX code
+    terminal_{hex}/          # Per agent (format: {bundle}_{hex6})
+      agent.json             # identity, layout, flags
+      source.py              # last executed code (log, not source of truth)
+      output.html            # ephemeral render
+      terminal.log           # scrollback (terminal bundle only)
+      chat.json              # chat history (AI / fantastic_agent)
+      schedules.json         # per-agent schedules
+      memory_long.jsonl      # append-only execution memory
 ```
 
 ## Agent Storage Policy — IMPORTANT
 
-> **Agents are ephemeral runners, not code containers.** All source code MUST live in the project directory, never inside `.fantastic/`. If you are unsure where to put something — ask the user.
+> **Agents are ephemeral runners, not code containers.** All source code lives in the project directory, never inside `.fantastic/`. Ask the user if unsure.
 
 **Rules:**
-1. **Code lives in the project** — write .py files to project dirs (e.g. `steps/`, `src/`, `notebooks/`)
-2. **Agents reference external files** — use `execute_python("exec(open('steps/01_load.py').read())", agent_id)` to run them
-3. **Never pass large code blocks to `execute_python`** — always read from project files
-4. **`.fantastic/` is metadata only** — `agent.json` (config), `output.html` (ephemeral render), nothing else matters
-5. **`source.py` in `.fantastic/` is an auto-generated log** — NOT source of truth, NOT for editing
-6. **When in doubt, ask the user** — if you're unsure whether code should go in the project or an agent, ask first
+1. **Code lives in the project** — write .py files to project dirs (`steps/`, `src/`, `notebooks/`).
+2. **Agents reference external files** — `d.execute_python({agent_id, code: "exec(open('steps/01.py').read())"})`.
+3. **Never pass large code blocks** to `execute_python` — read from project files.
+4. **`.fantastic/` is metadata/runtime only**.
+5. **`write_file` with `agent_id`** writes a bare filename into that agent's `.fantastic/agents/{id}/` folder — useful for ephemeral agent-owned files.
 
 The pattern: **project owns code, agents own execution and output.**
 
 ## File Operations
 
-### `list_files()` / `read_file(path)`
-List project files as tree or read a specific file. Excludes `.fantastic/`, `.git/`, `node_modules/`, etc.
-
-### `rename_file(old_path, new_path)` / `delete_file(path)`
-Rename/move or delete a project file. Broadcasts `file_renamed` / `file_deleted`.
-
-## External Execution
-
-For external agent integration:
-1. Create an agent
-2. Submit code via `POST /api/agents/{id}/resolve`
-3. Result broadcast to frontend
+- `list_files({ path: '' })` — project file tree (excludes `.fantastic/`, `.git/`, `node_modules/`)
+- `read_file({ path })` / `write_file({ path, content, agent_id? })`

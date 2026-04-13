@@ -27,7 +27,9 @@ def scheduler(agents_dir):
 
 
 def test_add_and_list(scheduler):
-    sch = scheduler.add("agent_a", {"type": "tool", "tool": "get_state", "args": {}}, 60)
+    sch = scheduler.add(
+        "agent_a", {"type": "tool", "tool": "get_state", "args": {}}, 60
+    )
     assert sch["id"].startswith("sch_")
     assert sch["interval_seconds"] == 60
     assert sch["run_count"] == 0
@@ -107,26 +109,54 @@ async def test_tick_executes_due_tool(scheduler):
     mock_fn = AsyncMock()
     dispatch = {"get_state": mock_fn}
 
-    sch = scheduler.add("agent_a", {"type": "tool", "tool": "get_state", "args": {"scope": "root"}}, 60)
-    # Make it due now
+    sch = scheduler.add(
+        "agent_a", {"type": "tool", "tool": "get_state", "args": {"scope": "root"}}, 60
+    )
     sch["next_run"] = time.time() - 1
 
     await scheduler._execute("agent_a", sch, dispatch, AsyncMock())
     mock_fn.assert_called_once_with(scope="root", agent_id="agent_a")
 
 
-async def test_tick_executes_due_prompt(scheduler):
-    """Due prompt schedule calls voice_transcript with owning agent_id."""
+async def test_tool_broadcasts_reach_bus(scheduler):
+    """ToolResult.broadcast from a scheduled tool must flow to broadcast_fn."""
+    from core.dispatch import ToolResult
+
+    bcast_msg = {"type": "agent_updated", "agent_id": "agent_a", "display_name": "X"}
+
+    async def fn(**kwargs):
+        return ToolResult(data={"ok": True}, broadcast=[bcast_msg])
+
+    dispatch = {"rename_agent": fn}
+    broadcast_fn = AsyncMock()
+
+    sch = scheduler.add(
+        "agent_a",
+        {"type": "tool", "tool": "rename_agent", "args": {"display_name": "X"}},
+        60,
+    )
+    sch["next_run"] = time.time() - 1
+
+    await scheduler._execute("agent_a", sch, dispatch, broadcast_fn)
+    broadcast_fn.assert_awaited_once_with(bcast_msg)
+
+
+async def test_tick_executes_due_prompt(scheduler, agents_dir):
+    """Due prompt schedule routes to the agent's bundle `_send` dispatch."""
+    import json
+
+    # Write agent.json with bundle=ollama so scheduler knows how to route
+    (agents_dir / "agent_a" / "agent.json").write_text(
+        json.dumps({"id": "agent_a", "bundle": "ollama"})
+    )
     mock_handler = AsyncMock()
-    dispatch = {"voice_transcript": mock_handler}
+    dispatch = {"ollama_send": mock_handler}
 
     sch = scheduler.add("agent_a", {"type": "prompt", "text": "check status"}, 60)
     sch["next_run"] = time.time() - 1
 
     await scheduler._execute("agent_a", sch, dispatch, AsyncMock())
-    mock_handler.assert_called_once_with(
-        agent_id="agent_a", text="check status", is_final=True, mode="chat"
-    )
+    mock_handler.assert_called_once_with(agent_id="agent_a", text="check status")
 
 
 async def test_tool_action_always_scoped_to_agent(scheduler):
@@ -136,7 +166,11 @@ async def test_tool_action_always_scoped_to_agent(scheduler):
 
     sch = scheduler.add(
         "agent_a",
-        {"type": "tool", "tool": "execute_python", "args": {"code": "print(1)", "agent_id": "agent_b"}},
+        {
+            "type": "tool",
+            "tool": "execute_python",
+            "args": {"code": "print(1)", "agent_id": "agent_b"},
+        },
         60,
     )
     sch["next_run"] = time.time() - 1

@@ -36,11 +36,11 @@ async def _add_bundle(
         conversation.say("fantastic", f"plugin '{bundle_name}' installed")
         return ToolResult(data={"installed": bundle_name})
 
-    # Resolve bundle dir: built-in first, then installed plugins
+    # Resolve bundle dir: built-in first (recursive scan), then installed plugins
     store = BundleStore(bundled_agents_dir())
     bundle = store.get_bundle(bundle_name)
     if bundle:
-        bundle_dir = bundled_agents_dir() / bundle_name
+        bundle_dir = store._find_bundle_dir(bundle_name)
     else:
         from .._install import get_plugin_dir
 
@@ -59,7 +59,7 @@ async def _add_bundle(
     before_ids = {a["id"] for a in _state._engine.store.list_agents()}
 
     # Call bundle's on_add hook (creates agent, registers hooks, etc.)
-    _call_bundle_hook_sync(
+    await _call_bundle_hook(
         bundle_dir,
         "on_add",
         str(_state._engine.project_dir),
@@ -69,7 +69,9 @@ async def _add_bundle(
 
     # Broadcast agent_created for any agents created by on_add
     try:
-        from ..server import broadcast
+        from ..bus import bus as _bus
+
+        broadcast = _bus.broadcast
 
         for agent in _state._engine.store.list_agents():
             if agent["id"] not in before_ids:
@@ -92,20 +94,8 @@ async def _add_bundle(
         if result.tools:
             _state._bundle_loaded[bundle_name] = True
 
-    # Hot-swap web UI + run new lifespan hooks (e.g. URL announcement)
-    try:
-        from ..server import remount_web_ui, broadcast
-        from ..server._state import _lifespan_hooks, _lifespan_hooks_ran
-
-        remount_web_ui()
-        # Run any newly registered lifespan hooks that haven't run yet
-        import core.server._state as _srv_state
-
-        for hook in _lifespan_hooks[_lifespan_hooks_ran:]:
-            await hook(_srv_state, broadcast)
-        _srv_state._lifespan_hooks_ran = len(_lifespan_hooks)
-    except Exception:
-        logger.debug("Could not hot-swap web UI (server may not be running)")
+    # Web bundle owns HTTP now; new agents' routes are resolved automatically by
+    # per-agent URL (`{base}/{agent_id}/`), no hot-swap needed.
 
     conversation.say(bundle_name, "bundle loaded")
     return ToolResult(data={"added": bundle_name, "name": name or "main"})
@@ -165,19 +155,10 @@ async def _remove_bundle(bundle_name: str, name: str = "") -> ToolResult:
         _bundle_tool_names.pop(bundle_name, None)
         _state._bundle_loaded.pop(bundle_name, None)
 
-    # Hot-swap web UI
-    try:
-        from ..server import remount_web_ui
+    # Web bundle routes are URL-driven; notify clients to reload
+    from ..bus import bus as _bus
 
-        remount_web_ui()
-    except Exception:
-        logger.debug("Could not hot-swap web UI (server may not be running)")
-    try:
-        from ..server import broadcast
-
-        await broadcast({"type": "reload"})
-    except Exception:
-        logger.debug("Could not broadcast reload")
+    await _bus.broadcast({"type": "reload"})
 
     conversation.say(
         "fantastic", f"Removed {bundle_name}" + (f" '{name}'" if name else "")
@@ -259,27 +240,35 @@ async def _list_bundles() -> ToolResult:
     return ToolResult(data=result)
 
 
-def _call_bundle_hook_sync(bundle_dir, hook_name, project_dir, **kwargs):
-    """Call a hook function on a bundle's tools.py if it exists."""
+async def _call_bundle_hook(bundle_dir, hook_name, project_dir, **kwargs):
+    """Call a hook function on a bundle's tools.py if it exists (sync or async).
+
+    Prefers the module already loaded by the plugin loader (so dispatch handlers
+    and module-level singletons like `_engine` stay bound to the loaded copy).
+    Falls back to a fresh spec import if the bundle hasn't been loaded yet.
+    """
     import importlib.util
+    import inspect
+    import sys
 
     tools_file = bundle_dir / "tools.py"
     if not tools_file.exists():
         return
     try:
-        spec = importlib.util.spec_from_file_location(
-            f"bundle_{bundle_dir.name}_hook",
-            tools_file,
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        mod = sys.modules.get(f"bundle_{bundle_dir.name}_tools")
+        if mod is None:
+            spec = importlib.util.spec_from_file_location(
+                f"bundle_{bundle_dir.name}_hook",
+                tools_file,
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
         fn = getattr(mod, hook_name, None)
         if fn:
-            import inspect
-
             sig = inspect.signature(fn)
-            # Pass kwargs that the hook accepts
             valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-            fn(project_dir, **valid_kwargs)
+            result = fn(project_dir, **valid_kwargs)
+            if inspect.iscoroutine(result):
+                await result
     except Exception as e:
         logger.warning(f"Hook {hook_name} failed for {bundle_dir.name}: {e}")

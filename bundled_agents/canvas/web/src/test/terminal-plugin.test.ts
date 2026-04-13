@@ -125,7 +125,7 @@ describe('terminal injectHeader AI button', () => {
     aiBtn.click()
     expect(send).toHaveBeenCalledWith({
       type: 'create_agent',
-      template: 'fantastic_agent',
+      template: 'ollama',
       options: { x: 100 + 800 + 20, y: 200 },
     })
   })
@@ -146,7 +146,7 @@ describe('terminal injectHeader AI button', () => {
     aiBtn.click()
     expect(send).toHaveBeenCalledWith({
       type: 'create_agent',
-      template: 'fantastic_agent',
+      template: 'ollama',
       options: { x: 50 + 400 + 20, y: agent.y },
     })
   })

@@ -114,7 +114,9 @@ async def _list_files(path: str = "") -> ToolResult:
         parts = Path(path).parts
         node = files
         for part in parts:
-            match = next((f for f in node if f["name"] == part and f.get("isDir")), None)
+            match = next(
+                (f for f in node if f["name"] == part and f.get("isDir")), None
+            )
             if match is None:
                 return ToolResult(data={"error": f"Directory not found: {path}"})
             node = match.get("children", [])

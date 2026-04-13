@@ -16,7 +16,7 @@ from core.dispatch import ToolResult
 
 
 async def test_create_agent(setup):
-    tr = await _create_agent(options={"x": 100, "y": 200})
+    tr = await _create_agent(template="terminal", options={"x": 100, "y": 200})
     assert isinstance(tr, ToolResult)
     assert "id" in tr.data
     assert tr.data["x"] == 100
@@ -36,14 +36,14 @@ async def test_create_agent_with_template(setup):
 
 
 async def test_create_agent_with_dimensions(setup):
-    tr = await _create_agent(options={"width": 400, "height": 300})
+    tr = await _create_agent(template="terminal", options={"width": 400, "height": 300})
     assert tr.data["width"] == 400
     assert tr.data["height"] == 300
 
 
 async def test_list_agents(setup):
-    await _create_agent()
-    await _create_agent()
+    await _create_agent(template="terminal")
+    await _create_agent(template="terminal")
     tr = await _list_agents()
     assert isinstance(tr.data, list)
     assert len(tr.data) >= 2
@@ -173,7 +173,7 @@ async def test_refresh_agent_not_found(setup):
 
 
 async def test_get_full_state(setup):
-    await _create_agent()
+    await _create_agent(template="terminal")
     tr = await _get_full_state()
     assert "agents" in tr.data
 

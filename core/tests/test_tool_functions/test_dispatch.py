@@ -173,7 +173,9 @@ def test_tool_result_with_data():
 
 
 async def test_dispatch_create_agent(setup):
-    tr = await dispatch("create_agent", options={"x": 100, "y": 200})
+    tr = await dispatch(
+        "create_agent", template="terminal", options={"x": 100, "y": 200}
+    )
     assert isinstance(tr, ToolResult)
     assert "id" in tr.data
     types = {b["type"] for b in tr.broadcast}
@@ -181,7 +183,7 @@ async def test_dispatch_create_agent(setup):
 
 
 async def test_dispatch_list_agents(setup):
-    await dispatch("create_agent")
+    await dispatch("create_agent", template="terminal")
     tr = await dispatch("list_agents")
     assert isinstance(tr.data, list)
     assert len(tr.data) >= 1
@@ -189,7 +191,7 @@ async def test_dispatch_list_agents(setup):
 
 async def test_dispatch_delete_agent(setup):
     engine, bc, _ = setup
-    tr_create = await dispatch("create_agent")
+    tr_create = await dispatch("create_agent", template="terminal")
     agent_id = tr_create.data["id"]
     bc.clear()
     tr = await dispatch("delete_agent", agent_id=agent_id)
@@ -199,7 +201,7 @@ async def test_dispatch_delete_agent(setup):
 
 
 async def test_dispatch_move_agent(setup):
-    tr_create = await dispatch("create_agent")
+    tr_create = await dispatch("create_agent", template="terminal")
     agent_id = tr_create.data["id"]
     tr = await dispatch("move_agent", agent_id=agent_id, x=500, y=600)
     assert tr.data["x"] == 500
@@ -220,7 +222,7 @@ async def test_dispatch_unknown_tool(setup):
 
 async def test_dispatch_agent_run(setup):
     engine, bc, _ = setup
-    tr_create = await dispatch("create_agent")
+    tr_create = await dispatch("create_agent", template="terminal")
     agent_id = tr_create.data["id"]
     bc.clear()
     tr = await dispatch("agent_run", agent_id=agent_id, code="print(42)")

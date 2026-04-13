@@ -1,230 +1,265 @@
 # Fantastic Canvas
 
-An infinite canvas where AI agents build anything — a server/IDE where agents communicate through REST/WS tools.
+An infinite canvas where AI agents build anything — a pure orchestrator + bundled agents, connected by a WebSocket-hidden transport.
 
-## Progressive Architecture: Core → Server → AI
+## Architecture
 
 ```
-Core   — conversation loop + command parsing + ring buffer     (always)
-Server — bundles + agents + REST/WS                            (on demand, singleton per folder)
-AI     — brain + pluggable providers (integrated/ollama/anthropic/proxy)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             FANTASTIC CANVAS                                 │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                          CORE (orchestrator only)                     │   │
+│  │                                                                       │   │
+│  │   engine.py ─ agent_store.py ─ dispatch.py ─ bus.py ─ scheduler.py    │   │
+│  │   protocol.py ─ process_runner.py ─ input_loop.py ─ cli.py            │   │
+│  │                                                                       │   │
+│  │   No HTTP. No UI. Just: agents, dispatch registry, per-agent inbox.   │   │
+│  └───────────────────────────┬──────────────────────────────────────────┘   │
+│                              │                                               │
+│     ┌────────────────────────┼────────────────────────┐                     │
+│     │                        │                        │                     │
+│     ▼                        ▼                        ▼                     │
+│  ┌───────────┐         ┌──────────────┐         ┌──────────────┐             │
+│  │ web bundle│         │ AI bundles   │         │ canvas/term/ │             │
+│  │ (uvicorn) │         │ (headless)   │         │ fantastic_ag │             │
+│  │           │         │              │         │ (has web/)   │             │
+│  │ serves UI │◄───────►│  ollama      │         │              │             │
+│  │ + WS at   │  bus    │  openai      │         │ canvas agent │             │
+│  │ {base}/   │ events  │  anthropic   │         │ terminal     │             │
+│  │ {agt}/ws  │         │  integrated  │         │ fantastic_a  │             │
+│  │           │         │              │         │              │             │
+│  │ injects   │         │ {b}_send     │         │ each has     │             │
+│  │ transport │         │ {b}_history  │         │ web/         │             │
+│  │ .js       │         │ {b}_save_msg │         │ folder       │             │
+│  └─────┬─────┘         └──────────────┘         └──────────────┘             │
+│        │                                                                     │
+└────────┼─────────────────────────────────────────────────────────────────────┘
+         │
+         ▼ (HTTP + WS)
+   ┌────────────────────────────────────────────────────┐
+   │                     BROWSER                         │
+   │                                                     │
+   │  GET /{agent_id}/             → agent's HTML        │
+   │  <script src="_fantastic/transport.js"> ◄─ injected │
+   │                                                     │
+   │  const t = fantastic_transport()                    │
+   │  const d = t.dispatcher                             │
+   │  await d.list_agents()       // symmetric w/ core   │
+   │  t.on('agent_created', ...)  // events              │
+   │  await t.watch('ollama_abc') // mirror inbox        │
+   │                                                     │
+   │  Zero WS knowledge. Just the injected global.       │
+   └────────────────────────────────────────────────────┘
 ```
 
-`fantastic` always starts **Core**. If bundles are added and no server is running, Core starts it alongside. If a server is already running (PID alive, singleton per folder), Core connects to it.
+**Key principles:**
+- **Core has no HTTP.** It's a pure orchestrator (engine + dispatch registry + bus).
+- **Web is a bundle.** `bundled_agents/web/` starts a uvicorn per web agent. Multiple web agents = multiple ports/routes. Config (`port`, `base_route`) is hot-reloadable.
+- **Every agent is URL-addressed.** `{base}/{agent_id}/` serves that agent's UI. Each gets its own WS channel at `{base}/{agent_id}/ws`.
+- **UI agents never see WebSocket.** The web bundle injects `fantastic_transport()` as a global. UI uses `dispatch/dispatcher/on/emit/watch`. That's it.
+- **Dispatch is symmetric.** `t.dispatcher.list_agents({parent: 'canvas_main'})` on frontend ≡ `_DISPATCH["list_agents"](parent="canvas_main")` on backend. Same names, same args.
+- **AI bundles are headless.** They register dispatch handlers (`ollama_send`, etc.) and emit events to the bus. No UI of their own.
+- **`fantastic_agent` is the universal chat UI.** Configure with `upstream_agent_id` + `upstream_bundle` to front any AI backend via `transport.watch(upstream_id)`.
 
-The conversation buffer (`{who}:{message}`) is the universal backbone. Color-coded: core=magenta, user=green, agent/bundle=cyan.
+The conversation buffer (`{who}:{message}`) is the CLI log. Color-coded: core=magenta, user=green, agent/bundle=cyan.
 
 ## Quick Start
 
 ```bash
 # Development (uv)
 uv sync                                                      # install deps + create venv
-uv run fantastic add canvas                                  # add canvas bundle (once)
-uv run fantastic add terminal                                # add terminal bundle (once)
-uv run fantastic                                             # adaptive: Core+Server if bundles added
-cd bundled_agents/canvas/web && npm run dev                  # port 3000
-cd core && uv run pytest tests/ -v -x                        # core tests
-cd bundled_agents/canvas/web && npx vitest run               # frontend tests
-# Manual test scenarios:
-# bundled_agents/canvas/tests/ai/selftest.md   — 58-point API selftest
-# core/tests/ai/README.md                      — AI/Ollama integration tests
+uv run fantastic add web                                     # add web bundle (first run auto-adds)
+uv run fantastic add canvas                                  # add canvas bundle
+uv run fantastic add terminal                                # add terminal bundle
+uv run fantastic                                             # starts engine + all web agents
 
-# CLI subcommands (offline use)
-fantastic list                                               # show bundles + status
-fantastic add <bundle>                                       # add a bundle
+# Frontend build (once after clone / after transport.ts changes)
+cd bundled_agents/canvas/web
+npm install
+npm run build                                                # canvas UI + transport.js
+npm run build:transport                                      # transport.ts → dist/transport.js only
+
+# Tests
+uv run pytest core/tests/ bundled_agents/ -v -x              # backend
+cd bundled_agents/canvas/web && npx vitest run               # frontend
+
+# CLI subcommands
+fantastic list                                               # show bundles + agents
+fantastic add <bundle>                                       # add a bundle (e.g. ollama, fantastic_agent)
 fantastic remove <bundle>                                    # remove a bundle
 fantastic serve                                              # headless server (no input loop)
 
-# Interactive mode (same commands work in the conversation loop)
-fantastic                                                    # starts input loop
-> list                                                       # show bundles
-> add canvas                                                 # add canvas bundle
-> log                                                        # show conversation history
+# Interactive mode
+fantastic                                                    # starts input loop + web
+> list
+> add canvas
+> log
 
-# AI providers (@ai commands in interactive mode)
-> @ai start ollama qwen3:8b-q4_K_M                          # connect Ollama
-> @ai start anthropic claude-sonnet-4-20250514               # connect Claude API (needs ANTHROPIC_API_KEY in .env)
-> @ai start integrated Qwen/Qwen3.5-4B                      # local torch model
-> @ai start proxy http://other-fantastic:8888                # proxy to remote instance
-> @ai stop                                                   # disconnect provider
-> @ai hello                                                  # chat with AI
-> @ai create a terminal and run ls                           # AI uses tools
+# AI providers are now bundled agents (not a central brain anymore)
+> add ollama                                                 # create an ollama backend agent
+> add fantastic_agent                                        # create a chat UI proxy
+# Then configure fantastic_agent via tool call:
+#   fantastic_agent_configure(agent_id=<fa_id>, upstream_agent_id=<ollama_id>, upstream_bundle="ollama")
+
+# Multiple web agents (ports, base routes)
+> add web                                                    # additional web agent, default port 8888
+# Then: web_configure(agent_id=<web_id>, port=9000, base_route="/admin")
 
 # Install globally via uv
-uv tool install ./core                                       # from source
-uv tool install ./core[torch]                                # with PyTorch (auto: CPU on macOS, CUDA on Linux)
-fantastic add canvas && fantastic --project-dir ~/my-project
+uv tool install ./core
+uv tool install ./core[torch]
 
 # Docker
 docker-compose up
-# or: docker build -t fantastic-canvas . && docker run -v $(pwd):/workspace fantastic-canvas fantastic --host 0.0.0.0 --project-dir /workspace
 ```
 
 ## Skills
 
 Skills are provided by bundles via their own handbook tools.
 
-| Tool | Skill name | What It Covers |
-|------|------------|----------------|
-| `get_handbook` | *(none)* | Returns CLAUDE.md (overview) |
-| `get_handbook_canvas` | `canvas-management` | Agent CRUD, types, content aliases, VFX |
-| `get_handbook_terminal` | `terminal-control` | Read output, restart processes, send signals, scrollback, REST + WS APIs |
+| Tool | What It Covers |
+|------|----------------|
+| `get_handbook` | Returns CLAUDE.md (this file) |
+| `get_handbook_canvas` | Agent CRUD, layout, content aliases, VFX |
+| `get_handbook_terminal` | Read output, restart processes, send signals, scrollback |
 
-## Tools
+Each AI bundle (`ollama`, `openai`, `anthropic`, `integrated`) has its own `skills/{bundle}.md`. The `web` bundle has `skills/web.md` documenting port/base_route config. `fantastic_agent` has `skills/fantastic_agent.md` for upstream configuration.
 
-All tools are discoverable via `GET /api/schema` and callable via `POST /api/call {"tool": "...", "args": {...}}`.
+## Dispatch (the ONE vocabulary)
 
-**Core**: `create_agent`, `list_agents`, `read_agent`, `delete_agent`, `get_state`, `execute_python`, `content_alias_file`, `content_alias_url`, `get_aliases`, `agent_call`, `launch_instance`, `stop_instance`, `list_instances`, `register_instance`, `unregister_instance`, `restart_instance`, `list_registered_instances`, `get_handbook`, `register_template`, `list_templates`, `server_logs`, `read_agent_memory`, `append_agent_memory`
-**Canvas**: `move_agent`, `resize_agent`, `rename_agent`, `update_agent`, `post_output`, `refresh_agent`, `scene_vfx`, `scene_vfx_data`, `get_handbook_canvas`
+`_DISPATCH` / `_TOOL_DISPATCH` hold every tool. Names mirror 1:1 on the frontend via `fantastic_transport().dispatcher`.
+
+**Core**: `create_agent`, `list_agents`, `read_agent`, `delete_agent`, `update_agent`, `rename_agent`, `refresh_agent`, `post_output`, `get_state`, `get_full_state`, `execute_python`, `agent_run`, `content_alias_file`, `content_alias_url`, `get_aliases`, `list_files`, `read_file`, `write_file`, `agent_call`, `launch_instance`, `stop_instance`, `restart_instance`, `list_instances`, `register_instance`, `unregister_instance`, `list_registered_instances`, `get_handbook`, `register_template`, `list_templates`, `server_logs`, `read_agent_memory`, `append_agent_memory`, `conversation_log`, `conversation_say`, `core_chat_message`
+**Scheduler**: `create_schedule`, `list_schedules`, `delete_schedule`
+**Canvas**: `move_agent`, `resize_agent`, `scene_vfx`, `scene_vfx_data`, `spatial_discovery`, `get_handbook_canvas`
 **Terminal**: `terminal_output`, `terminal_restart`, `terminal_signal`, `get_handbook_terminal`
-**Process (WS)**: `process_create`, `process_input`, `process_resize`, `process_enter`, `process_close`, `process_attach`
+**Process**: `process_create`, `process_input`, `process_resize`, `process_enter`, `process_close`, `process_attach`, `process_output`, `process_restart`, `process_signal`
+**Web**: `web_configure`
+**AI bundles** (per `{bundle}` in ollama/openai/anthropic/integrated): `{bundle}_send`, `{bundle}_interrupt`, `{bundle}_save_message`, `{bundle}_history`, `{bundle}_configure`
+**fantastic_agent**: `fantastic_agent_get_config`, `fantastic_agent_configure`, `fantastic_agent_save_message`, `fantastic_agent_history`
 
-**Note:** `_DISPATCH` / `_TOOL_DISPATCH` contain ALL tools (core + bundle) — WS and REST dispatch is flat. Backend host:port is auto-assigned — always check the running server's actual URL before making requests.
+## Protocol (frontend ↔ backend)
 
-## REST API
+**No REST.** Pure WebSocket, one channel per agent at `ws://{host}/{base}/{agent_id}/ws`. Everything flows over the injected `fantastic_transport()` global.
 
+Message shapes (JSON, see `core/protocol.py`):
 ```
-GET  /api/schema                        # JSON schema of all available tools
-GET  /api/state                         # Full state (?scope=name to filter)
-GET  /api/handbook                      # Handbook (CLAUDE.md)
-POST /api/call                          # Universal tool call: {"tool": "...", "args": {...}}
-POST /api/agents/{id}/resolve           # Submit + execute code
-POST /api/agents/{id}/execute           # Execute raw code
-GET  /api/agents/{id}/memory            # Read agent memory (?from=&to= epoch filters)
-POST /api/agents/{id}/memory            # Append to agent memory {"type": "...", "message": {...}}
-GET  /api/terminal/{id}/output          # Terminal scrollback
-POST /api/terminal/{id}/restart         # Restart terminal process
-POST /api/terminal/{id}/signal          # Send signal: {"signal": 2}
-POST /api/terminal/{id}/write           # Write to pty: {"data": "..."}
-POST /api/broadcast/start               # Start broadcast mode
-POST /api/broadcast/stop                # Stop broadcast mode
-GET  /api/broadcast/status              # Broadcast status + viewer count
-GET  /api/files                         # Project file tree
-GET  /content/{alias_id}               # Serve content alias
-GET  /bundles/{name}/{path}            # Serve bundle assets
+C→S  {"type":"call",  "tool":"<name>", "args":{...}, "id":"<uuid>"}
+C→S  {"type":"emit",  "event":"<name>", "data":{...}}
+S→C  {"type":"reply", "id":"<uuid>", "data":{...}}
+S→C  {"type":"error", "id":"<uuid>", "error":"<msg>"}
+S→C  {"type":"event", "event":"<name>", "data":{...}}
 ```
 
-## Transport: WS-first, REST fallback
+Frontend API (from the injected global):
+```ts
+const t = fantastic_transport()
+const d = t.dispatcher
+await d.list_agents({parent: 'canvas_main'})   // dispatch (symmetric with backend)
+t.on('agent_created', handler)                  // subscribe to events
+t.onAny((event, data) => ...)                   // wildcard
+await t.watch('ollama_abc')                     // mirror another agent's inbox
+```
 
-WS `/ws` is the primary transport — `{"type": "<tool_name>", ...args}` maps directly to `_DISPATCH`. HTML agents should use WS for real-time ops (create, move, resize, delete, process I/O) and fall back to `POST /api/call` for one-shot requests. For inter-agent communication, use `agent_call` to type messages into target processes. Instance lifecycle events broadcast `instances_changed` (with full instance list) to all WS clients.
+**Web|dispatch is THIN**: pure lookup in `_DISPATCH` and invoke. No translation, no aliasing. Auth/ACL/rate-limiting are future layers `# later` on top.
 
-### WS message protocol (frontend ↔ backend)
-
-**Outgoing (frontend → backend):** `create_agent`, `delete_agent`, `move_agent`, `resize_agent`, `process_create`, `process_input`, `process_resize`, `process_close` — all use `agent_id` field.
-**Incoming (backend → frontend):** `agent_created`, `agent_moved`, `agent_resized`, `agent_updated`, `agent_deleted`, `agent_output`, `agent_refresh`, `process_output`, `process_created`, `process_closed`, `process_started` — all use `agent_id` field.
+Events are published to per-agent bus inboxes (see `core/bus.py`). The web bundle's WS handler drains inboxes into WS frames for connected clients.
 
 ## Best Practices
 
-- **Never inline base64 in `post_output`** — payloads over 512KB crash the canvas. Use `content_alias_file(file_path)` to get a `/content/{id}` URL, reference it in HTML via `window.parent.location.origin + alias_path`.
-- **Large assets** (images, plots, data): save to project dir → `content_alias_file` → URL in HTML. Lightweight HTML, assets served via HTTP.
-- **Never spawn cascades of `fantastic_agent`** — they are user-facing chat/voice endpoints, not API-callable agents. `agent_call` cannot reach them (no PTY). If unsure whether to create agents or run code autonomously, ask the user first.
+- **Never inline base64 in `post_output`** — payloads over 512KB crash the canvas. Use `content_alias_file(file_path)` → serve at `/content/{id}`.
+- **Large assets** (images, plots, data): save to project dir → `content_alias_file` → URL in HTML.
+- **Never spawn cascades of `fantastic_agent`** — they are user-facing chat UIs, not API-callable agents. Ask the user first if unsure.
+- **UI agents never touch WebSocket.** Only `fantastic_transport()`. No `new WebSocket(...)`, no `fetch('/api/...')`.
+- **Agent IDs are `{bundle}_{hex6}`** (e.g. `terminal_a3f2b1`, `ollama_b04b35`). Bundle is required when creating an agent.
 
-## Architecture
+## Architecture notes
 
-- **Agent types**: `terminal`, `html`
-- **`delete_lock`**: boolean property on any agent's agent.json; `delete_agent` refuses deletion when true
-- **Tool dispatch as component router**: all agent-to-agent communication goes through tools (`agent_call`, `post_output`, etc.)
-- **Agent memory**: append-only JSONL at `.fantastic/agents/{id}/memory_long.jsonl`. Auto-records execution events (hash, snippet, exit code, duration). Read/write via REST `GET/POST /api/agents/{id}/memory`. Time-range filtering with `?from=&to=` epoch params.
-- **Code execution**: Python subprocess (stateless, one-shot)
-- **Broadcast mode**: readonly WS streaming to remote viewers (`/ws/broadcast?token=...`)
-- **Remote instances**: `launch_instance` with `ssh_host` + `remote_cmd` (e.g. `"uv run fantastic"` or `"fantastic"` if installed globally). The `remote_cmd` prefix derives the remote Python for port-finding. If a server is already running on the remote (detected via `.fantastic/config.json` PID check over SSH), `launch_instance` reuses it by setting up a tunnel only (`-N` flag) instead of launching a new process.
+- **Core has no HTTP.** `core/` is Engine + AgentStore + Dispatch + Bus + Scheduler. Transport is a bundle (`web`).
+- **Web agents are hot-reloadable.** `web_configure(agent_id, port=..., base_route=...)` cancels+restarts uvicorn with new config. Clients auto-reconnect (transport.ts handles it).
+- **Multiple web agents can coexist.** Different ports, different base routes, different policies (future: `readonly` for broadcast viewers).
+- **Each agent has a URL and a WS channel.** `{base}/{agent_id}/` serves HTML, `{base}/{agent_id}/ws` is the protocol channel. The web bundle injects `<script src="/_fantastic/transport.js">` into every served HTML page.
+- **`delete_lock`**: boolean on `agent.json`; `delete_agent` refuses deletion when true.
+- **Agent memory**: append-only JSONL at `.fantastic/agents/{id}/memory_long.jsonl`.
+- **Code execution**: Python subprocess (stateless, one-shot) via `execute_python` dispatch.
+- **Remote instances**: `launch_instance` with `ssh_host` + `remote_cmd`.
+- **Scheduler**: per-agent persistent schedules at `.fantastic/agents/{id}/schedules.json`. `create_schedule` with `action={type:"tool"|"prompt", ...}` and `interval_seconds`. Prompt actions route to the agent's `{bundle}_send` dispatch.
 
 ## Project Structure
 
 ```
 fantastic_canvas/
 ├── CLAUDE.md, fantastic.md, .env, .python-version
-├── scripts/                                # Build & test scripts
-│   ├── build-core.sh                       # Build pip package with bundled frontend
-│   └── test-core.sh                        # Run core tests
-├── skills/                                 # Core skill docs (3 files)
-├── bundled_agents/                         # Agent templates (terminal, canvas)
-│   ├── canvas/
-│   │   ├── template.json
-│   │   ├── tools.py
-│   │   ├── default_vfx.js
-│   │   ├── skills/canvas-management.md
-│   │   └── web/                            # Frontend (React + Vite)
-│   │       ├── index.html
-│   │       ├── package.json
-│   │       ├── vite.config.ts              # @bundles alias, proxy config
-│   │       ├── tsconfig.json               # @bundles path alias
-│   │       └── src/
-│   │           ├── main.tsx                # imports @bundles/terminal/plugin
-│   │           ├── App.tsx
-│   │           ├── types.ts                # CanvasAgent, WSMessage
-│   │           ├── styles.css
-│   │           ├── hooks/useWebSocket.ts
-│   │           ├── components/
-│   │           │   ├── Canvas.tsx           # Pan/zoom + agent WS protocol
-│   │           │   ├── AgentShape.tsx       # Agent UI (dispatches by type)
-│   │           │   └── base/
-│   │           │       ├── HtmlAgentBody.tsx
-│   │           │       └── index.ts
-│   │           ├── plugins/
-│   │           │   ├── registry.ts
-│   │           │   └── types.ts
-│   │           └── test/
-│   └── terminal/
-│       ├── template.json
-│       ├── tools.py
-│       ├── plugin.ts                       # Canvas plugin (imported by main.tsx)
-│       ├── source.py
-│       ├── bridge.ts
-│       ├── index.html
-│       ├── dist/
-│       └── skills/terminal-control.md
-├── docs/                                   # Architecture & analysis docs
-├── .fantastic/                             # Persistent agent state
-│   ├── fantastic.md
-│   ├── config.json                         # Server config (port, PID)
-│   ├── registry.json                       # Server registry
-│   ├── aliases.json                        # Content alias registry
-│   ├── instances.json                      # Instance tracking
-│   └── agents/
-│       ├── {canvas_agent_id}/              # Canvas (real agent, bundle="canvas")
-│       │   ├── agent.json                  # {id, bundle: "canvas", ...}
-│       │   ├── layout.json                 # Layout positions
-│       │   └── canvasbg.js                 # Background VFX
-│       └── {agent_id}/                     # Per agent
-│           ├── agent.json                  # identity, type, metadata
-│           ├── source.py                   # last executed code
-│           ├── output.html                 # HTML output
-│           └── terminal.log                # scrollback (terminal-type only)
-├── core/                                   # Backend package
-│   ├── pyproject.toml                      # Package config + pytest config
-│   ├── _paths.py                           # Asset path resolver (dev vs pip-installed)
-│   ├── _bundled/                           # Bundled assets (gitignored, built by scripts/)
-│   ├── cli.py                              # CLI entry point (adaptive: Core/Server/connect)
-│   ├── conversation.py                     # Ring buffer + color formatting
-│   ├── input_loop.py                       # Interactive conversation loop
-│   ├── agent.py                            # @autorun decorator + AST discovery
-│   ├── agent_store.py                      # Persistent .fantastic/ store
-│   ├── bundles.py                          # Bundle store (bundled_agents/)
-│   ├── engine.py                           # Core orchestration
-│   ├── code_runner.py                      # Subprocess-based Python executor
+├── core/                                   # PURE ORCHESTRATOR — no HTTP, no UI
+│   ├── cli.py                              # Entrypoint: boots engine + web bundle serve tasks
+│   ├── engine.py                           # Agent store + code runner orchestration
+│   ├── agent_store.py                      # Persistent .fantastic/ agent dirs
+│   ├── dispatch.py                         # _DISPATCH, _TOOL_DISPATCH, ToolResult
+│   ├── bus.py                              # Per-agent inbox + global firehose + watch()
+│   ├── protocol.py                         # Wire protocol reference (constants + docstring)
 │   ├── process_runner.py                   # PTY terminal management
-│   ├── dispatch.py                         # ToolResult + dispatch
-│   ├── instance_backend.py                 # Local/SSH instance launcher
-│   ├── tools/                              # Tool dispatch (REST + WS)
-│   │   ├── _agents.py                      # Agent CRUD, execution, output
-│   │   ├── _bundles.py                     # Bundle management (add/remove/list)
-│   │   ├── _content.py                     # Aliases, file ops
-│   │   ├── _conversation.py               # Conversation log/say
-│   │   ├── _terminal.py                    # Terminal control, agent_call
-│   │   ├── _registry.py                    # VFX, handbook, templates
-│   │   ├── _instances.py                   # Instance lifecycle
-│   │   ├── _instance_tracking.py           # Instance tracking helpers
-│   │   ├── _server_log.py                  # Server log buffer
-│   │   └── _ws_handlers.py                 # WS-only dispatch handlers
-│   ├── server/                             # FastAPI server
-│   │   ├── __init__.py                     # App setup, routes, broadcast
-│   │   ├── _lifespan.py                    # Startup/shutdown
-│   │   ├── _rest.py                        # REST endpoints
-│   │   ├── _ws.py                          # WebSocket handler
-│   │   ├── _broadcast_mode.py              # Broadcast viewer mode
-│   │   └── _state.py                       # Shared server state
-│   └── tests/                              # Backend tests (pytest)
+│   ├── scheduler.py                        # Per-agent persistent schedules
+│   ├── conversation.py                     # Ring buffer + color formatting
+│   ├── input_loop.py                       # CLI loop (no AI, no HTTP)
+│   ├── code_runner.py                      # Subprocess Python executor
+│   ├── instance_backend.py                 # SSH/local instance launcher
+│   └── tools/                              # Dispatch handlers grouped by concern
+│       ├── _agents.py, _bundles.py, _content.py, _conversation.py
+│       ├── _process.py, _registry.py, _instances.py, _schedules.py
+│       └── _instance_tracking.py, _server_log.py
+├── bundled_agents/                         # All transports + agents live here
+│   ├── _web_shared/                        # Shared JS transport (served by web bundle)
+│   │   ├── transport.ts                    # Source of truth
+│   │   ├── dist/transport.js               # Built (gitignored, made by esbuild)
+│   │   └── README.md
+│   ├── _ai_shared/                         # Shared Python helpers for AI bundles
+│   │   ├── ai_dispatch.py                  # AiBundleRuntime (factory)
+│   │   ├── agentic_loop.py, messages.py
+│   │   ├── provider_pool.py, provider_protocol.py
+│   │   ├── chat_storage.py, tool_schema.py
+│   ├── web/                                # Transport bundle (HTTP + WS)
+│   │   ├── template.json, tools.py         # serve(), web_configure, hot-reload
+│   │   ├── app.py                          # FastAPI factory (per web agent)
+│   │   └── skills/web.md
+│   ├── canvas/                             # Canvas UI (layout host)
+│   │   ├── template.json, tools.py         # move_agent, resize_agent, VFX, spatial
+│   │   ├── default_vfx.js
+│   │   └── web/                            # React + Vite
+│   │       ├── package.json                # build:transport → _web_shared/dist
+│   │       ├── vite.config.ts, tsconfig.json
+│   │       └── src/
+│   │           ├── main.tsx, App.tsx, types.ts, styles.css
+│   │           ├── hooks/useTransport.ts   # Thin wrap around fantastic_transport()
+│   │           ├── components/             # Canvas, AgentShape, base/, WebGLLayer
+│   │           └── plugins/                # registry + types (layout plugins only)
+│   ├── terminal/                           # Terminal agent (PTY + xterm)
+│   │   ├── template.json, tools.py
+│   │   ├── plugin.ts                       # Canvas layout plugin (iframe only)
+│   │   ├── source.py
+│   │   ├── web/index.html                  # xterm page using fantastic_transport()
+│   │   └── skills/terminal-control.md
+│   ├── fantastic_agent/                    # Generic chat UI (fronts any AI)
+│   │   ├── template.json, tools.py         # configure, history, save_message
+│   │   ├── plugin.ts                       # Canvas layout plugin (iframe only)
+│   │   ├── web/index.html                  # Chat UI using transport.watch(upstream)
+│   │   └── skills/fantastic_agent.md
+│   ├── ollama/, openai/, anthropic/, integrated/   # Headless AI backends
+│   │   ├── template.json, tools.py         # {bundle}_send, _history, _save_message, ...
+│   │   ├── provider.py                     # Model/API client
+│   │   └── skills/{bundle}.md
+│   ├── html/                               # Static HTML iframe agent
+│   └── quickstart/                         # Setup wizard
+├── .fantastic/                             # Persistent runtime state
+│   ├── config.json, registry.json, aliases.json, instances.json
+│   └── agents/{bundle}_{hex6}/
+│       ├── agent.json                      # {id, bundle, display_name, x, y, ...}
+│       ├── source.py, output.html
+│       ├── chat.json                       # Chat history (fantastic_agent / AI bundles)
+│       ├── schedules.json                  # Per-agent scheduler entries
+│       └── memory_long.jsonl               # Append-only execution memory
+├── scripts/                                # Build & test scripts
+└── docs/                                   # Architecture & analysis docs
 ```
 
 ## Environment
@@ -265,16 +300,18 @@ Terminals start with `cwd` set to the project directory. **Always use relative p
 Run these before pushing to ensure CI passes:
 
 ```bash
-uvx ruff check core/                                         # Python lint
-uvx ruff format --check core/                                # Python format
+uvx ruff check core/ bundled_agents/                         # Python lint (all)
+uvx ruff format --check core/ bundled_agents/                # Python format
 cd bundled_agents/canvas/web && npm ci && npx tsc --noEmit   # TypeScript type check
-uv sync --dev && uv run pytest core/tests/ -v -x             # Backend tests
+cd bundled_agents/canvas/web && npm run build:transport      # Rebuild transport.js if .ts changed
+uv sync --dev && uv run pytest core/tests/ bundled_agents/ -v -x  # Backend tests
 ```
 
 ## Conventions
 
-- Agent IDs: `{type}_{hex6}` format (e.g. `terminal_a3f2b1`)
-- Default agent type: `terminal`
-- All async (`asyncio` throughout)
-- Tests: `pytest-asyncio` with `asyncio_mode = "auto"`
-- `.fantastic/` excluded from file listings
+- Agent IDs: `{bundle}_{hex6}` format (e.g. `terminal_a3f2b1`, `ollama_b04b35`). Bundle is mandatory when creating agents.
+- Every bundle's `tools.py` exposes a `NAME = "..."` constant at module level.
+- All async (`asyncio` throughout).
+- Tests: `pytest-asyncio` with `asyncio_mode = "auto"`.
+- `.fantastic/` excluded from file listings.
+- UI code only uses `fantastic_transport()` — never `fetch`, `new WebSocket`, or `/api/...` URLs.

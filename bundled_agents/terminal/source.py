@@ -1,4 +1,5 @@
 """Terminal agent — spawns a PTY shell session."""
+
 import os
 from core.agent import autorun
 

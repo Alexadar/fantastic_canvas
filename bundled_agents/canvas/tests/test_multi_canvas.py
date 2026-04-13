@@ -7,7 +7,6 @@ from core.tools._agents import (
     _list_agents,
     _get_full_state,
 )
-from core.dispatch import ToolResult
 from core.engine import Engine
 from core.tools import init_tools
 from core.process_runner import ProcessRunner
@@ -45,6 +44,7 @@ def _pre_add_two_canvases(project_dir):
 async def multi_setup(tmp_path):
     """Setup with two canvases."""
     from core.tools import _state
+
     _state._on_agent_created.clear()
 
     canvas_main_id, canvas_debug_id = _pre_add_two_canvases(str(tmp_path))
@@ -68,8 +68,8 @@ async def multi_setup(tmp_path):
 
 async def test_list_agents_no_filter(multi_setup):
     engine, bc, pr, main_id, debug_id = multi_setup
-    await _create_agent(parent=main_id)
-    await _create_agent(parent=debug_id)
+    await _create_agent(template="terminal", parent=main_id)
+    await _create_agent(template="terminal", parent=debug_id)
     tr = await _list_agents()
     # Should include canvases + both children
     assert len(tr.data) >= 4
@@ -99,8 +99,8 @@ async def test_list_agents_parent_filter_empty_result(multi_setup):
 
 async def test_get_canvas_state_no_filter(multi_setup):
     engine, bc, pr, main_id, debug_id = multi_setup
-    await _create_agent(parent=main_id)
-    await _create_agent(parent=debug_id)
+    await _create_agent(template="terminal", parent=main_id)
+    await _create_agent(template="terminal", parent=debug_id)
     tr = await _get_full_state()
     agents = tr.data["agents"]
     assert len(agents) >= 4
@@ -122,7 +122,7 @@ async def test_get_canvas_state_filtered_by_name(multi_setup):
 async def test_get_canvas_state_unknown_canvas_returns_all(multi_setup):
     """Unknown canvas name returns full state (no match to filter on)."""
     engine, bc, pr, main_id, debug_id = multi_setup
-    await _create_agent(parent=main_id)
+    await _create_agent(template="terminal", parent=main_id)
     tr = await _get_full_state(scope="nonexistent")
     agents = tr.data["agents"]
     # No canvas with that name, so no filtering applied
@@ -135,12 +135,12 @@ async def test_get_canvas_state_unknown_canvas_returns_all(multi_setup):
 async def test_create_agent_no_parent_raises_with_multiple_canvases(multi_setup):
     """Creating without parent when N>1 canvases should raise ValueError."""
     with pytest.raises(ValueError, match="Multiple canvases exist"):
-        await _create_agent()
+        await _create_agent(template="terminal")
 
 
 async def test_create_agent_with_explicit_parent_succeeds(multi_setup):
     engine, bc, pr, main_id, debug_id = multi_setup
-    tr = await _create_agent(parent=main_id)
+    tr = await _create_agent(template="terminal", parent=main_id)
     assert tr.data["parent"] == main_id
 
 

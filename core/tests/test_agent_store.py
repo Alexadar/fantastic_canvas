@@ -82,9 +82,16 @@ def test_create_agent(store):
 
 
 def test_create_agent_auto_id(store):
-    agent = store.create_agent()
-    assert agent["id"].startswith("agent_")
-    assert len(agent["id"]) == 12  # agent_ + 6 hex chars
+    agent = store.create_agent(bundle="terminal")
+    assert agent["id"].startswith("terminal_")
+    assert len(agent["id"]) == len("terminal_") + 6  # bundle_ + 6 hex chars
+
+
+def test_create_agent_auto_id_requires_bundle(store):
+    import pytest
+
+    with pytest.raises(ValueError, match="bundle is required"):
+        store.create_agent()
 
 
 def test_create_agent_with_bundle(store):

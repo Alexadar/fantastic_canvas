@@ -13,7 +13,7 @@ from core.tools import (
 
 async def test_execute_python_tool(setup):
     engine, _, _ = setup
-    tr = await _create_agent()
+    tr = await _create_agent(template="terminal")
     result = await execute_python("print(1 + 2)", agent_id=tr.data["id"])
     assert "3" in result
 
@@ -26,14 +26,14 @@ async def test_execute_python_requires_agent_id(setup):
 
 async def test_execute_python_on_agent(setup):
     engine, _, _ = setup
-    tr = await _create_agent()
+    tr = await _create_agent(template="terminal")
     result = await execute_python("x = 42; print(x)", agent_id=tr.data["id"])
     assert "42" in result
 
 
 async def test_execute_python_error(setup):
     engine, _, _ = setup
-    tr = await _create_agent()
+    tr = await _create_agent(template="terminal")
     result = await execute_python("raise ValueError('boom')", agent_id=tr.data["id"])
     assert "[ERROR]" in result
     assert "boom" in result
@@ -44,7 +44,7 @@ async def test_execute_python_error(setup):
 
 async def test_get_state_tool(setup):
     engine, _, _ = setup
-    await _create_agent()
+    await _create_agent(template="terminal")
     result = await get_state()
     assert "agents" in result
     assert len(result["agents"]) >= 1

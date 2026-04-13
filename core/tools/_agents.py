@@ -271,15 +271,22 @@ async def _rename_agent(agent_id: str = "", display_name: str = "") -> ToolResul
 
 
 @register_dispatch("update_agent")
-async def _update_agent(agent_id: str = "", options: dict | None = None) -> ToolResult:
-    if not options:
+async def _update_agent(
+    agent_id: str = "", options: dict | None = None, **extra
+) -> ToolResult:
+    """Update agent.json fields. Accepts either `options={...}` or flat kwargs
+    (e.g. from CLI: `@ollama_abc update_agent model=gemma4 endpoint=http://...`).
+    """
+    merged = dict(options or {})
+    merged.update(extra)
+    if not merged:
         return ToolResult(data={"error": "No options provided"})
-    if not _state._engine.update_agent_meta(agent_id, **options):
+    if not _state._engine.update_agent_meta(agent_id, **merged):
         return ToolResult(data={"error": f"Agent {agent_id} not found"})
     return ToolResult(
-        data={"agent_id": agent_id, **options},
+        data={"agent_id": agent_id, **merged},
         broadcast=[
-            {"type": "agent_updated", "agent_id": agent_id, **options},
+            {"type": "agent_updated", "agent_id": agent_id, **merged},
         ],
     )
 

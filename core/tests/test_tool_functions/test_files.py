@@ -82,7 +82,9 @@ async def test_write_file_creates_dirs(setup):
     engine, _, _ = setup
     tr = await _write_file(path="steps/01/load.py", content="import pandas")
     assert tr.data["written"] is True
-    assert (engine._project_dir / "steps" / "01" / "load.py").read_text() == "import pandas"
+    assert (
+        engine._project_dir / "steps" / "01" / "load.py"
+    ).read_text() == "import pandas"
 
 
 async def test_write_file_overwrites(setup):
@@ -107,11 +109,13 @@ async def test_write_file_outside_project(setup):
 async def test_write_file_agent_scoped(setup):
     """Bare filename + agent_id → written to .fantastic/agents/{id}/."""
     engine, _, _ = setup
-    agent = engine.create_agent(agent_id="ag1")
+    engine.create_agent(bundle="terminal", agent_id="ag1")
     tr = await _write_file(path="script.py", content="x = 1", agent_id="ag1")
     assert tr.data["written"] is True
     assert tr.data["path"] == ".fantastic/agents/ag1/script.py"
-    assert (engine._project_dir / ".fantastic" / "agents" / "ag1" / "script.py").read_text() == "x = 1"
+    assert (
+        engine._project_dir / ".fantastic" / "agents" / "ag1" / "script.py"
+    ).read_text() == "x = 1"
 
 
 async def test_write_file_agent_scoped_with_dir_unchanged(setup):

@@ -1,6 +1,14 @@
+/**
+ * Terminal canvas plugin — LAYOUT ONLY.
+ *
+ * Content is served by the web bundle at /{agent_id}/. We just embed it as
+ * an iframe; the terminal page uses fantastic_transport() directly (no WS here).
+ *
+ * Autoscroll + robot button are still injected into the canvas header.
+ */
+
 import { registry } from '@bundles/canvas/web/src/plugins/registry'
-import type { CanvasPlugin, AgentContext } from '@bundles/canvas/web/src/plugins/types'
-import type { WSMessage } from '@bundles/canvas/web/src/types'
+import type { CanvasPlugin } from '@bundles/canvas/web/src/plugins/types'
 
 export const terminalPlugin: CanvasPlugin = {
   name: 'terminal',
@@ -12,8 +20,8 @@ export const terminalPlugin: CanvasPlugin = {
     send({ type: 'process_restart', agent_id: agentId })
   },
 
-  // Autoscroll toggle in header (persisted to agent.json)
   injectHeader: (dom, ctx) => {
+    // Autoscroll toggle (persisted to agent.json via update_agent)
     const btn = document.createElement('button')
     btn.className = 'agent-header-btn'
     btn.title = 'Toggle autoscroll'
@@ -35,7 +43,9 @@ export const terminalPlugin: CanvasPlugin = {
       active = true
       applyStyle()
       timer = setInterval(() => {
-        getIframe()?.contentWindow?.postMessage({ type: 'scroll_bottom' }, '*')
+        // Reach into iframe's xterm via a tiny helper the page exposes on window
+        const w = getIframe()?.contentWindow as any
+        if (w && typeof w.__scrollBottom === 'function') w.__scrollBottom()
       }, 100)
     }
 
@@ -45,12 +55,8 @@ export const terminalPlugin: CanvasPlugin = {
       if (timer) { clearInterval(timer); timer = null }
     }
 
-    // Restore persisted state
-    if ((ctx.agent as any).autoscroll) {
-      start()
-    } else {
-      applyStyle()
-    }
+    if ((ctx.agent as any).autoscroll) start()
+    else applyStyle()
 
     btn.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -58,7 +64,7 @@ export const terminalPlugin: CanvasPlugin = {
       ctx.send({ type: 'update_agent', agent_id: ctx.agent.id, options: { autoscroll: active } })
     })
 
-    // AI agent button (robot icon)
+    // AI agent shortcut
     const aiBtn = document.createElement('button')
     aiBtn.className = 'agent-header-btn'
     aiBtn.title = 'Open AI agent'
@@ -73,7 +79,7 @@ export const terminalPlugin: CanvasPlugin = {
       e.stopPropagation()
       ctx.send({
         type: 'create_agent',
-        template: 'fantastic_agent',
+        template: 'ollama',
         options: { x: ctx.agent.x + ctx.agent.width + 20, y: ctx.agent.y },
       })
     })
@@ -81,7 +87,7 @@ export const terminalPlugin: CanvasPlugin = {
     return () => { stop(); btn.remove(); aiBtn.remove() }
   },
 
-  // Inject into canvas: own double-click handler
+  // Dblclick on empty canvas → spawn terminal
   injectCanvas: (dom, ctx) => {
     const handler = (e: MouseEvent) => {
       if ((e.target as HTMLElement).closest('.agent-wrapper')) return
@@ -92,71 +98,15 @@ export const terminalPlugin: CanvasPlugin = {
     return () => dom.removeEventListener('dblclick', handler)
   },
 
-  // Inject into agent body: iframe + postMessage bridge
+  // Body: just iframe the agent's own URL — web bundle injects transport there.
   injectAgent: (dom, ctx) => {
     const iframe = document.createElement('iframe')
-    iframe.src = `/bundles/terminal/index.html`
+    iframe.src = `/${ctx.agent.id}/`
     iframe.style.cssText = 'width:100%;height:100%;border:none;background:transparent'
     iframe.setAttribute('allowTransparency', 'true')
     dom.appendChild(iframe)
 
-    let iframeReady = false
-
-    // iframe → parent → WS
-    const onMessage = (e: MessageEvent) => {
-      if (e.source !== iframe.contentWindow) return
-      const msg = e.data
-      if (!msg || !msg.type) return
-
-      switch (msg.type) {
-        case 'ready':
-          iframeReady = true
-          // Connect to backend process (creates or reconnects)
-          ctx.send({
-            type: 'process_create',
-            agent_id: ctx.agent.id,
-            cols: msg.cols,
-            rows: msg.rows,
-          })
-          break
-        case 'input':
-          ctx.send({
-            type: 'process_input',
-            agent_id: ctx.agent.id,
-            data: msg.data,
-          })
-          break
-        case 'resize':
-          ctx.send({
-            type: 'process_resize',
-            agent_id: ctx.agent.id,
-            cols: msg.cols,
-            rows: msg.rows,
-          })
-          break
-      }
-    }
-    window.addEventListener('message', onMessage)
-
-    // WS → parent → iframe
-    const unsub = ctx.subscribe((msg: WSMessage) => {
-      if (!iframeReady) return
-      const aid = msg.agent_id as string
-      if (aid !== ctx.agent.id) return
-
-      switch (msg.type) {
-        case 'process_output':
-          iframe.contentWindow?.postMessage({ type: 'stream', data: msg.data }, '*')
-          break
-        case 'process_closed':
-          iframe.contentWindow?.postMessage({ type: 'clear' }, '*')
-          break
-      }
-    })
-
     return () => {
-      window.removeEventListener('message', onMessage)
-      unsub()
       iframe.remove()
     }
   },

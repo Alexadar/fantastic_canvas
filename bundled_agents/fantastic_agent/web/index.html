@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fantastic_agent</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; width: 100%; font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0ff; overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #ctxBar { font-size: 10px; font-family: monospace; color: rgba(255,255,255,0.45); text-align: right; padding: 2px 8px; border-bottom: 1px solid rgba(255,255,255,0.06); display: none; }
+  #messages { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .msg { padding: 6px 10px; border-radius: 8px; font-size: 13px; line-height: 1.4; max-width: 85%; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: #4a3a8a; color: #fff; border-bottom-right-radius: 2px; }
+  .msg.assistant { align-self: flex-start; background: #2a2a3e; color: #d0d0e8; border-bottom-left-radius: 2px; }
+  .msg.assistant pre { background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; overflow-x: auto; margin: 6px 0; }
+  .msg.assistant code { background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .msg.assistant pre code { background: none; padding: 0; }
+  #row { display: flex; padding: 6px; gap: 4px; border-top: 1px solid rgba(255,255,255,0.1); }
+  #input { flex: 1; background: #2a2a3e; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 6px 10px; color: #e0e0ff; font-size: 13px; outline: none; }
+  #send { background: #4a3a8a; border: none; border-radius: 6px; color: white; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+  #send:hover { background: #5a4a9a; }
+  #config { padding: 10px; background: #2a2a3e; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 12px; color: rgba(255,255,255,0.7); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="ctxBar"></div>
+  <div id="config" style="display:none"></div>
+  <div id="messages"></div>
+  <div id="row">
+    <input id="input" placeholder="Type a message..." autofocus>
+    <button id="send">Send</button>
+  </div>
+</div>
+<!-- marked for markdown rendering -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<!-- fantastic_transport() is injected by the web bundle -->
+<script>
+(async () => {
+  const t = fantastic_transport()
+  const d = t.dispatcher
+  const messagesEl = document.getElementById('messages')
+  const inputEl = document.getElementById('input')
+  const sendBtn = document.getElementById('send')
+  const ctxBar = document.getElementById('ctxBar')
+  const configEl = document.getElementById('config')
+
+  function render(role, text) {
+    const div = document.createElement('div')
+    div.className = 'msg ' + role
+    if (role === 'assistant') div.innerHTML = marked.parse(text || '')
+    else div.textContent = text
+    messagesEl.appendChild(div)
+    messagesEl.scrollTop = messagesEl.scrollHeight
+    return div
+  }
+
+  // Load config + history
+  let cfg
+  try {
+    cfg = await d.fantastic_agent_get_config({ agent_id: t.agentId })
+  } catch (e) {
+    configEl.style.display = ''
+    configEl.textContent = 'Error loading config: ' + e.message
+    return
+  }
+
+  if (!cfg.upstream_agent_id || !cfg.upstream_bundle) {
+    configEl.style.display = ''
+    configEl.innerHTML =
+      'Not configured. Call: <code>fantastic_agent_configure(agent_id="' + t.agentId +
+      '", upstream_agent_id="...", upstream_bundle="ollama")</code>'
+    return
+  }
+
+  const upstream = { id: cfg.upstream_agent_id, bundle: cfg.upstream_bundle }
+
+  // Watch upstream so its events land in MY inbox
+  await t.watch(upstream.id)
+
+  // Load this agent's chat history
+  t.on('fantastic_agent_history_response', (ev) => {
+    const msgs = ev.messages || []
+    messagesEl.innerHTML = ''
+    for (const m of msgs) render(m.role, m.text)
+  })
+  await d.fantastic_agent_history({ agent_id: t.agentId })
+
+  // Streaming assistant message handling
+  let streamingEl = null
+  let streamingText = ''
+
+  t.on(upstream.bundle + '_response', (ev) => {
+    if (ev.agent_id !== upstream.id) return
+    if (ev.done) {
+      if (streamingEl && streamingText) {
+        // Persist final assistant message into OUR chat.json
+        d.fantastic_agent_save_message({
+          agent_id: t.agentId,
+          role: 'assistant',
+          text: streamingText,
+        }).catch(() => {})
+      }
+      streamingEl = null
+      streamingText = ''
+    } else {
+      if (!streamingEl) {
+        streamingText = ''
+        streamingEl = render('assistant', '')
+      }
+      streamingText += ev.text || ''
+      streamingEl.innerHTML = marked.parse(streamingText)
+      messagesEl.scrollTop = messagesEl.scrollHeight
+    }
+  })
+
+  t.on(upstream.bundle + '_error', (ev) => {
+    if (ev.agent_id !== upstream.id) return
+    render('assistant', '[error] ' + (ev.error || 'unknown'))
+  })
+
+  // Context usage bar
+  t.on('context_usage', (ev) => {
+    if (ev.agent_id !== upstream.id) return
+    const parts = []
+    if (ev.provider) parts.push(ev.provider + ' ' + (ev.provider_online ? '●' : '○'))
+    if (ev.max > 0) {
+      const pct = Math.round((ev.used / ev.max) * 100)
+      parts.push(ev.used.toLocaleString() + ' / ' + ev.max.toLocaleString() + ' (' + pct + '%)')
+    }
+    if (ev.schedules > 0) parts.push('schedules: ' + ev.schedules + ' (' + ev.total_runs + ' runs)')
+    if (parts.length) { ctxBar.textContent = parts.join(' | '); ctxBar.style.display = '' }
+  })
+
+  async function sendMessage() {
+    const text = inputEl.value.trim()
+    if (!text) return
+    inputEl.value = ''
+    render('user', text)
+    // Save user message in our chat.json
+    await d.fantastic_agent_save_message({ agent_id: t.agentId, role: 'user', text })
+    // Dispatch to upstream
+    try {
+      await d[upstream.bundle + '_send']({ agent_id: upstream.id, text })
+    } catch (e) {
+      render('assistant', '[error] ' + e.message)
+    }
+  }
+
+  sendBtn.addEventListener('click', sendMessage)
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendMessage() }
+  })
+})()
+</script>
+</body>
+</html>

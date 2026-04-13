@@ -1,7 +1,7 @@
-import type { CanvasAgent, WSMessage } from '../types'
+import type { CanvasAgent, TransportMessage } from '../types'
 
-export type SendFn = (msg: WSMessage) => void
-export type SubscribeFn = (fn: (msg: WSMessage) => void) => () => void
+export type SendFn = (msg: TransportMessage) => void
+export type SubscribeFn = (fn: (msg: TransportMessage) => void) => () => void
 type Cleanup = () => void
 
 export interface CanvasContext {

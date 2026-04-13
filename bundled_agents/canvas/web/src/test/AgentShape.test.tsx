@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { AgentShape } from '../components/AgentShape'
-import type { CanvasAgent, WSMessage } from '../types'
+import type { CanvasAgent, TransportMessage } from '../types'
 
 // Mock the base module (HtmlAgentBody)
 vi.mock('../components/base', () => ({

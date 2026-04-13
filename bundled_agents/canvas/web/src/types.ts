@@ -16,7 +16,11 @@ export interface CanvasAgent {
   _refreshKey?: number
 }
 
-export interface WSMessage {
+/**
+ * Transport envelope. `type` is a dispatch name or event name.
+ * UI never touches HTTP/WS — this is what `send`/`subscribe` exchange.
+ */
+export interface TransportMessage {
   type: string
   [key: string]: unknown
 }

@@ -43,6 +43,7 @@ async def test_valid_plugin_loaded(tmp_path):
     """Valid plugin with register_tools → tools loaded."""
     bundle = tmp_path / "my_bundle"
     bundle.mkdir()
+    (bundle / "template.json").write_text("{}")
     (bundle / "tools.py").write_text(
         "def register_tools(engine, fire_broadcasts, process_runner=None):\n"
         "    return {'my_tool': lambda: 'ok'}\n"
@@ -56,10 +57,12 @@ async def test_syntax_error_logged_not_fatal(tmp_path, caplog):
     """Plugin with syntax error → logged, other plugins still load."""
     bad = tmp_path / "bad_bundle"
     bad.mkdir()
+    (bad / "template.json").write_text("{}")
     (bad / "tools.py").write_text("def register_tools(:\n")  # SyntaxError
 
     good = tmp_path / "good_bundle"
     good.mkdir()
+    (good / "template.json").write_text("{}")
     (good / "tools.py").write_text(
         "def register_tools(engine, fire_broadcasts, process_runner=None):\n"
         "    return {'good_tool': lambda: 'ok'}\n"
@@ -74,6 +77,7 @@ async def test_no_register_tools_skipped(tmp_path):
     """Module exists but has no register_tools function → skipped."""
     bundle = tmp_path / "no_func"
     bundle.mkdir()
+    (bundle / "template.json").write_text("{}")
     (bundle / "tools.py").write_text("HELLO = 42\n")
     result = load_bundle_tools(tmp_path, None, None)
     assert result.tools == {}
@@ -84,6 +88,7 @@ async def test_multiple_bundles_merged(tmp_path):
     for name, tool_name in [("alpha", "tool_a"), ("beta", "tool_b")]:
         bundle = tmp_path / name
         bundle.mkdir()
+        (bundle / "template.json").write_text("{}")
         (bundle / "tools.py").write_text(
             f"def register_tools(engine, fire_broadcasts, process_runner=None):\n"
             f"    return {{'{tool_name}': lambda: '{tool_name}'}}\n"
@@ -98,6 +103,7 @@ async def test_later_bundle_overrides_earlier(tmp_path):
     for name, value in [("aaa_first", "first"), ("zzz_last", "last")]:
         bundle = tmp_path / name
         bundle.mkdir()
+        (bundle / "template.json").write_text("{}")
         (bundle / "tools.py").write_text(
             f"def register_tools(engine, fire_broadcasts, process_runner=None):\n"
             f"    return {{'shared': lambda: '{value}'}}\n"
@@ -122,6 +128,7 @@ async def test_single_bundle_with_dispatch(tmp_path):
     """Bundle with register_dispatch → inner dispatch registered."""
     bundle = tmp_path / "with_dispatch"
     bundle.mkdir()
+    (bundle / "template.json").write_text("{}")
     (bundle / "tools.py").write_text(
         "def register_tools(engine, fire_broadcasts, process_runner=None):\n"
         "    return {'dt': lambda: 'ok'}\n"
@@ -145,6 +152,7 @@ async def test_project_plugins_with_valid_plugin(tmp_path):
     """plugins/ dir with valid plugin → loads via load_bundle_tools."""
     plugins = tmp_path / "plugins" / "my_plugin"
     plugins.mkdir(parents=True)
+    (plugins / "template.json").write_text("{}")
     (plugins / "tools.py").write_text(
         "def register_tools(engine, fire_broadcasts, process_runner=None):\n"
         "    return {'proj_tool': lambda: 'project'}\n"

@@ -37,18 +37,31 @@ async def _agent_call(
         await _state._process_runner.write(target, "\r")
         logger.info(f"agent_call: typed {len(message)} chars + Enter to pty")
         delivered_to_process = True
-    elif agent.get("bundle") == "fantastic_agent":
-        # Route through the chat/voice handler for AI processing
-        handler = _DISPATCH.get("voice_transcript")
+    else:
+        # Capability-based routing: any bundle that registered `{bundle}_send`
+        # is reachable via agent_call. No hardcoded bundle list.
+        bundle = agent.get("bundle", "")
+        handler = _DISPATCH.get(f"{bundle}_send") if bundle else None
         if handler:
-            await handler(
-                agent_id=target,
-                text=message,
-                is_final=True,
-                mode="chat",
+            from ..trace import trace
+
+            send_args = {"agent_id": target, "text": message}
+            result = await trace(
+                "agent_call",
+                from_agent_id or target,
+                f"{bundle}_send",
+                send_args,
+                handler,
+                **send_args,
             )
             delivered_to_chat = True
-            logger.info("agent_call: routed to fantastic_agent chat handler")
+            logger.info(f"agent_call: routed to {bundle}_send")
+            # Fire any broadcasts the handler returned (route via bus).
+            if isinstance(result, ToolResult) and result.broadcast:
+                from ..bus import bus as _bus
+
+                for msg in result.broadcast:
+                    await _bus.broadcast(msg)
 
     return ToolResult(
         data={

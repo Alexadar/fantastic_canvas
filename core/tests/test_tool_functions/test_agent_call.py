@@ -1,4 +1,4 @@
-"""Tests for agent_call dispatch — PTY delivery and fantastic_agent chat bridge."""
+"""Tests for agent_call dispatch — PTY delivery and AI bundle routing."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -20,39 +20,38 @@ async def test_agent_call_terminal_no_process(setup):
     assert tr.data["delivered_to_chat"] is False
 
 
-async def test_agent_call_fantastic_agent_routes_to_chat(setup):
-    """agent_call to fantastic_agent routes through voice_transcript handler."""
-    await _create_agent(agent_id="fa1", template="fantastic_agent")
+async def test_agent_call_ollama_routes_to_send(setup):
+    """agent_call to ollama routes through ollama_send handler."""
+    await _create_agent(agent_id="oll1", template="ollama")
 
     mock_handler = AsyncMock(return_value=None)
     with patch.dict(
         "core.dispatch._DISPATCH",
-        {"voice_transcript": mock_handler},
+        {"ollama_send": mock_handler},
     ):
         tr = await _agent_call(
-            target_agent_id="fa1",
+            target_agent_id="oll1",
             message="run the analysis",
             from_agent_id="term1",
         )
 
     assert tr.data["delivered"] is True
     assert tr.data["delivered_to_chat"] is True
-    assert tr.data["delivered_to_process"] is False
-    # Verify the handler was called with correct args
-    mock_handler.assert_called_once_with(
-        agent_id="fa1",
-        text="run the analysis",
-        is_final=True,
-        mode="chat",
-    )
+    mock_handler.assert_called_once_with(agent_id="oll1", text="run the analysis")
 
 
-async def test_agent_call_fantastic_agent_no_handler(setup):
-    """If voice_transcript handler not registered, delivered_to_chat stays False."""
-    await _create_agent(agent_id="fa2", template="fantastic_agent")
+async def test_agent_call_openai_routes_to_send(setup):
+    await _create_agent(agent_id="op1", template="openai")
+    mock_handler = AsyncMock()
+    with patch.dict("core.dispatch._DISPATCH", {"openai_send": mock_handler}):
+        tr = await _agent_call(target_agent_id="op1", message="hi")
+    assert tr.data["delivered_to_chat"] is True
 
-    with patch.dict("core.dispatch._DISPATCH", {"voice_transcript": None}):
-        tr = await _agent_call(target_agent_id="fa2", message="hello")
 
+async def test_agent_call_ai_bundle_no_handler(setup):
+    """If bundle's _send handler not registered, delivered_to_chat stays False."""
+    await _create_agent(agent_id="oll2", template="ollama")
+    with patch.dict("core.dispatch._DISPATCH", {"ollama_send": None}):
+        tr = await _agent_call(target_agent_id="oll2", message="hello")
     assert tr.data["delivered"] is True
     assert tr.data["delivered_to_chat"] is False

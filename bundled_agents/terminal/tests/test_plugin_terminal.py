@@ -1,7 +1,5 @@
 """Tests for terminal bundle plugin wrappers (tool-level functions)."""
 
-import pytest
-
 from core.tools import _TOOL_DISPATCH
 
 

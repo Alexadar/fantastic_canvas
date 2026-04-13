@@ -1,25 +1,76 @@
 """Conversation input loop — runs in both Core-only and Core+Server modes.
 
-Supports @tag routing: @core for core commands (default when no tag).
-Unrecognized input becomes conversation.
+Supports @tag routing:
+  @core <cmd>           — core commands
+  @<agent_id> <text>    — send message to agent (bundle's cli_sync)
+  @<agent_id> <tool> k=v ... — run a dispatch tool on this agent
 """
 
 import asyncio
+import json
 import logging
+import shlex
 
 from . import conversation
-from .ai.brain import AIBrain
 from .recipients import CoreRecipient, Recipient
 
 logger = logging.getLogger(__name__)
 
 
+def _parse_value(raw: str):
+    """Coerce a CLI arg value: int, float, bool, JSON, or string."""
+    if raw == "":
+        return ""
+    low = raw.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if low in ("null", "none"):
+        return None
+    # JSON literal (dict / list / quoted string)
+    if raw[0] in "{[":
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+    # Numeric
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
+
+def _parse_kv(text: str) -> dict:
+    """Parse `key=val key2="quoted val" ...` into a dict. Values coerced."""
+    if not text.strip():
+        return {}
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    out: dict = {}
+    for tok in tokens:
+        if "=" not in tok:
+            continue
+        k, _, v = tok.partition("=")
+        k = k.strip()
+        if k:
+            out[k] = _parse_value(v)
+    return out
+
+
 class InputLoop:
     """Interactive conversation loop with @tag routing."""
 
-    def __init__(self, remote_url: str | None = None, ai: AIBrain | None = None):
+    def __init__(self, remote_url: str | None = None, engine=None):
         self._remote_url = remote_url
-        self._ai = ai
+        self._engine = engine
         self._core = CoreRecipient()
         self._recipients: dict[str, Recipient] = {
             "core": self._core,
@@ -57,114 +108,82 @@ class InputLoop:
             # @tag routing
             if line.startswith("@"):
                 tag, _, rest = line[1:].partition(" ")
-                tag = tag.lower()
                 rest = rest.strip()
-                if tag == "ai":
-                    handled = await self._handle_ai_command(rest)
-                    if not handled:
-                        pass  # already printed error or help
-                elif tag in self._recipients:
-                    recipient = self._recipients[tag]
+                if tag.lower() in self._recipients:
+                    recipient = self._recipients[tag.lower()]
                     await self._dispatch_to(recipient, rest)
+                elif self._engine and self._engine.get_agent(tag):
+                    await self._handle_agent_message(tag, rest)
                 else:
-                    conversation.say("fantastic", f"unknown: @{tag}")
-                    print(
-                        conversation.format_entry(
-                            {"who": "fantastic", "message": f"unknown: @{tag}"}
-                        )
-                    )
+                    self._say_system(f"unknown: @{tag}")
             else:
-                # Try as core command first, fall through to AI
+                # Try as core command; otherwise treat as conversation
                 parsed = self._core.parse(line)
                 if parsed:
                     await self._dispatch_to(self._core, line)
-                elif self._ai:
-                    await self._respond_ai(line)
                 else:
-                    # No AI, treat as conversation
                     conversation.say("user", line)
                     if self._remote_url:
                         await self._remote_call(
                             "conversation_say", {"who": "user", "message": line}
                         )
 
-    async def _handle_ai_command(self, text: str) -> bool:
-        """Parse @ai commands. Returns True if handled."""
-        parts = text.strip().split() if text.strip() else []
-        cmd = parts[0].lower() if parts else ""
+    async def _handle_agent_message(self, agent_id: str, rest: str):
+        """Route @{agent_id} input: dispatch tool if first token matches, else cli_sync."""
+        from .dispatch import _DISPATCH
+        from .tools._plugin_loader import get_bundle_module
 
-        # @ai start <provider> <model> [instance]
-        if cmd == "start" and len(parts) >= 3:
-            provider_name = parts[1]
-            model_or_instance = parts[2]
-            extra = parts[3] if len(parts) >= 4 else None
-            if self._ai:
-                try:
-                    if provider_name == "proxy":
-                        result = await self._ai.swap_provider(
-                            provider_name, instance=model_or_instance
-                        )
-                    else:
-                        result = await self._ai.swap_provider(
-                            provider_name, model=model_or_instance
-                        )
-                    self._say_system(result)
-                except Exception as e:
-                    self._say_system(f"Error: {e}")
-            return True
+        rest = rest.strip()
+        head, _, tail = rest.partition(" ")
+        head = head.strip()
 
-        if cmd == "start":
-            self._say_system("Usage: @ai start <provider> <model>")
-            return True
-
-        # @ai stop
-        if cmd == "stop":
-            if self._ai and self._ai._provider:
-                if hasattr(self._ai._provider, "unload"):
-                    self._ai._provider.unload()
-                if hasattr(self._ai._provider, "stop"):
-                    self._ai._provider.stop()
-                self._ai._provider = None
-                from .ai.config import save_config
-
-                save_config(self._ai._project_dir, {})
-                self._say_system("AI stopped")
+        # Form A: @{id} <tool_name> key=val ...
+        if head and head in _DISPATCH:
+            kwargs = _parse_kv(tail)
+            kwargs["agent_id"] = agent_id
+            try:
+                tr = await _DISPATCH[head](**kwargs)
+            except Exception as e:
+                self._say_system(f"[ERROR] {head}: {e}")
+                return
+            data = getattr(tr, "data", tr)
+            if isinstance(data, dict) and "error" in data:
+                self._say_system(f"[ERROR] {data['error']}")
             else:
-                self._say_system("No active provider")
-            return True
+                print(f"  {head}: {data}")
+            # Fire any broadcasts the dispatch produced
+            try:
+                from .tools import _fire_broadcasts
 
-        # @ai <text> — chat
-        if text.strip():
-            if self._ai:
-                await self._respond_ai(text.strip())
-            return True
-
-        # @ai (empty)
-        if self._ai:
-            msg = self._ai._no_provider_message()
-            self._say_system(msg)
-        return True
-
-    async def _respond_ai(self, text: str):
-        """Route text to AI brain, print complete response atomically."""
-        conversation.say("user", text)
-        if self._remote_url:
-            await self._remote_call(
-                "conversation_say", {"who": "user", "message": text}
-            )
-
-        try:
-            response = await self._ai.respond(text)
-        except Exception as exc:
-            self._say_system(f"AI error: {exc}")
+                if hasattr(tr, "broadcast"):
+                    await _fire_broadcasts(tr)
+            except Exception:
+                pass
             return
 
-        if response:
-            entry = conversation.say("ai", "")  # placeholder for format
-            ai_color = conversation.AI_COLOR
-            reset = conversation.RESET
-            name = "ai".ljust(conversation.NAME_PAD)
-            print(f"{ai_color}{name}{reset} : {response}")
+        # Form B: @{id} <message> → cli_sync
+        if not rest:
+            self._say_system(f"@{agent_id}: empty message")
+            return
+
+        agent = self._engine.get_agent(agent_id)
+        bundle = agent.get("bundle", "") if agent else ""
+        mod = get_bundle_module(bundle) if bundle else None
+        cli_fn = getattr(mod, "cli_sync", None) if mod else None
+        if cli_fn is None:
+            self._say_system(f"@{agent_id}: bundle '{bundle}' has no cli_sync")
+            return
+
+        entry = conversation.say("user", rest)
+        print(conversation.format_entry(entry))
+        try:
+            reply = await cli_fn(agent_id, rest)
+        except Exception as e:
+            self._say_system(f"[ERROR] cli_sync: {e}")
+            return
+        if reply:
+            out = conversation.say(agent_id, str(reply))
+            print(conversation.format_entry(out))
 
     def _say_system(self, message: str):
         entry = conversation.say("fantastic", message)

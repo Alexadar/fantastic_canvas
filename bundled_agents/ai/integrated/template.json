@@ -1,0 +1,8 @@
+{
+  "name": "integrated",
+  "bundle": "integrated",
+  "parameters": {
+    "default_width": 400,
+    "default_height": 500
+  }
+}

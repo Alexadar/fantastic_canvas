@@ -1,357 +1,166 @@
-"""Fantastic Agent bundle — voice/chat AI agent with persistent history and mic exclusivity."""
+"""fantastic_agent — UI-only bundle that fronts any AI backend.
 
-import asyncio
-import json
+Stores config in agent.json:
+    upstream_agent_id: the AI agent to chat with
+    upstream_bundle:   bundle name (ollama/openai/anthropic/integrated)
+
+The frontend (web/index.html) uses the injected `fantastic_transport()` global
+to `watch()` the upstream agent's events and call its `{bundle}_send` dispatch.
+This bundle has no HTTP/WS coupling — core orchestrates, transport does the rest.
+"""
+
+from __future__ import annotations
+
 import logging
-import time
-from pathlib import Path
 
-from core.dispatch import ToolResult
-from core.ai.provider import GenerationResult
-from core.ai.tool_schema import build_ollama_tools
+from bundled_agents.ai._shared.chat_storage import load_history, save_message
+from core.dispatch import ToolResult, register_dispatch, register_tool
 
-_SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+logger = logging.getLogger(__name__)
 
-log = logging.getLogger("fantastic_agent")
+NAME = "fantastic_agent"
 
 _engine = None
 
-# ─── Per-agent concurrency control ─────────────────────────────
 
-_agent_locks: dict[str, asyncio.Lock] = {}
-_agent_abort: dict[str, bool] = {}
-
-# ─── Mic exclusivity state ──────────────────────────────────────
-
-_mic_owner: str | None = None
-
-# ─── Chat persistence ───────────────────────────────────────────
+def register_tools(engine, fire_broadcasts, process_runner=None) -> dict:
+    global _engine
+    _engine = engine
+    return {}
 
 
-def _chat_json_path(agent_id: str) -> Path:
-    base = Path(_engine.project_dir) if _engine and hasattr(_engine, "project_dir") else Path(".")
-    return base / ".fantastic" / "agents" / agent_id / "chat.json"
-
-
-def _save_chat_message(agent_id: str, role: str, text: str, mode: str = "voice"):
-    path = _chat_json_path(agent_id)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"messages": []}
-        if path.exists():
-            try:
-                data = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError):
-                data = {"messages": []}
-        data["messages"].append({
-            "role": role,
-            "text": text,
-            "ts": int(time.time()),
-            "mode": mode,
-        })
-        path.write_text(json.dumps(data, indent=2))
-    except OSError as exc:
-        log.warning("Failed to save chat message for agent=%s: %s", agent_id, exc)
-
-
-def _load_chat_history(agent_id: str) -> list[dict]:
-    path = _chat_json_path(agent_id)
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text())
-        return data.get("messages", [])
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-# ─── Dispatch handlers (registered into _DISPATCH) ──────────────
-
-
-async def _handle_voice_transcript(agent_id: str = "", text: str = "", mode: str = "voice", **_kw) -> ToolResult:
-    """Handle voice/chat transcript. Streams AI response via broadcast with tool calling."""
-    from core.server import broadcast
-
-    text = text.strip()
-    if not text:
-        return ToolResult(data={"error": "empty transcript"})
-
-    log.info("voice_transcript agent=%s mode=%s text=%r", agent_id, mode, text[:80])
-
-    # Per-agent lock — reject if already processing
-    lock = _agent_locks.setdefault(agent_id, asyncio.Lock())
-    if lock.locked():
-        await broadcast({"type": "voice_error", "agent_id": agent_id, "error": "busy"})
-        return ToolResult(data={"error": "busy"})
-
-    async with lock:
-        return await _handle_voice_transcript_inner(agent_id, text, mode, broadcast)
-
-
-async def _handle_voice_transcript_inner(agent_id: str, text: str, mode: str, broadcast) -> ToolResult:
-    """Inner handler — runs under per-agent lock."""
-    # Clear abort flag
-    _agent_abort[agent_id] = False
-
-    # Save user message
-    _save_chat_message(agent_id, "user", text, mode)
-
-    # Check AI brain available
-    brain = _engine.ai if _engine else None
-    if not brain:
-        await broadcast({"type": "voice_error", "agent_id": agent_id, "error": "AI brain not available"})
-        return ToolResult(data={"error": "AI brain not available"})
-
-    provider = await brain.ensure_provider()
-    if not provider:
-        msg = brain._no_provider_message()
-        await broadcast({"type": "voice_error", "agent_id": agent_id, "error": msg})
-        return ToolResult(data={"error": msg})
-
-    # Build messages from chat history
-    messages = _build_messages_from_history(agent_id, text)
-    tools = build_ollama_tools()
-
-    # Notify: thinking
-    await broadcast({"type": "voice_state", "agent_id": agent_id, "state": "thinking"})
-
-    full_response = ""
-    in_think = False
-    max_rounds = 20
-
-    try:
-        for _ in range(max_rounds):
-            result: GenerationResult | None = None
-            async for token in provider.generate_with_tools(messages, tools):
-                # Check abort flag (set by voice_interrupt)
-                if _agent_abort.get(agent_id):
-                    _agent_abort[agent_id] = False
-                    break
-                if isinstance(token, GenerationResult):
-                    result = token
-                else:
-                    # Handle <think> blocks — stream state, skip content
-                    if "<think>" in token:
-                        in_think = True
-                        continue
-                    if "</think>" in token:
-                        in_think = False
-                        await broadcast({"type": "voice_state", "agent_id": agent_id, "state": "responding"})
-                        continue
-                    if in_think:
-                        continue
-
-                    full_response += token
-                    await broadcast({
-                        "type": "voice_response",
-                        "agent_id": agent_id,
-                        "text": token,
-                        "done": False,
-                    })
-
-            if result is None or not result.tool_calls:
-                break
-
-            # Execute tool calls
-            messages.append({
-                "role": "assistant",
-                "content": result.text,
-                "tool_calls": [
-                    {"type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                    for tc in result.tool_calls
-                ],
-            })
-
-            for tc in result.tool_calls:
-                tool_result = await brain._execute_tool(tc["name"], tc["arguments"])
-                messages.append({"role": "tool", "content": tool_result})
-
-                # Broadcast tool activity
-                await broadcast({
-                    "type": "voice_response",
-                    "agent_id": agent_id,
-                    "text": f"\n[tool: {tc['name']}]\n",
-                    "done": False,
-                })
-
-    except Exception as exc:
-        log.exception("AI error for agent=%s", agent_id)
-        await broadcast({"type": "voice_error", "agent_id": agent_id, "error": str(exc)})
-
-    # Final done signal
-    await broadcast({
-        "type": "voice_response",
-        "agent_id": agent_id,
-        "text": full_response,
-        "done": True,
-    })
-    await broadcast({"type": "voice_state", "agent_id": agent_id, "state": "idle"})
-
-    # Broadcast context usage + schedule info
-    ctx_used = sum(len(m.get("content", "")) for m in messages) // 4
-    ctx_max = 0
-    if brain and brain.provider and hasattr(brain.provider, "context_length"):
-        ctx_max = brain.provider.context_length
-    from core.tools._state import _scheduler
-    schedules = _scheduler.list_for_agent(agent_id) if _scheduler else []
-    await broadcast({
-        "type": "context_usage",
-        "agent_id": agent_id,
-        "used": ctx_used,
-        "max": ctx_max,
-        "provider": str(brain.provider) if brain and brain.provider else None,
-        "provider_online": brain.provider is not None if brain else False,
-        "schedules": len(schedules),
-        "total_runs": sum(s.get("run_count", 0) for s in schedules),
-    })
-
-    # Save AI response
-    if full_response:
-        _save_chat_message(agent_id, "assistant", full_response, mode)
-
-    return ToolResult(data={"ok": True, "agent_id": agent_id})
-
-
-def _get_context_budget() -> int:
-    """Get token budget from the AI brain's provider."""
-    brain = _engine.ai if _engine else None
-    if brain and brain.provider and hasattr(brain.provider, "context_length"):
-        ctx = brain.provider.context_length
-        if ctx:
-            return ctx - 2048
-    return 8192 - 2048  # default
-
-
-def _build_messages_from_history(agent_id: str, current_text: str) -> list[dict]:
-    """Build LLM messages from chat history + budget-aware truncation."""
-    budget = _get_context_budget()
-
-    system_msg = {
-        "role": "system",
-        "content": (
-            "You are a helpful AI assistant in the Fantastic Canvas environment. "
-            "You have access to tools for creating agents, executing code, managing the canvas, "
-            "and more. Use tools when the user's request requires taking actions. "
-            "IMPORTANT: Never spawn cascades of fantastic_agent agents — you cannot communicate with them programmatically. "
-            "If unsure whether to create agents or run code autonomously, ask the user first. "
-            "When creating files, write them to the agent's own folder (.fantastic/agents/{agent_id}/) unless the user specifies a project path. "
-            "This keeps the project directory clean."
-        ),
-    }
-    user_msg = {"role": "user", "content": current_text}
-    used = (len(system_msg["content"]) + len(current_text)) // 4
-
-    # Fill remaining budget with history (newest first)
-    history = _load_chat_history(agent_id)
-    history_msgs: list[dict] = []
-    for msg in reversed(history):
-        role = msg.get("role", "user")
-        if role not in ("user", "assistant"):
-            continue
-        text = msg.get("text", "")
-        cost = len(text) // 4
-        if used + cost > budget:
-            break
-        history_msgs.append({"role": role, "content": text})
-        used += cost
-
-    return [system_msg] + list(reversed(history_msgs)) + [user_msg]
-
-
-async def _handle_voice_interrupt(agent_id: str = "", **_kw) -> ToolResult:
-    from core.server import broadcast
-    log.info("voice_interrupt agent=%s", agent_id)
-    _agent_abort[agent_id] = True
-    await broadcast({"type": "voice_state", "agent_id": agent_id, "state": "idle"})
-    return ToolResult(data={"ok": True, "agent_id": agent_id})
-
-
-async def _handle_voice_claim_mic(agent_id: str = "", **_kw) -> ToolResult:
-    from core.server import broadcast
-    global _mic_owner
-    _mic_owner = agent_id
-    log.info("voice_claim_mic agent=%s", agent_id)
-    await broadcast({"type": "voice_mic_owner", "agent_id": agent_id})
-    return ToolResult(data={"ok": True, "agent_id": agent_id})
-
-
-async def _handle_voice_release_mic(agent_id: str = "", **_kw) -> ToolResult:
-    from core.server import broadcast
-    global _mic_owner
-    if _mic_owner == agent_id:
-        _mic_owner = None
-        log.info("voice_release_mic agent=%s", agent_id)
-        await broadcast({"type": "voice_mic_owner", "agent_id": None})
-    return ToolResult(data={"ok": True, "agent_id": agent_id})
-
-
-async def _handle_chat_history(agent_id: str = "", **_kw) -> ToolResult:
-    messages = _load_chat_history(agent_id)
-    return ToolResult(
-        data={"ok": True},
-        reply=[{
-            "type": "chat_history_response",
-            "agent_id": agent_id,
-            "messages": messages,
-        }],
-    )
-
-
-# ─── Handbook ────────────────────────────────────────────────────
-
-
-async def _get_handbook_fantastic_agent(skill: str = "", **_kw) -> ToolResult:
-    if skill:
-        skill_file = _SKILLS_DIR / f"{skill}.md"
-        if skill_file.exists():
-            return ToolResult(data={"text": f"# SKILL: {skill}\n\n{skill_file.read_text()}"})
-        available = [p.stem for p in _SKILLS_DIR.glob("*.md")] if _SKILLS_DIR.exists() else []
-        avail_str = ", ".join(sorted(available)) or "(none)"
-        return ToolResult(data={"error": f"Skill '{skill}' not found. Available: {avail_str}"})
-    available = sorted(p.stem for p in _SKILLS_DIR.glob("*.md")) if _SKILLS_DIR.exists() else []
+@register_dispatch("fantastic_agent_get_config")
+async def _get_config(agent_id: str = "", **_kw) -> ToolResult:
+    if not agent_id:
+        return ToolResult(data={"error": "agent_id required"})
+    agent = _engine.get_agent(agent_id)
+    if not agent:
+        return ToolResult(data={"error": f"Agent {agent_id} not found"})
     return ToolResult(
         data={
-            "text": "Fantastic agent skills: " + ", ".join(available)
-            if available
-            else "No fantastic agent skills found."
+            "upstream_agent_id": agent.get("upstream_agent_id", ""),
+            "upstream_bundle": agent.get("upstream_bundle", ""),
         }
     )
 
 
-# ─── Bundle Registration ────────────────────────────────────────
+@register_dispatch("fantastic_agent_configure")
+async def _configure(
+    agent_id: str = "",
+    upstream_agent_id: str = "",
+    upstream_bundle: str = "",
+    **_kw,
+) -> ToolResult:
+    if not agent_id:
+        return ToolResult(data={"error": "agent_id required"})
+    updates: dict = {}
+    if upstream_agent_id:
+        updates["upstream_agent_id"] = upstream_agent_id
+    if upstream_bundle:
+        updates["upstream_bundle"] = upstream_bundle
+    if not updates:
+        return ToolResult(data={"error": "nothing to update"})
+    _engine.update_agent_meta(agent_id, **updates)
+    return ToolResult(
+        data={"ok": True, "agent_id": agent_id, **updates},
+        broadcast=[{"type": "agent_updated", "agent_id": agent_id, **updates}],
+    )
 
 
-def register_dispatch():
-    return {
-        "get_handbook_fantastic_agent": _get_handbook_fantastic_agent,
-        "voice_transcript": _handle_voice_transcript,
-        "voice_interrupt": _handle_voice_interrupt,
-        "voice_claim_mic": _handle_voice_claim_mic,
-        "voice_release_mic": _handle_voice_release_mic,
-        "chat_history": _handle_chat_history,
-    }
+@register_dispatch("fantastic_agent_save_message")
+async def _save_msg(
+    agent_id: str = "",
+    role: str = "user",
+    text: str = "",
+    mode: str = "chat",
+    **_kw,
+) -> ToolResult:
+    if not agent_id or not text:
+        return ToolResult(data={"error": "agent_id and text required"})
+    msg = save_message(_engine.project_dir, agent_id, role, text, mode)
+    return ToolResult(data={"ok": True, "message": msg})
 
 
-def register_tools(engine, fire_broadcasts, process_runner=None):
-    global _engine
-    _engine = engine
+@register_dispatch("fantastic_agent_history")
+async def _history(agent_id: str = "", **_kw) -> ToolResult:
+    msgs = load_history(_engine.project_dir, agent_id)
+    return ToolResult(
+        data={"ok": True},
+        reply=[
+            {
+                "type": "fantastic_agent_history_response",
+                "agent_id": agent_id,
+                "messages": msgs,
+            }
+        ],
+    )
 
-    tools = {}
 
-    async def get_handbook_fantastic_agent(skill: str = "") -> str:
-        """Get fantastic agent handbook.
+@register_tool("fantastic_agent_configure")
+async def fantastic_agent_configure(
+    agent_id: str, upstream_agent_id: str = "", upstream_bundle: str = ""
+) -> dict:
+    """Set the upstream AI agent this fantastic_agent chats with.
 
-        Available skills: fantastic-agent
+    Args:
+        agent_id: This fantastic_agent's ID.
+        upstream_agent_id: ID of the target AI agent (ollama/openai/etc.).
+        upstream_bundle: Bundle name of upstream (e.g. "ollama").
+    """
+    tr = await _configure(
+        agent_id=agent_id,
+        upstream_agent_id=upstream_agent_id,
+        upstream_bundle=upstream_bundle,
+    )
+    return tr.data
 
-        Examples:
-            get_handbook_fantastic_agent()
-            get_handbook_fantastic_agent(skill="fantastic-agent")
-        """
-        tr = await _get_handbook_fantastic_agent(skill)
-        if "error" in tr.data:
-            return f"[ERROR] {tr.data['error']}"
-        return tr.data["text"]
 
-    tools["get_handbook_fantastic_agent"] = get_handbook_fantastic_agent
+async def on_add(project_dir, name: str = "") -> None:
+    """Create one fantastic_agent UI-proxy agent. Upstream must be configured
+    afterwards via `@<fa_id> fantastic_agent_configure upstream_agent_id=... upstream_bundle=...`.
+    """
+    from pathlib import Path as _Path
 
-    return tools
+    from core.agent_store import AgentStore
+
+    store = AgentStore(_Path(project_dir))
+    store.init()
+    display = name or "main"
+    for a in store.list_agents():
+        if a.get("bundle") == "fantastic_agent" and a.get("display_name") == display:
+            print(f"  fantastic_agent '{display}' already exists: {a['id']}")
+            return
+    agent = store.create_agent(bundle="fantastic_agent")
+    store.update_agent_meta(agent["id"], display_name=display)
+    print(f"  fantastic_agent '{display}' created: {agent['id']}")
+    logger.info("fantastic_agent bundle added")
+
+
+async def cli_sync(agent_id: str, text: str) -> str:
+    """Sync CLI entry: route to configured upstream AI agent, save to chat.json."""
+    from core.dispatch import _DISPATCH
+
+    agent = _engine.get_agent(agent_id)
+    if not agent:
+        return f"[error] agent {agent_id} not found"
+    upstream_id = agent.get("upstream_agent_id", "")
+    upstream_bundle = agent.get("upstream_bundle", "")
+    if not upstream_id or not upstream_bundle:
+        return (
+            "[fantastic_agent] not configured — set upstream_agent_id + upstream_bundle"
+        )
+
+    save_message(_engine.project_dir, agent_id, "user", text)
+
+    handler = _DISPATCH.get(f"{upstream_bundle}_send")
+    if not handler:
+        return f"[error] no {upstream_bundle}_send handler"
+
+    result = await handler(agent_id=upstream_id, text=text)
+    reply = ""
+    if isinstance(result, ToolResult) and isinstance(result.data, dict):
+        reply = result.data.get("response") or result.data.get("error") or ""
+
+    if reply:
+        save_message(_engine.project_dir, agent_id, "assistant", reply)
+    return reply

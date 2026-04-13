@@ -17,8 +17,27 @@ from typing import Any
 from ..dispatch import ToolResult, _DISPATCH as _DISPATCH, _TOOL_DISPATCH
 
 
+async def fire_subagents_loaded(engine):
+    """Fire `_on_subagents_loaded` hooks — call after init_tools returns."""
+    from . import _state
+
+    for hook in list(_state._on_subagents_loaded):
+        try:
+            result = hook(engine)
+            if hasattr(result, "__await__"):
+                await result
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("on_subagents_loaded hook failed")
+
+
 def init_tools(engine, broadcast_fn, process_runner=None):
-    """Wire the tools to the engine, broadcast, and process runner."""
+    """Wire the tools to the engine, broadcast, and process runner.
+
+    Bundles register `on_subagents_loaded` hooks here; caller must then
+    `await fire_subagents_loaded(engine)` once it wants the post-load phase.
+    """
     from . import _state
 
     _state._engine = engine

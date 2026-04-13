@@ -7,14 +7,17 @@ Self-deletes after setup. Re-running detects existing config and exits.
 from pathlib import Path
 from core.chat_run import chat_run
 
+NAME = "quickstart"
+
 
 def on_add(project_dir: str, name: str = "", working_dir: str = "") -> None:
     """Create a quickstart agent (so server starts on next `fantastic`)."""
     from core.agent_store import AgentStore
+
     store = AgentStore(Path(project_dir))
     store.init()
     if store.find_by_bundle("quickstart"):
-        print(f"  Quickstart already exists")
+        print("  Quickstart already exists")
         return
     agent = store.create_agent(bundle="quickstart")
     store.update_agent_meta(agent["id"], display_name=name or "quickstart")
@@ -28,7 +31,9 @@ async def run(ask, say):
     from core.tools._bundles import _add_bundle
 
     if not _engine:
-        say("no engine available — run 'fantastic add quickstart' then 'fantastic' first")
+        say(
+            "no engine available — run 'fantastic add quickstart' then 'fantastic' first"
+        )
         return
 
     # Guard: already configured?
@@ -41,11 +46,34 @@ async def run(ask, say):
             _engine.store.delete_agent(qs["id"])
         return
 
-    say("Quickstart adds default canvas. Subject to be updated later. Enjoy!")
+    say("Quickstart adds default web + canvas. Subject to be updated later. Enjoy!")
+
+    # Pre-create with deterministic IDs:
+    #   web_main  ─ transport root (is_container)
+    #     └─ canvas_main  ─ spatial host (parent = web_main)
+    # Subsequent agents (terminal, ollama, etc.) auto-parent to canvas_main.
+    store = _engine.store
+    if not store.get_agent("web_main"):
+        store.create_agent(bundle="web", agent_id="web_main")
+        store.update_agent_meta(
+            "web_main",
+            port=8888,
+            base_route="",
+            display_name="main",
+            is_container=True,
+        )
+    if not store.get_agent("canvas_main"):
+        store.create_agent(bundle="canvas", agent_id="canvas_main", parent="web_main")
+        store.update_agent_meta("canvas_main", display_name="main", is_container=True)
+
+    # Web transport first — every UI agent needs a web agent to serve it.
+    tr = await _add_bundle("web", name="main")
+    if hasattr(tr, "data") and "error" in tr.data:
+        say(f"  web error: {tr.data['error']}")
 
     tr = await _add_bundle("canvas", name="main")
     if hasattr(tr, "data") and "error" in tr.data:
-        say(f"  error: {tr.data['error']}")
+        say(f"  canvas error: {tr.data['error']}")
 
     # Self-delete
     qs = _engine.store.find_by_bundle("quickstart")

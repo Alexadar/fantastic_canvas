@@ -58,9 +58,7 @@ class Scheduler:
 
     # ─── CRUD ─────────────────────────────────────────────────
 
-    def add(
-        self, agent_id: str, action: dict, interval_seconds: int
-    ) -> dict:
+    def add(self, agent_id: str, action: dict, interval_seconds: int) -> dict:
         """Add a schedule to an agent. Returns the new schedule dict."""
         sch: dict[str, Any] = {
             "id": f"sch_{secrets.token_hex(4)}",
@@ -125,30 +123,70 @@ class Scheduler:
     async def _execute(
         self, agent_id: str, sch: dict, dispatch: dict, broadcast_fn: Any
     ) -> None:
-        """Execute a schedule's action, scoped to owning agent."""
+        """Execute a schedule's action, scoped to owning agent.
+
+        Any ToolResult.broadcast returned by the action is fired via broadcast_fn
+        so events reach the bus (previously dropped).
+        """
         action = sch["action"]
         action_type = action.get("type", "")
         try:
+            from core.trace import trace
+
+            result = None
             if action_type == "tool":
                 fn = dispatch.get(action["tool"])
                 if fn:
                     args = dict(action.get("args", {}))
                     args["agent_id"] = agent_id  # always scoped
-                    await fn(**args)
-            elif action_type == "prompt":
-                handler = dispatch.get("voice_transcript")
-                if handler:
-                    await handler(
-                        agent_id=agent_id,
-                        text=action["text"],
-                        is_final=True,
-                        mode="chat",
+                    result = await trace(
+                        "scheduler", agent_id, action["tool"], args, fn, **args
                     )
+            elif action_type == "prompt":
+                # Route to the agent's bundle `_send` dispatch.
+                agent_dir = self._agents_dir / agent_id
+                bundle = _read_agent_bundle(agent_dir)
+                if bundle:
+                    handler = dispatch.get(f"{bundle}_send")
+                    if handler:
+                        send_args = {"agent_id": agent_id, "text": action["text"]}
+                        result = await trace(
+                            "scheduler",
+                            agent_id,
+                            f"{bundle}_send",
+                            send_args,
+                            handler,
+                            **send_args,
+                        )
+                    else:
+                        logger.warning(
+                            "Schedule %s: no %s_send handler (agent %s offline?)",
+                            sch["id"],
+                            bundle,
+                            agent_id,
+                        )
+
+            # Route any returned broadcasts through the bus.
+            broadcasts = getattr(result, "broadcast", None)
+            if broadcasts and broadcast_fn is not None:
+                for msg in broadcasts:
+                    await broadcast_fn(msg)
             logger.debug(
                 "Schedule %s executed for agent %s (run #%d)",
-                sch["id"], agent_id, sch["run_count"] + 1,
+                sch["id"],
+                agent_id,
+                sch["run_count"] + 1,
             )
         except Exception as e:
             logger.warning(
                 "Schedule %s failed for agent %s: %s", sch["id"], agent_id, e
             )
+
+
+def _read_agent_bundle(agent_dir: Path) -> str:
+    """Read bundle name from agent.json."""
+    try:
+        data = json.loads((agent_dir / "agent.json").read_text(encoding="utf-8"))
+        return data.get("bundle", "")
+    except (OSError, json.JSONDecodeError):
+        return ""

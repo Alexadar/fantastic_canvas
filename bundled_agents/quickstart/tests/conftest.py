@@ -11,6 +11,7 @@ from core.process_runner import ProcessRunner
 
 class Broadcasts:
     """Collects broadcast messages."""
+
     def __init__(self):
         self.messages = []
 
@@ -39,6 +40,7 @@ def _pre_add_bundles(project_dir):
 async def setup(tmp_path):
     """Wire engine + process_runner + broadcast into tools."""
     from core.tools import _state
+
     _state._on_agent_created.clear()
 
     _pre_add_bundles(str(tmp_path))

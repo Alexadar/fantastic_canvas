@@ -15,11 +15,36 @@ A Fantastic environment created by Claude to help learn Conditional Flow Matchin
 ## Architecture
 
 ```
-CLI / REST / WS ──→ Dispatch ──→ Engine ──→ .fantastic/
-                        ↑                  ──→ PTY
-                   Plugins                 ──→ Subprocess
-              (@register_dispatch)
+┌────────────────────────┐
+│   CORE (orchestrator)  │   Engine + AgentStore + Dispatch + Bus + Scheduler
+│   No HTTP. No UI.      │   Pure Python, async throughout.
+└──────────┬─────────────┘
+           │  dispatch / bus events
+           ▼
+┌────────────────────────────────────────────────┐
+│                BUNDLED AGENTS                   │
+│                                                 │
+│  web/     — HTTP + WS transport (uvicorn)       │
+│             injects fantastic_transport() JS    │
+│                                                 │
+│  canvas/  — layout + iframe host  (has web/)    │
+│  terminal/— PTY + xterm page      (has web/)    │
+│  fantastic_agent/ — chat UI proxy (has web/)    │
+│                                                 │
+│  ollama/ openai/ anthropic/ integrated/         │
+│           — headless AI backends                │
+│                                                 │
+│  html/ dashboard/ quickstart/                   │
+└────────────────────┬───────────────────────────┘
+                     │
+                     ▼  ws://host/{agent_id}/ws
+               ┌──────────────┐
+               │   Browser    │  fantastic_transport() global
+               │              │  → dispatch / on / watch / ...
+               └──────────────┘
 ```
+
+UI code never sees WebSocket — it uses the injected `fantastic_transport()` global. Same dispatch names on frontend and backend. See `CLAUDE.md` for the full protocol.
 
 ## Requirements
 
@@ -27,9 +52,8 @@ CLI / REST / WS ──→ Dispatch ──→ Engine ──→ .fantastic/
 - Node.js 18+ (for frontend build)
 
 ```bash
-# Install uv (macOS / Linux)
+# Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
 # Or via Homebrew
 brew install uv
 ```
@@ -38,57 +62,52 @@ brew install uv
 
 ```bash
 # From source (development)
-uv sync                                  # install Python 3.11+, deps, and venv
-uv run fantastic                         # run directly
+uv sync                                  # Python 3.11+ deps + venv
+cd bundled_agents/canvas/web
+npm install && npm run build             # builds canvas UI + _web_shared/dist/transport.js
 
 # Install globally
-uv tool install ./core                   # from source
-uv tool install ./core[torch]            # with PyTorch (auto: CPU on macOS, CUDA on Linux)
-
-# Build wheel
-bash scripts/build-core.sh              # builds frontend + Python package
+uv tool install ./core
+uv tool install ./core[torch]            # with PyTorch (CPU/CUDA/MPS auto)
 ```
 
 ## Usage
 
-Start in the project dir. In console you will see url of your canvas
-
 ```bash
-fantastic                    # start (auto-adds canvas on first run)
+fantastic                                # engine + auto-creates default web agent on :8888
+# Open http://localhost:8888/{canvas_agent_id}/ in browser
 ```
 
-### AI Providers
+### Adding agents
 
 ```bash
-# In the interactive prompt:
-> @ai start ollama qwen3:8b-q4_K_M          # Ollama (local)
-> @ai start anthropic claude-sonnet-4-20250514   # Claude API
-> @ai start integrated Qwen/Qwen3.5-4B      # Local torch model
-> @ai start proxy http://remote:8888        # Remote Fantastic instance
-> @ai stop                                   # Disconnect
-> @ai <text>                                 # Chat (with tool calling)
+> add canvas                             # spatial canvas host
+> add terminal                           # PTY terminal
+> add ollama                             # headless Ollama backend
+> add fantastic_agent                    # chat UI proxy — configure upstream_agent_id
 ```
 
-Ollama: install from [ollama.com](https://ollama.com), pull a model, then `@ai start ollama <model>`.
-Anthropic: set `ANTHROPIC_API_KEY` in `.env`, then `@ai start anthropic <model>`.
+AI providers are now bundled agents. Create a backend (e.g. `ollama`), then a `fantastic_agent` UI to chat with it. Configure via dispatch:
 
-Double-click on free space to create a terminal. Launch your coding agent and ask it to read the `.fantastic/` folder and pull the handbook. Then the coding agent is ready to spawn HTML agents with two-way binding to the server, creating dynamic interfaces.
+```
+fantastic_agent_configure(agent_id=<fa_id>, upstream_agent_id=<ollama_id>, upstream_bundle="ollama")
+```
 
-Agents live in `.fantastic/agents` as ephemeral entities. Visually they look like windows, but under the hood they may contain execution scripts and two-way bindings between themselves, all wired by coding agents.
+### Multiple web agents
 
-It's possible to make weak bindings between Fantastic instances, start/stop from each other, and even create root control panels to run your Fantastics on different dirs and ports — try it, it's fun.
+```bash
+> add web                                # another web agent
+# Then: web_configure(agent_id=<web_id>, port=9000, base_route="/admin")
+```
 
-What happens next is limited only by your imagination. This process is similar to what you saw in Iron Man where Stark operated Jarvis. It is envisioned as a next-level IDE.
-
-It can be 3D-based workflows, interface prototyping, musical creation, multi-agent orchestration.
-
-Coding agents should be asked what they can do and described a task you want to accomplish. The most fantastic thing is how the coding agent, combining new skills, spawns parts of interface scaffolding. New buttons don't always work, but with some practice you'll feel that this tool can help you do everyday work, removing spatial limits and settings overload of a classical IDE. You scaffold your own applications here, assembling from zero.
+Each web agent has its own uvicorn, its own config, its own base route. Hot-reloads on config change.
 
 ## Testing
 
-- `bash scripts/test-core.sh` — backend + frontend unit tests
-- `bundled_agents/canvas/tests/ai/selftest.md` — 58-point API selftest
-- `core/tests/ai/README.md` — AI/Ollama integration test scenarios
+```bash
+uv run pytest core/tests/ bundled_agents/ -v -x   # backend
+cd bundled_agents/canvas/web && npx vitest run   # frontend
+```
 
 ## Security
 

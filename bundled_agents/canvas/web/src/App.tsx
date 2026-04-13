@@ -1,13 +1,18 @@
 import { Canvas } from './components/Canvas'
 import './styles.css'
 
-/** Extract canvas name from /canvas/{name} URL path. */
-function getCanvasName(): string {
-  const match = window.location.pathname.match(/^\/canvas\/([^/]+)/)
-  return match ? match[1] : ''
+/**
+ * Canvas is served at `/{canvas_agent_id}/` by the web bundle.
+ * Ask the injected transport for the agent id — no URL parsing in UI code.
+ */
+function getCanvasAgentId(): string {
+  try {
+    return (window as any).fantastic_transport?.().agentId ?? ''
+  } catch {
+    return ''
+  }
 }
 
 export default function App() {
-  const canvasName = getCanvasName()
-  return <Canvas canvasName={canvasName} />
+  return <Canvas canvasName={getCanvasAgentId()} />
 }
