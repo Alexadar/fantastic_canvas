@@ -49,13 +49,17 @@ _Y = "\033[33m"  # yellow
 
 
 def _banner(project_dir: str = ""):
-    """Print the Fantastic banner — logo + project dir."""
+    """Print the Fantastic banner — logo + project dir.
+
+    Bars are flush-left so they align with the per-message `█` gutter that
+    `conversation.format_entry` uses.
+    """
     print()
-    print(f"  {_NM}█{_R}")
-    print(f"  {_NM}█{_R}  {_BM}{_B}FANTASTIC{_R}")
-    print(f"  {_NM}█{_R}")
+    print(f"{_NM}█{_R}")
+    print(f"{_NM}█{_R}  {_BM}{_B}FANTASTIC{_R}")
+    print(f"{_NM}█{_R}")
     if project_dir:
-        print(f"     {_D}{project_dir}{_R}")
+        print(f"   {_D}{project_dir}{_R}")
     print()
 
 

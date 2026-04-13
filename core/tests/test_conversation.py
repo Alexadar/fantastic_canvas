@@ -1,4 +1,4 @@
-"""Tests for core.conversation — ring buffer + color formatting."""
+"""Tests for core.conversation — ring buffer + Snapchat-style formatting."""
 
 from core.conversation import (
     say,
@@ -7,10 +7,12 @@ from core.conversation import (
     format_entry,
     actor_color,
     CONVERSATION_BUFFER_SIZE,
-    NAME_PAD,
     CORE_COLOR,
     USER_COLOR,
     AGENT_COLOR,
+    AI_COLOR,
+    BAR,
+    BOLD,
     RESET,
     CORE_ACTORS,
     _buffer,
@@ -48,7 +50,6 @@ def test_read_max_lines():
 
 
 def test_eviction():
-    # Fill beyond buffer size
     for i in range(CONVERSATION_BUFFER_SIZE + 50):
         say("user", f"msg{i}")
     assert len(_buffer) == CONVERSATION_BUFFER_SIZE
@@ -63,35 +64,78 @@ def test_clear():
     assert len(read()) == 0
 
 
-def test_format_entry_core_color():
+def test_format_entry_structure_core_color():
+    """Block layout: \\n{color+bold}{who}{reset}\\n\\n{color}█{reset} body\\n"""
     entry = say("fantastic", "started")
     formatted = format_entry(entry)
-    padded = "fantastic".ljust(NAME_PAD)
-    assert f"{CORE_COLOR}{padded}{RESET} : started" == formatted
+    expected = (
+        f"\n{CORE_COLOR}{BOLD}fantastic{RESET}\n\n{CORE_COLOR}{BAR}{RESET} started\n"
+    )
+    assert formatted == expected
 
 
 def test_format_entry_user_color():
     entry = say("user", "hello")
     formatted = format_entry(entry)
-    padded = "user".ljust(NAME_PAD)
-    assert f"{USER_COLOR}{padded}{RESET} : hello" == formatted
+    expected = f"\n{USER_COLOR}{BOLD}user{RESET}\n\n{USER_COLOR}{BAR}{RESET} hello\n"
+    assert formatted == expected
 
 
 def test_format_entry_agent_color():
     entry = say("actor_a", "registered")
     formatted = format_entry(entry)
-    padded = "actor_a".ljust(NAME_PAD)
-    assert f"{AGENT_COLOR}{padded}{RESET} : registered" == formatted
+    expected = (
+        f"\n{AGENT_COLOR}{BOLD}actor_a{RESET}\n\n{AGENT_COLOR}{BAR}{RESET} registered\n"
+    )
+    assert formatted == expected
+
+
+def test_format_entry_bar_color_matches_actor_color():
+    """Each actor category colors BOTH the name AND the bar with its own color."""
+    cases = [
+        ("fantastic", CORE_COLOR),
+        ("system", CORE_COLOR),
+        ("user", USER_COLOR),
+        ("ai", AI_COLOR),
+        ("ollama_abc123", AGENT_COLOR),
+        ("some_bundle", AGENT_COLOR),
+    ]
+    for who, expected in cases:
+        clear()
+        entry = say(who, "msg")
+        formatted = format_entry(entry)
+        # The bar is tinted with the actor color.
+        assert f"{expected}{BAR}{RESET}" in formatted, (who, formatted)
+        # Name header uses the same color.
+        assert f"{expected}{BOLD}{who}{RESET}" in formatted, (who, formatted)
+        # No other color appears on the bar.
+        for other in {CORE_COLOR, USER_COLOR, AGENT_COLOR, AI_COLOR} - {expected}:
+            assert f"{other}{BAR}" not in formatted, (who, other, formatted)
+
+
+def test_format_entry_multiline_body():
+    """Each line of the body gets its own bar prefix."""
+    entry = say("user", "line one\nline two")
+    formatted = format_entry(entry)
+    assert f"{USER_COLOR}{BAR}{RESET} line one" in formatted
+    assert f"{USER_COLOR}{BAR}{RESET} line two" in formatted
+    # Header appears exactly once
+    assert formatted.count(f"{BOLD}user{RESET}") == 1
+
+
+def test_format_entry_empty_message():
+    entry = say("user", "")
+    formatted = format_entry(entry)
+    # Still emits the block; body is a single empty line behind a bar.
+    assert f"{BOLD}user{RESET}" in formatted
+    assert f"{USER_COLOR}{BAR}{RESET} " in formatted
 
 
 def test_actor_color_categories():
-    # Core actors → magenta
     for actor in CORE_ACTORS:
         assert actor_color(actor) == CORE_COLOR
-    # User → green
     assert actor_color("user") == USER_COLOR
-    assert actor_color("User") == USER_COLOR  # case insensitive
-    # Everything else → cyan
+    assert actor_color("User") == USER_COLOR
     assert actor_color("actor_a") == AGENT_COLOR
     assert actor_color("actor_b") == AGENT_COLOR
     assert actor_color("mybundle") == AGENT_COLOR

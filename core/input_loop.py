@@ -6,13 +6,25 @@ Supports @tag routing:
   @<agent_id> <tool> k=v ... — run a dispatch tool on this agent
 """
 
-import asyncio
 import json
 import logging
 import shlex
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.patch_stdout import patch_stdout
+
 from . import conversation
 from .recipients import CoreRecipient, Recipient
+
+
+def _prompt_text() -> ANSI:
+    """Snapchat-style prompt: user-colored bar + `>` cursor."""
+    return ANSI(
+        f"{conversation.USER_COLOR}{conversation.BAR}{conversation.RESET} "
+        f"{conversation.USER_COLOR}>{conversation.RESET} "
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -81,52 +93,56 @@ class InputLoop:
         self._recipients[recipient.name] = recipient
 
     async def run(self):
-        """Main input loop: read → parse → execute → print."""
+        """Main input loop: read → parse → execute → print.
+
+        Uses prompt_toolkit so the input row stays pinned at the bottom of
+        the terminal — concurrent `print()` calls from dispatch/agent tasks
+        scroll cleanly above the prompt instead of clobbering half-typed input.
+        """
         # Show recent conversation only when connecting to running server
         if self._remote_url:
             for entry in conversation.read(max_lines=20):
                 print(conversation.format_entry(entry))
 
-        loop = asyncio.get_event_loop()
-        while True:
-            try:
-                line = await loop.run_in_executor(
-                    None,
-                    lambda: input(f"{conversation.USER_COLOR}>{conversation.RESET} "),
-                )
-                line = line.strip()
-                if not line:
-                    continue
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
+        session: PromptSession = PromptSession()
+        self._session = session
+        with patch_stdout(raw=True):
+            while True:
+                try:
+                    line = await session.prompt_async(_prompt_text())
+                    line = line.strip()
+                    if not line:
+                        continue
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
 
-            if line.lower() in ("exit", "quit", "q"):
-                print()
-                break
+                if line.lower() in ("exit", "quit", "q"):
+                    print()
+                    break
 
-            # @tag routing
-            if line.startswith("@"):
-                tag, _, rest = line[1:].partition(" ")
-                rest = rest.strip()
-                if tag.lower() in self._recipients:
-                    recipient = self._recipients[tag.lower()]
-                    await self._dispatch_to(recipient, rest)
-                elif self._engine and self._engine.get_agent(tag):
-                    await self._handle_agent_message(tag, rest)
+                # @tag routing
+                if line.startswith("@"):
+                    tag, _, rest = line[1:].partition(" ")
+                    rest = rest.strip()
+                    if tag.lower() in self._recipients:
+                        recipient = self._recipients[tag.lower()]
+                        await self._dispatch_to(recipient, rest)
+                    elif self._engine and self._engine.get_agent(tag):
+                        await self._handle_agent_message(tag, rest)
+                    else:
+                        self._say_system(f"unknown: @{tag}")
                 else:
-                    self._say_system(f"unknown: @{tag}")
-            else:
-                # Try as core command; otherwise treat as conversation
-                parsed = self._core.parse(line)
-                if parsed:
-                    await self._dispatch_to(self._core, line)
-                else:
-                    conversation.say("user", line)
-                    if self._remote_url:
-                        await self._remote_call(
-                            "conversation_say", {"who": "user", "message": line}
-                        )
+                    # Try as core command; otherwise treat as conversation
+                    parsed = self._core.parse(line)
+                    if parsed:
+                        await self._dispatch_to(self._core, line)
+                    else:
+                        conversation.say("user", line)
+                        if self._remote_url:
+                            await self._remote_call(
+                                "conversation_say", {"who": "user", "message": line}
+                            )
 
     async def _handle_agent_message(self, agent_id: str, rest: str):
         """Route @{agent_id} input: dispatch tool if first token matches, else cli_sync."""
@@ -212,14 +228,13 @@ class InputLoop:
             self._say_system(f"bundle '{bundle_name}' has no @chat_run function")
             return
 
-        loop = asyncio.get_event_loop()
+        # Reuse the outer loop's prompt session if present, else create one.
+        ask_session: PromptSession = getattr(self, "_session", None) or PromptSession()
 
         async def ask(prompt: str) -> str:
             entry = conversation.say(bundle_name, prompt)
             print(conversation.format_entry(entry))
-            answer = await loop.run_in_executor(
-                None, lambda: input(f"{conversation.USER_COLOR}>{conversation.RESET} ")
-            )
+            answer = await ask_session.prompt_async(_prompt_text())
             answer = answer.strip()
             conversation.say("user", answer)
             return answer

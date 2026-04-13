@@ -43,7 +43,10 @@
   const container = document.getElementById('terminal')
   term.open(container)
 
-  // Expose a scroll-to-bottom hook for the canvas plugin's autoscroll button.
+  // Autoscroll-on-output: plugin sets __autoscroll.enabled; we scroll ONLY
+  // when new output arrives (never on a timer — user staying scrolled up to
+  // read old content shouldn't be yanked to the bottom).
+  window.__autoscroll = { enabled: false }
   window.__scrollBottom = () => term.scrollToBottom()
 
   // xterm → backend (symmetric names: process_input, process_resize, process_create)
@@ -57,7 +60,9 @@
   // backend → xterm (events in our inbox)
   t.on('process_output', (e) => {
     if (e.agent_id && e.agent_id !== t.agentId) return
-    term.write(e.data)
+    term.write(e.data, () => {
+      if (window.__autoscroll.enabled) term.scrollToBottom()
+    })
   })
   t.on('process_closed', () => {
     term.clear()

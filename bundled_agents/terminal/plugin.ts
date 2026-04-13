@@ -29,7 +29,6 @@ export const terminalPlugin: CanvasPlugin = {
     dom.appendChild(btn)
 
     let active = false
-    let timer: ReturnType<typeof setInterval> | null = null
 
     const getIframe = () =>
       btn.closest('.agent-shape')?.querySelector('iframe') as HTMLIFrameElement | null
@@ -39,21 +38,22 @@ export const terminalPlugin: CanvasPlugin = {
       btn.style.background = active ? 'rgba(255,255,255,0.15)' : ''
     }
 
-    const start = () => {
-      active = true
-      applyStyle()
-      timer = setInterval(() => {
-        // Reach into iframe's xterm via a tiny helper the page exposes on window
-        const w = getIframe()?.contentWindow as any
-        if (w && typeof w.__scrollBottom === 'function') w.__scrollBottom()
-      }, 100)
+    // Push the current flag into the iframe. Safe to call before iframe load —
+    // we retry on its load event too.
+    const pushFlag = () => {
+      const w = getIframe()?.contentWindow as any
+      if (w && w.__autoscroll) {
+        w.__autoscroll.enabled = active
+        if (active && typeof w.__scrollBottom === 'function') w.__scrollBottom()
+      }
     }
 
-    const stop = () => {
-      active = false
-      applyStyle()
-      if (timer) { clearInterval(timer); timer = null }
-    }
+    // Re-push when the iframe (re)loads — e.g. on process_restart.
+    const iframe = getIframe()
+    iframe?.addEventListener('load', pushFlag)
+
+    const start = () => { active = true; applyStyle(); pushFlag() }
+    const stop  = () => { active = false; applyStyle(); pushFlag() }
 
     if ((ctx.agent as any).autoscroll) start()
     else applyStyle()
