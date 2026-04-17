@@ -7,7 +7,6 @@ via subprocess (stateless, one-shot). Server registry is persisted to disk.
 
 import hashlib
 import html as html_mod
-import json
 import logging
 import os
 import re
@@ -19,29 +18,6 @@ from .agent_store import AgentStore
 from .code_runner import CodeRunner
 
 logger = logging.getLogger(__name__)
-
-# Directories/files to exclude from project file listing
-_EXCLUDED_DIRS = {
-    "__pycache__",
-    ".git",
-    ".hg",
-    ".svn",
-    "node_modules",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".tox",
-    ".eggs",
-    "*.egg-info",
-    ".venv",
-    "venv",
-    "env",
-    ".env",
-    "dist",
-    "build",
-    ".next",
-    ".nuxt",
-    ".fantastic",
-}
 
 
 class Engine:
@@ -61,7 +37,6 @@ class Engine:
         self._runner = CodeRunner(project_dir=str(self._project_dir))
 
         # Content alias registry (lazy-loaded from .fantastic/aliases.json)
-        self._content_aliases: dict[str, dict] | None = None
 
         # State enrichment hooks (plugins add custom fields)
         self._state_hooks: list[Callable[[dict], None]] = []
@@ -276,138 +251,6 @@ class Engine:
                         "agent_id": agent_id,
                     }
                 )
-
-    # ─── Content aliases ─────────────────────────────────────
-
-    @property
-    def _aliases_path(self) -> Path:
-        return self._project_dir / ".fantastic" / "aliases.json"
-
-    def _load_aliases(self) -> dict[str, dict]:
-        if self._aliases_path.exists():
-            data = json.loads(self._aliases_path.read_text())
-            # Only keep persistent aliases across restarts
-            return {k: v for k, v in data.items() if v.get("persistent")}
-        return {}
-
-    def _save_aliases(self) -> None:
-        self._aliases_path.parent.mkdir(parents=True, exist_ok=True)
-        self._aliases_path.write_text(json.dumps(self._content_aliases))
-
-    @property
-    def content_aliases(self) -> dict[str, dict]:
-        if self._content_aliases is None:
-            self._content_aliases = self._load_aliases()
-        return self._content_aliases
-
-    def add_content_alias(self, alias_id: str, entry: dict) -> None:
-        self.content_aliases[alias_id] = entry
-        self._save_aliases()
-
-    def remove_content_alias(self, alias_id: str) -> bool:
-        if alias_id in self.content_aliases:
-            del self._content_aliases[alias_id]
-            self._save_aliases()
-            return True
-        return False
-
-    # ─── File operations ───────────────────────────────────────────
-
-    def list_files(self) -> list[dict[str, Any]]:
-        """Recursively list project files as a tree structure."""
-        return self._walk_dir(self._project_dir)
-
-    def _walk_dir(self, dirpath: Path) -> list[dict[str, Any]]:
-        entries = []
-        try:
-            items = sorted(
-                dirpath.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
-            )
-        except PermissionError:
-            return entries
-        for item in items:
-            if item.name.startswith(".") and item.name in {
-                ".git",
-                ".hg",
-                ".svn",
-                ".env",
-                ".fantastic",
-            }:
-                continue
-            if item.name in _EXCLUDED_DIRS:
-                continue
-            if item.is_dir():
-                children = self._walk_dir(item)
-                entries.append(
-                    {
-                        "name": item.name,
-                        "path": str(item.relative_to(self._project_dir)),
-                        "isDir": True,
-                        "children": children,
-                    }
-                )
-            else:
-                entries.append(
-                    {
-                        "name": item.name,
-                        "path": str(item.relative_to(self._project_dir)),
-                        "isDir": False,
-                    }
-                )
-        return entries
-
-    def rename_file(self, old_path: str, new_path: str) -> None:
-        """Rename/move a file within project_dir."""
-        old = self._project_dir / old_path
-        new = self._project_dir / new_path
-        if not old.exists():
-            raise ValueError(f"File not found: {old_path}")
-        old.resolve().relative_to(self._project_dir.resolve())
-        new.resolve().relative_to(self._project_dir.resolve())
-        new.parent.mkdir(parents=True, exist_ok=True)
-        old.rename(new)
-
-    def delete_file(self, path: str) -> None:
-        """Delete a file within project_dir."""
-        target = self._project_dir / path
-        if not target.exists():
-            raise ValueError(f"File not found: {path}")
-        target.resolve().relative_to(self._project_dir.resolve())
-        target.unlink()
-
-    def read_file(self, path: str) -> dict[str, Any]:
-        """Read a file and return its content. For images, returns base64 data."""
-        import base64
-
-        target = self._project_dir / path
-        if not target.exists():
-            raise ValueError(f"File not found: {path}")
-        target.resolve().relative_to(self._project_dir.resolve())
-
-        ext = target.suffix.lower()
-        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico"}
-
-        if ext in image_exts:
-            with open(target, "rb") as f:
-                data = base64.b64encode(f.read()).decode("ascii")
-            mime = {
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".gif": "image/gif",
-                ".bmp": "image/bmp",
-                ".webp": "image/webp",
-                ".svg": "image/svg+xml",
-                ".ico": "image/x-icon",
-            }.get(ext, "application/octet-stream")
-            return {"kind": "image", "data": data, "mime": mime}
-        else:
-            try:
-                with open(target, "r", encoding="utf-8") as f:
-                    content = f.read()
-                return {"kind": "text", "content": content}
-            except UnicodeDecodeError:
-                return {"kind": "binary", "content": "(binary file — cannot display)"}
 
     # ─── Server registry (delegated to store) ─────────────
 

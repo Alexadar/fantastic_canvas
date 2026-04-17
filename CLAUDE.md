@@ -130,8 +130,8 @@ Each AI bundle (`ollama`, `openai`, `anthropic`, `integrated`) has its own `skil
 
 `_DISPATCH` / `_TOOL_DISPATCH` hold every tool. Names mirror 1:1 on the frontend via `fantastic_transport().dispatcher`.
 
-**Core**: `create_agent`, `list_agents`, `read_agent`, `delete_agent`, `update_agent`, `rename_agent`, `refresh_agent`, `post_output`, `get_state`, `get_full_state`, `execute_python`, `agent_run`, `content_alias_file`, `content_alias_url`, `get_aliases`, `list_files`, `read_file`, `write_file`, `agent_call`, `launch_instance`, `stop_instance`, `restart_instance`, `list_instances`, `register_instance`, `unregister_instance`, `list_registered_instances`, `get_handbook`, `register_template`, `list_templates`, `server_logs`, `read_agent_memory`, `append_agent_memory`, `conversation_log`, `conversation_say`, `core_chat_message`
-**Scheduler**: `create_schedule`, `list_schedules`, `delete_schedule`
+**Core**: `create_agent`, `list_agents`, `read_agent`, `delete_agent`, `update_agent`, `rename_agent`, `refresh_agent`, `post_output`, `get_state`, `get_full_state`, `execute_python`, `agent_run`, `agent_call`, `get_handbook`, `register_template`, `list_templates`, `server_logs`, `read_agent_memory`, `append_agent_memory`, `conversation_log`, `conversation_say`, `core_chat_message`
+**Scheduler** (`scheduler` bundle): `agent_call verb=schedule|unschedule|list|pause|resume|tick_now|history`. Every fire emits a `schedule_fired` event on the scheduler's inbox AND the target's inbox, and appends to a history sidecar. Internal handler names: `scheduler_schedule`, `scheduler_unschedule`, `scheduler_list`, `scheduler_pause`, `scheduler_resume`, `scheduler_tick_now`, `scheduler_history`.
 **Canvas**: `move_agent`, `resize_agent`, `scene_vfx`, `scene_vfx_data`, `spatial_discovery`, `get_handbook_canvas`
 **Terminal**: `terminal_output`, `terminal_restart`, `terminal_signal`, `get_handbook_terminal`
 **Process**: `process_create`, `process_input`, `process_resize`, `process_enter`, `process_close`, `process_attach`, `process_output`, `process_restart`, `process_signal`
@@ -168,23 +168,24 @@ Events are published to per-agent bus inboxes (see `core/bus.py`). The web bundl
 
 ## Best Practices
 
-- **Never inline base64 in `post_output`** — payloads over 512KB crash the canvas. Use `content_alias_file(file_path)` → serve at `/content/{id}`.
-- **Large assets** (images, plots, data): save to project dir → `content_alias_file` → URL in HTML.
+- **Never inline base64 in `post_output`** — payloads over 512KB crash the canvas. Use `agent_call(web_id, verb="alias", kind="file", path=...)` → serve at `/content/{alias_id}`.
+- **Large assets** (images, plots, data): save to project dir → `agent_call` alias verb on the web agent → URL in HTML.
 - **Never spawn cascades of `fantastic_agent`** — they are user-facing chat UIs, not API-callable agents. Ask the user first if unsure.
 - **UI agents never touch WebSocket.** Only `fantastic_transport()`. No `new WebSocket(...)`, no `fetch('/api/...')`.
 - **Agent IDs are `{bundle}_{hex6}`** (e.g. `terminal_a3f2b1`, `ollama_b04b35`). Bundle is required when creating an agent.
 
 ## Architecture notes
 
-- **Core has no HTTP.** `core/` is Engine + AgentStore + Dispatch + Bus + Scheduler. Transport is a bundle (`web`).
+- **Core has no HTTP.** `core/` is Engine + AgentStore + Dispatch + Bus. Transport is a bundle (`web`). Scheduling is a bundle (`scheduler`). Filesystem is a bundle (`file`). Connected peers are a bundle (`instance`).
 - **Web agents are hot-reloadable.** `web_configure(agent_id, port=..., base_route=...)` cancels+restarts uvicorn with new config. Clients auto-reconnect (transport.ts handles it).
 - **Multiple web agents can coexist.** Different ports, different base routes, different policies (future: `readonly` for broadcast viewers).
 - **Each agent has a URL and a WS channel.** `{base}/{agent_id}/` serves HTML, `{base}/{agent_id}/ws` is the protocol channel. The web bundle injects `<script src="/_fantastic/transport.js">` into every served HTML page.
 - **`delete_lock`**: boolean on `agent.json`; `delete_agent` refuses deletion when true.
 - **Agent memory**: append-only JSONL at `.fantastic/agents/{id}/memory_long.jsonl`.
 - **Code execution**: Python subprocess (stateless, one-shot) via `execute_python` dispatch.
-- **Remote instances**: `launch_instance` with `ssh_host` + `remote_cmd`.
-- **Scheduler**: per-agent persistent schedules at `.fantastic/agents/{id}/schedules.json`. `create_schedule` with `action={type:"tool"|"prompt", ...}` and `interval_seconds`. Prompt actions route to the agent's `{bundle}_send` dispatch.
+- **Filesystem access (`file` bundle)**: `add file name=<display> root=<abs> [readonly=true]` creates one `file_<hex6>` agent per root. Verbs reached via `agent_call verb=list|read|write|delete|rename|mkdir`. Core has no filesystem code. Quickstart seeds `file_project` (root = project_dir). See `bundled_agents/file/skills/file.md`.
+- **Connected instances**: `add instance` creates one `instance_<hex6>` agent per connected fantastic (transport `ws` or `ssh`). Verbs reached via `agent_call verb=start|stop|status|call`. No core-level subprocess tracking — all state (url, tunnel_pid, local_port) lives in the instance agent's `agent.json`. See `bundled_agents/instance/skills/instance.md`.
+- **Scheduler (`scheduler` bundle)**: one tick loop per `scheduler_<hex6>` agent. Schedules stored in `.fantastic/agents/{sched_id}/schedules.json`; every fire appended to `history.jsonl` + emitted as `schedule_fired` event on the bus (on both scheduler's and target's inbox). Verbs via `agent_call`: `schedule`, `unschedule`, `list`, `pause`, `resume`, `tick_now`, `history`. Quickstart seeds `scheduler_main`. See `bundled_agents/scheduler/skills/scheduler.md`.
 
 ## Project Structure
 
@@ -248,7 +249,6 @@ fantastic_canvas/
 │   │   ├── template.json, tools.py         # {bundle}_send, _history, _save_message, ...
 │   │   ├── provider.py                     # Model/API client
 │   │   └── skills/{bundle}.md
-│   ├── html/                               # Static HTML iframe agent
 │   └── quickstart/                         # Setup wizard
 ├── .fantastic/                             # Persistent runtime state
 │   ├── config.json, registry.json, aliases.json, instances.json

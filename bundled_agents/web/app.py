@@ -16,6 +16,7 @@ from fastapi.responses import (
     JSONResponse,
     PlainTextResponse,
     FileResponse,
+    RedirectResponse,
 )
 
 from core.bus import bus
@@ -98,6 +99,26 @@ def make_app(agent_id: str, engine) -> FastAPI:
         from core.protocol import describe
 
         return JSONResponse(describe())
+
+    # ─── Content aliases ───────────────────────────────────
+
+    @app.get(f"{base_route}/content/{{alias_id}}")
+    async def serve_alias(alias_id: str):
+        from . import tools as web_tools
+
+        entry = web_tools.load_aliases(agent_id).get(alias_id)
+        if entry is None:
+            return PlainTextResponse("Unknown alias", status_code=404)
+        if entry.get("type") == "url":
+            return RedirectResponse(entry["url"])
+        if entry.get("type") == "file":
+            fp = Path(entry["path"])
+            if not fp.is_absolute():
+                fp = Path(engine.project_dir) / fp
+            if not fp.exists():
+                return PlainTextResponse("File missing", status_code=404)
+            return FileResponse(fp)
+        return PlainTextResponse("Malformed alias", status_code=500)
 
     # ─── Agent HTML entry + static assets ─────────────────
 
@@ -209,7 +230,7 @@ def make_app(agent_id: str, engine) -> FastAPI:
                     try:
                         from core.trace import trace
 
-                        result = await trace("ws", target, tool, args, fn, **args)
+                        result = await trace("ws", target, tool, args, fn)
                         data = result.data if isinstance(result, ToolResult) else result
                         # Fire broadcasts on the bus too
                         if isinstance(result, ToolResult):

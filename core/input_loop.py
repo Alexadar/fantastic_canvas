@@ -145,11 +145,22 @@ class InputLoop:
                             )
 
     async def _handle_agent_message(self, agent_id: str, rest: str):
-        """Route @{agent_id} input: dispatch tool if first token matches, else cli_sync."""
+        """Route `@{agent_id} …` input.
+
+        Two forms, both go through `_DISPATCH` — no special hooks:
+
+        A) `@{id} <tool> key=val ...` — invoke `_DISPATCH[tool]` with
+           `agent_id` auto-injected.
+        B) `@{id} <free text>`        — invoke `_DISPATCH[f"{bundle}_send"]`
+           with `agent_id=<id>, text=<rest>`. Every "chattable" bundle
+           (AI bundles, fantastic_agent) registers `{bundle}_send`.
+        """
         from .dispatch import _DISPATCH
-        from .tools._plugin_loader import get_bundle_module
 
         rest = rest.strip()
+        if not rest:
+            self._say_system(f"@{agent_id}: empty message")
+            return
         head, _, tail = rest.partition(" ")
         head = head.strip()
 
@@ -167,7 +178,6 @@ class InputLoop:
                 self._say_system(f"[ERROR] {data['error']}")
             else:
                 print(f"  {head}: {data}")
-            # Fire any broadcasts the dispatch produced
             try:
                 from .tools import _fire_broadcasts
 
@@ -177,26 +187,27 @@ class InputLoop:
                 pass
             return
 
-        # Form B: @{id} <message> → cli_sync
-        if not rest:
-            self._say_system(f"@{agent_id}: empty message")
-            return
-
+        # Form B: @{id} <free text> → {bundle}_send
         agent = self._engine.get_agent(agent_id)
         bundle = agent.get("bundle", "") if agent else ""
-        mod = get_bundle_module(bundle) if bundle else None
-        cli_fn = getattr(mod, "cli_sync", None) if mod else None
-        if cli_fn is None:
-            self._say_system(f"@{agent_id}: bundle '{bundle}' has no cli_sync")
+        handler = _DISPATCH.get(f"{bundle}_send") if bundle else None
+        if handler is None:
+            self._say_system(
+                f"@{agent_id}: no '{bundle}_send' handler — bundle not chattable"
+            )
             return
 
         entry = conversation.say("user", rest)
         print(conversation.format_entry(entry))
         try:
-            reply = await cli_fn(agent_id, rest)
+            tr = await handler(agent_id=agent_id, text=rest)
         except Exception as e:
-            self._say_system(f"[ERROR] cli_sync: {e}")
+            self._say_system(f"[ERROR] {bundle}_send: {e}")
             return
+        data = getattr(tr, "data", tr)
+        reply = ""
+        if isinstance(data, dict):
+            reply = data.get("response") or data.get("error") or ""
         if reply:
             out = conversation.say(agent_id, str(reply))
             print(conversation.format_entry(out))

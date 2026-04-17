@@ -89,7 +89,7 @@ async def test_trace_forwards_args_verbatim():
     async def fn(**kwargs):
         return {"big": big_text}
 
-    await trace("ws", "a1", "write_file", {"content": big_text}, fn, content=big_text)
+    await trace("ws", "a1", "write_file", {"content": big_text}, fn)
     assert events[0]["args"]["content"] == big_text
     assert events[0]["result"]["big"] == big_text
 

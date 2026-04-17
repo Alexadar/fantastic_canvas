@@ -93,15 +93,21 @@ d.move_agent({ agent_id, x, y })
 d.resize_agent({ agent_id, width, height })
 d.post_output({ agent_id, html })
 d.execute_python({ agent_id, code })
-d.agent_call({ target_agent_id, message })    // PTY write OR AI bundle _send
-d.list_files({ path: '' })
-d.read_file({ path })
-d.write_file({ path, content, agent_id? })    // agent_id → writes to agent folder
-d.content_alias_file({ file_path, persistent: true })  // → "/content/<id>"
+d.agent_call({ target_agent_id, verb, ...args })  // universal RPC; verb default "send"
+// File ops (file bundle): go through agent_call
+d.agent_call({ target_agent_id: '<file_hex>', verb: 'list', path: '' })
+d.agent_call({ target_agent_id: '<file_hex>', verb: 'read', path: 'CLAUDE.md' })
+d.agent_call({ target_agent_id: '<file_hex>', verb: 'write', path: 'x.txt', content: '...' })
+// Content aliases (via web bundle): agent_call on the web agent
+d.agent_call({ target_agent_id: '<web_hex>', verb: 'alias', kind: 'file', path: '…' })
+d.agent_call({ target_agent_id: '<web_hex>', verb: 'alias', kind: 'url',  url:  'https://…' })
 d.process_input({ agent_id, data })
 d.process_resize({ agent_id, cols, rows })
 d.terminal_output({ agent_id, max_lines: 200 })
-d.create_schedule({ agent_id, action: { type: 'tool'|'prompt', ... }, interval_seconds })
+// Scheduling (scheduler bundle): agent_call on a scheduler agent
+d.agent_call({ target_agent_id: '<scheduler_hex>', verb: 'schedule',
+               for_agent_id, action: { type: 'tool'|'prompt', ... }, interval_seconds })
+// Every fire emits: t.on('schedule_fired', (evt) => ...)
 d.web_configure({ agent_id, port?, base_route? })     // hot-reloads uvicorn
 d.ollama_send({ agent_id, text })              // and openai_, anthropic_, integrated_
 d.fantastic_agent_configure({ agent_id, upstream_agent_id, upstream_bundle })
@@ -159,13 +165,13 @@ Every name below maps 1:1 on the frontend as `d.{name}(args)`.
 **Canvas layout**: `move_agent`, `resize_agent`, `scene_vfx`, `scene_vfx_data`, `spatial_discovery`
 **Process (PTY)**: `process_create`, `process_input`, `process_resize`, `process_close`, `process_attach`, `process_enter`, `process_output`, `process_restart`, `process_signal`
 **Terminal shortcuts**: `terminal_output`, `terminal_restart`, `terminal_signal`
-**Files**: `list_files`, `read_file`, `write_file`
-**Content aliases**: `content_alias_file`, `content_alias_url`, `get_aliases`
+**Files** (`file` bundle): `add file name=…` creates a file-root agent. Verbs via `agent_call verb=list|read|write|delete|rename|mkdir`. Internal handler names: `file_list`, `file_read`, `file_write`, `file_delete`, `file_rename`, `file_mkdir`.
+**Content aliases** (web bundle): `agent_call verb=alias|aliases|unalias` on any web agent. Served at `GET /content/{alias_id}`. Internal handler names: `web_alias`, `web_aliases`, `web_unalias`.
 **Inter-agent**: `agent_call`
 **Memory**: `read_agent_memory`, `append_agent_memory`
-**Schedules**: `create_schedule`, `list_schedules`, `delete_schedule`
+**Schedules** (`scheduler` bundle): `add scheduler name=…` creates a scheduler agent. Verbs via `agent_call verb=schedule|unschedule|list|pause|resume|tick_now|history`. Internal handler names: `scheduler_schedule`, `scheduler_unschedule`, `scheduler_list`, `scheduler_pause`, `scheduler_resume`, `scheduler_tick_now`, `scheduler_history`. Every fire emits a `schedule_fired` event.
 **Web transport**: `web_configure` (change port / base_route; hot-reloads uvicorn)
-**Instances**: `launch_instance`, `stop_instance`, `list_instances`, `register_instance`, `unregister_instance`, `restart_instance`, `list_registered_instances`
+**Connected instances** (`instance` bundle): `add instance` creates an instance agent (transport `ws` or `ssh`). Verbs via `agent_call verb=start|stop|status|call`. Internal handler names: `instance_start`, `instance_stop`, `instance_status`, `instance_call`.
 **Conversation log**: `conversation_log`, `conversation_say`, `core_chat_message`
 **AI (per bundle ollama/openai/anthropic/integrated)**: `{bundle}_send`, `{bundle}_interrupt`, `{bundle}_save_message`, `{bundle}_history`, `{bundle}_configure`
 **fantastic_agent**: `fantastic_agent_get_config`, `fantastic_agent_configure`, `fantastic_agent_save_message`, `fantastic_agent_history`
@@ -181,8 +187,8 @@ cat .fantastic/fantastic.md | codex -
 
 ## Best practices
 
-- **Never inline base64 in `post_output`** — payloads over 512KB crash the canvas. Use `content_alias_file(file_path)` → serve at `/content/{id}`.
-- **Large assets** (images, CSVs, plots): always save to project dir → `content_alias_file` → URL in HTML.
+- **Never inline base64 in `post_output`** — payloads over 512KB crash the canvas. Use `agent_call(web_id, verb="alias", kind="file", path=…)` → serve at `/content/{alias_id}`.
+- **Large assets** (images, CSVs, plots): always save to project dir → `agent_call verb=alias` on the web agent → URL in HTML.
 - **UI code uses ONLY `fantastic_transport()`**. No `fetch`, no `/api/...` URLs, no `new WebSocket(...)`.
 - **Agent IDs follow `{bundle}_{hex6}`** (e.g. `terminal_a3f2b1`). Bundle is mandatory when creating.
 - **AI providers are bundled agents** — `fantastic add ollama` creates a backend; `fantastic add fantastic_agent` gives it a chat UI. Configure with `fantastic_agent_configure(agent_id, upstream_agent_id, upstream_bundle)`.

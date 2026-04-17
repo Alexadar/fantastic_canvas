@@ -1,5 +1,9 @@
 # Fantastic Canvas Self-Test
 
+> Last aligned with branch `claude/plan-ai-integration-Y0GLv` on 2026-04-13.
+> If you're testing a later branch, cross-check the summary table against
+> `git log main..HEAD` before trusting it.
+
 **Comprehensive end-to-end test harness** for Claude Code. Covers everything
 we've built: core, CLI, AI bundles, web bundle (HTTP + WS transport), canvas,
 terminal, content aliases, files, scheduler, VFX, delete-lock, hierarchy,
@@ -95,8 +99,22 @@ You are testing a running Fantastic Canvas instance. The server is at `http://lo
 - `GET /content/{alias_id}` — content alias (file or redirect)
 
 No REST API. Every dispatch call goes over the WS channel of some agent
-(usually `web_main`, the root web agent). Use the Python helper below for
-manual WS calls; `wscat`/`websocat` work too.
+— in this selftest, the web agent you added in pre-flight (id captured as
+`{{WEB_ID}}`, literal form `web_<hex6>`). Any agent's channel works; the
+web one is just convenient because it's always up. Use the Python helper
+below for manual WS calls; `wscat`/`websocat` work too.
+
+**Capture `{{WEB_ID}}` / `{{CANVAS_ID}}` once in pre-flight** — e.g.:
+```bash
+curl -s http://localhost:8888/_fantastic/description.json >/dev/null  # liveness
+# Then, via WS, call list_agents and grep the two ids:
+python3 selftest_call.py 8888 <any-agent-id> list_agents '{}' \
+  | python3 -c "import sys,json; xs=json.load(sys.stdin); \
+     print('WEB_ID=',[a['agent_id'] for a in xs if a['bundle']=='web'][0]); \
+     print('CANVAS_ID=',[a['agent_id'] for a in xs if a['bundle']=='canvas'][0])"
+```
+Everywhere below that says `web_main` / `canvas_main` is the legacy
+quickstart placeholder — substitute `{{WEB_ID}}` / `{{CANVAS_ID}}`.
 
 ## Python helper (copy to a file or run inline)
 
@@ -185,13 +203,16 @@ call("web_main", "execute_python", agent_id=TERM_ID, code="print(40+2)")
 ```
 Expected: output containing `"42"`.
 
-### Test 8: Create HTML agent
+### Test 8: Create a bundle-less HTML agent
+The `html` bundle was removed; any agent with `html_content` or a later
+`post_output` call shows as HTML on the canvas. Empty `template` is fine:
 ```
-call("web_main", "create_agent", template="html", options={"x": 600, "y": 200})
+call("web_main", "create_agent", template="", options={"x": 600, "y": 200},
+     html_content="<h1 style='color:#ff44ff'>SELFTEST OK</h1>")
 ```
-Save as `HTML_ID`.
+Save the returned id as `HTML_ID`.
 
-### Test 9: Post output
+### Test 9: post_output replaces the rendered HTML
 ```
 call("web_main", "post_output", agent_id=HTML_ID, html="<h1 style='color:#ff44ff'>SELFTEST OK</h1>")
 ```
@@ -311,61 +332,96 @@ Clean up both agents.
 
 ---
 
-## Part 5: Content aliases
+## Part 5: Content aliases (owned by the `web` bundle)
 
-### Test 26: content_alias_file
-```
-call("web_main", "content_alias_file", file_path="CLAUDE.md")
-```
-Expected: `{"alias_path": "/content/<hex>", "alias_id": "<hex>"}`.
+Aliases live on the serving web agent — verbs are `alias`/`aliases`/`unalias`
+reached through `agent_call`. Use the web agent you added (`{{WEB_ID}}`).
 
-### Test 27: Serve the alias
+### Test 26: create file alias
+```
+call("web_main", "agent_call", target_agent_id="{{WEB_ID}}",
+     verb="alias", kind="file", path="CLAUDE.md")
+```
+Expected: `{"alias_id": "<hex>", "alias_path": "/content/<hex>"}`.
+
+### Test 27: HTTP serves the alias
 ```bash
 curl -s http://localhost:{{PORT}}/content/HEXID | head -5
 ```
-Expected: first few lines of CLAUDE.md.
+Expected: first few lines of CLAUDE.md (not 404).
 
-### Test 28: content_alias_url
+### Test 28: create url alias
 ```
-call("web_main", "content_alias_url", url="https://example.com")
+call("web_main", "agent_call", target_agent_id="{{WEB_ID}}",
+     verb="alias", kind="url", url="https://example.com")
 ```
-Expected: alias redirecting to example.com.
+Expected: `{"alias_id", "alias_path"}`. HTTP GET on that path must 302
+redirect to `https://example.com`.
 
-### Test 29: get_aliases
+### Test 29: list aliases
 ```
-call("web_main", "get_aliases")
+call("web_main", "agent_call", target_agent_id="{{WEB_ID}}", verb="aliases")
 ```
-Expected: list with entries from tests 26 + 28.
+Expected: `{"aliases": [...]}` with entries from tests 26 + 28.
+
+### Test 29b: remove an alias
+```
+call("web_main", "agent_call", target_agent_id="{{WEB_ID}}",
+     verb="unalias", alias_id="<hex-from-test-28>")
+```
+Expected: `{"removed": True}`. Subsequent `GET /content/<hex>` → 404.
 
 ---
 
-## Part 6: Files (dispatch, not REST)
+## Part 6: Files (via `file` bundle + `agent_call`)
 
-### Test 30: list_files
+Uses the `file_project` agent seeded by quickstart (bundle=`file`,
+root=`""` → project_dir). Resolve its id once:
 ```
-call("web_main", "list_files", path="")
+FILE_ID = [a["id"] for a in call("web_main", "list_agents")
+           if a["bundle"] == "file" and a.get("display_name") == "project"][0]
 ```
-Expected: project file tree. Excludes `.fantastic/`, `.git/`, `node_modules/`.
 
-### Test 31: read_file
+### Test 30: list
 ```
-call("web_main", "read_file", path="CLAUDE.md")
+call("web_main", "agent_call",
+     target_agent_id=FILE_ID, verb="list", path="")
 ```
-Expected: `{"path": "CLAUDE.md", "content": "..."}`.
+Expected: `{files: [...]}` tree; `.fantastic/`, `.git/`, `node_modules/` excluded.
 
-### Test 32: write_file (project path)
+### Test 31: read
 ```
-call("web_main", "write_file", path="_selftest_tmp.txt", content="hello")
+call("web_main", "agent_call",
+     target_agent_id=FILE_ID, verb="read", path="CLAUDE.md")
 ```
-Then `read_file` should return the same content. Delete the file after.
+Expected: `{path, content, ...}`.
 
-### Test 33: write_file (agent-scoped)
-Create a terminal, save as `AGENT_ID`, then:
+### Test 32: write round-trip
 ```
-call("web_main", "write_file", path="note.txt", content="scoped", agent_id=AGENT_ID)
+call("web_main", "agent_call",
+     target_agent_id=FILE_ID, verb="write",
+     path="_selftest_tmp.txt", content="hello")
+call("web_main", "agent_call",
+     target_agent_id=FILE_ID, verb="read", path="_selftest_tmp.txt")
 ```
-Expected: `{"path": ".fantastic/agents/<AGENT_ID>/note.txt", "written": true}`.
-Clean up the agent.
+Expected: content = "hello". Then delete it:
+```
+call("web_main", "agent_call",
+     target_agent_id=FILE_ID, verb="delete", path="_selftest_tmp.txt")
+```
+
+### Test 33: readonly policy
+Add a second root with `readonly=true`:
+```
+call("web_main", "add_bundle", bundle_name="file", name="readonly_view")
+# find its id; call it RO_ID
+call("web_main", "update_agent", agent_id=RO_ID,
+     options={"root": ".", "readonly": True})
+call("web_main", "agent_call",
+     target_agent_id=RO_ID, verb="write",
+     path="x.txt", content="nope")
+```
+Expected: `{"error": "readonly"}`. Clean up `RO_ID`.
 
 ---
 
@@ -467,32 +523,56 @@ Clean up: `delete_agent(WEB2)`.
 
 ---
 
-## Part 11: Scheduler
+## Part 11: Scheduler (`scheduler` bundle)
 
-### Test 45: create_schedule (tool action)
+Uses the `scheduler_main` agent seeded by quickstart. Resolve its id:
+```
+SCHED_ID = [a["id"] for a in call("web_main", "list_agents")
+            if a["bundle"] == "scheduler"][0]
+```
+
+### Test 45: schedule (tool action)
 Create a terminal (`AGENT_ID`), then:
 ```
-call("web_main", "create_schedule",
-     agent_id=AGENT_ID,
+call("web_main", "agent_call",
+     target_agent_id=SCHED_ID, verb="schedule",
+     for_agent_id=AGENT_ID,
      action={"type": "tool", "tool": "terminal_output", "args": {"max_lines": 5}},
      interval_seconds=60)
 ```
-Expected: schedule dict with `id` starting `sch_`, `run_count=0`, `next_run` ~60s in future.
+Expected: `{"schedule_id": "sch_<hex>", "schedule": {...}}`.
 
-### Test 46: list_schedules
+### Test 46: list
 ```
-call("web_main", "list_schedules", agent_id=AGENT_ID)
+call("web_main", "agent_call", target_agent_id=SCHED_ID, verb="list")
 ```
-Expected: list containing the created schedule.
+Expected: `{"schedules": [...]}` containing the created schedule.
 
-### Test 47: delete_schedule
+### Test 47: tick_now + schedule_fired event
+Subscribe to the scheduler's events (frontend: `transport.watch(SCHED_ID)`).
+Then fire immediately:
 ```
-call("web_main", "delete_schedule", agent_id=AGENT_ID, schedule_id="<sch_id>")
+call("web_main", "agent_call",
+     target_agent_id=SCHED_ID, verb="tick_now", schedule_id="sch_...")
 ```
-Expected: `{"deleted": True}`. Then `list_schedules` returns empty.
+Expected: `{"fired": True}`. An observer of `SCHED_ID` (or `AGENT_ID`) must
+receive a `schedule_fired` event with `{schedule_id, for_agent_id,
+result, error: null, ts, duration_ms}`.
 
-### Test 48: Schedules deleted with agent
-Create a schedule, then delete the agent. Verify `.fantastic/agents/<AGENT_ID>/` no longer exists (cleans up `schedules.json` automatically).
+### Test 47b: history
+```
+call("web_main", "agent_call", target_agent_id=SCHED_ID, verb="history", limit=10)
+```
+Expected: `{"history": [...], "count": >=1}` including the tick_now fire.
+
+### Test 48: unschedule + delete cleanup
+```
+call("web_main", "agent_call",
+     target_agent_id=SCHED_ID, verb="unschedule", schedule_id="sch_...")
+```
+Expected: `{"removed": True}`. Then `verb="list"` returns empty.
+Deleting the scheduler agent itself (`delete_agent`) cancels its tick
+loop and removes both `schedules.json` and `history.jsonl`.
 
 ---
 
@@ -686,6 +766,102 @@ Clean up:
 
 ---
 
+## Part B: Boot behaviour (no auto-bundles)
+
+Start a clean session (`pkill -f fantastic; rm -rf .fantastic; uv run fantastic`).
+
+### Test B1: No agents on first boot
+```
+call(<any-agent-id>, "list_agents")
+```
+Wait — there's no agent yet, so no WS channel exists. Check the filesystem
+instead:
+```bash
+ls .fantastic/agents/ 2>/dev/null | wc -l     # → 0
+```
+Plus `list` in the CLI shows every bundle as `[available]`, zero instances.
+Regression: if any agent directory exists on first boot, something is
+auto-creating.
+
+### Test B2: `add web` brings port 8888 up
+```
+add web
+```
+Then:
+```bash
+sleep 1
+lsof -iTCP:8888 -sTCP:LISTEN | head          # → Python listening
+curl -s -o /dev/null -w "%{http_code}\n" \
+    http://localhost:8888/_fantastic/transport.js   # → 200
+```
+Regression signal: if nothing is LISTEN, the `serve()` task wasn't
+scheduled from `web.on_add` (mid-session bug we fixed).
+
+### Test B3: Web agent registers its package path correctly
+The core logs after `add web` MUST contain:
+```
+web agent web_<hex6> serving on port 8888
+```
+Proves the plugin loader imported `bundled_agents.web.tools` as a real
+package (so the bundle's relative `from .app import make_app` resolves).
+
+---
+
+## Part M: Agent messaging edges
+
+### Test M1: `agent_call` without a PTY → `{bundle}_send` branch
+
+Requires an AI provider + ollama added (`add ollama`). With `{{OLLAMA_ID}}`:
+```
+call({{WEB_ID}}, "agent_call", target_agent_id="{{OLLAMA_ID}}", message="ping")
+```
+Expected data:
+```
+{
+  "delivered": True,
+  "delivered_to_process": False,   # no PTY
+  "delivered_to_chat":    True,    # ollama_send was invoked
+  ...
+}
+```
+If `delivered_to_chat` is False, the capability-based routing in
+`core/tools/_process.py::_agent_call` is broken.
+
+### Test M2: Scheduler `type: "prompt"` action
+
+With `{{OLLAMA_ID}}` still around, resolve `SCHED_ID` from
+`list_agents` (bundle=scheduler). Then:
+```
+call({{WEB_ID}}, "agent_call",
+     target_agent_id=SCHED_ID, verb="schedule",
+     for_agent_id="{{OLLAMA_ID}}",
+     action={"type": "prompt", "text": "say ok"},
+     interval_seconds=60)
+```
+Expected: `{schedule_id, schedule}`. Then:
+```
+call({{WEB_ID}}, "agent_call", target_agent_id=SCHED_ID, verb="list")
+```
+→ one entry with `action.type == "prompt"`. Unsubscribe with
+`verb="unschedule"`. Exercises the `{bundle}_send` fire path
+(the heartbeat mechanism).
+
+---
+
+## Part O: Observability
+
+### Test O1: `server_logs` contains dispatch traces
+```
+call({{WEB_ID}}, "core_chat_message", who="selftest", message="trace probe")
+call({{WEB_ID}}, "server_logs", max_lines=50)
+```
+The returned list MUST contain at least one entry referencing
+`core_chat_message` or a `trace:` prefix (from `core/trace.py`).
+Regression signal: empty log or no trace entries → the trace() wrapper
+around dispatch stopped emitting.
+
+---
+
 ## Summary
 
 After running, report:
@@ -703,12 +879,15 @@ After running, report:
 | Conversation / logs | 38-39 | | |
 | VFX | 40-42 | | |
 | Web bundle | 43-44 | | |
-| Scheduler | 45-48 | | |
+| Scheduler | 45-48, 47b | | |
 | AI bundle (optional) | 49-52 | | |
 | Hierarchy | 53-55 | | |
 | Delete lock UI | 56-58 | | |
 | CLI `@{id}` routing | 59-66, 62b | | |
-| **TOTAL** | **67** | | |
+| Boot behaviour | B1-B3 | | |
+| Agent messaging edges | M1-M2 | | |
+| Observability | O1 | | |
+| **TOTAL** | **73** | | |
 
 Also report:
 - Agents appear/disappear without reload (tests 6, 9, 15, 17)

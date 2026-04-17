@@ -1,10 +1,15 @@
 # Fantastic Core CLI Self-Test
 
+> Last aligned with branch `claude/plan-ai-integration-Y0GLv` on 2026-04-13.
+> If you're testing a later branch, cross-check the summary table against
+> `git log main..HEAD` before trusting it.
+
 **Scope: core + CLI + AI bundles ONLY.** No UI, no WebSocket, no HTTP tests,
 no browser. This selftest drives the `fantastic` CLI interactively and
 verifies the `@{agent_id}` routing layer, dispatch tool calls with
-`key=val` kwargs, `cli_sync` with tool-call round-trip, and the
-`fantastic_agent` → AI-bundle proxy flow.
+`key=val` kwargs, `cli_sync` with tool-call round-trip, the
+`fantastic_agent` → AI-bundle proxy flow, **plus** the Snapchat CLI chrome
+and the "nothing auto-created on fresh start" bootstrap invariant.
 
 For the broader UI / transport / canvas selftest, see
 `bundled_agents/canvas/tests/selftest.md`.
@@ -191,6 +196,77 @@ Then `list` — bundle is back to `[available]`, no instances. Verify
 
 ---
 
+## Part C: CLI chrome + bootstrap invariants
+
+These run without any AI provider. Capture stdout of the `fantastic`
+process (tee the FIFO-driven shell or scrape the background-task output
+file) and grep for the patterns below.
+
+### Test C1: Fresh-start hint is printed
+
+After `uv run fantastic` boots against a wiped `.fantastic`, captured
+stdout MUST contain:
+```
+No agents yet. To bootstrap a default canvas+web, type:
+    add quickstart
+```
+Regression signal: if this string is missing, core is silently auto-adding
+something on boot. STOP and investigate before proceeding.
+
+### Test C2: Nothing is auto-created
+
+Immediately after boot, type `list` in the CLI. Expected output:
+every bundle listed as `[available]`, zero instances. Verify
+`ls .fantastic/agents/ 2>/dev/null` prints **no** directories.
+Regression signal: if any agent exists, something is auto-creating.
+
+### Test C3: Recursive bundle discovery finds `ai/*`
+
+In the `list` output from C2, these bundle names MUST all appear:
+`ollama`, `openai`, `anthropic`, `integrated`, `fantastic_agent`,
+`canvas`, `terminal`, `html`, `web`, `quickstart`.
+Proves the plugin loader's recursive scan descends into
+`bundled_agents/ai/` (the AI bundles live at `ai/ollama/`,
+`ai/openai/`, etc., not at the top level).
+
+### Test C4: `add` is idempotent on display name
+
+```
+add ollama
+add ollama
+```
+Second invocation MUST print `ollama 'main' already exists: ollama_<hex6>`
+and NOT create a second agent. Verify `ls .fantastic/agents/ | grep ollama_`
+returns exactly one directory.
+
+### Test C5: `@{id} <tool>` exception path
+
+```
+@<ollama_id> update_agent
+```
+(No kwargs supplied — dispatch returns `{"error": "No options provided"}`.)
+Expected: a single `[ERROR] …` line printed, prompt returns. Proves the
+error-returning-ToolResult path in `_handle_agent_message` prints cleanly
+and the prompt remains live.
+
+### Test C6: Snapchat block renderer (visual / grep)
+
+Against captured stdout, these exact ANSI substrings MUST appear:
+- `\n\x1b[32m\x1b[1muser\x1b[0m\n\n` — user header: `\n`, green+bold, `\n\n`.
+- `\x1b[32m█\x1b[0m ` — green bar + space (body line of a user message).
+- `\n\x1b[35m\x1b[1mfantastic\x1b[0m\n\n` — `fantastic` messages are magenta.
+- For any agent message, the bar color matches the name color
+  (cyan `\x1b[36m` for bundles, yellow `\x1b[33m` for `ai`).
+
+Prompt line (visible in the captured output right before each user
+input):
+- `\x1b[32m█\x1b[0m \x1b[32m>\x1b[0m ` — green bar, space, green `>`, space.
+
+Regression signal: if any of these patterns are absent, `format_entry`
+or the `prompt_toolkit` prompt shape has regressed.
+
+---
+
 ## Summary
 
 Report:
@@ -208,6 +284,13 @@ Report:
 | 9 | Unknown `@tag` | |
 | 10 | Dispatch error path | |
 | 11 | `remove` cascade | |
+| C1 | Fresh-start hint printed | |
+| C2 | Nothing auto-created | |
+| C3 | Recursive discovery finds `ai/*` bundles | |
+| C4 | `add` idempotency on display name | |
+| C5 | `@{id} <text>` without `cli_sync` | |
+| C6 | `@{id} <tool>` exception path | |
+| C7 | Snapchat block renderer (visual) | |
 
 Also report:
 - Which AI provider was used.

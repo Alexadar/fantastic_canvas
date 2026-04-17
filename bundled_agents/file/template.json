@@ -1,0 +1,6 @@
+{
+  "bundle": "file",
+  "name": "file",
+  "description": "A filesystem root as an agent. One agent per root (project / sandbox / etc.). Verbs (list/read/write/delete/rename/mkdir) via agent_call.",
+  "author_type": 0
+}

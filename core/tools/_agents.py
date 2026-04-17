@@ -103,7 +103,7 @@ async def create_agent(
     """Create a new agent.
 
     Args:
-        template: Agent bundle name (e.g. "html"). Empty = no bundle.
+        template: Agent bundle name (e.g. "terminal"). Empty = no bundle.
         url: URL to display in iframe.
         html_content: HTML content to render. Supports full HTML.
         options: Optional properties to set on creation (e.g. {"x": 100, "y": 200, "width": 800, "height": 600}).

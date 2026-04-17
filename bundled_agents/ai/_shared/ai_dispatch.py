@@ -94,9 +94,6 @@ class AiBundleRuntime:
         ctx_used = sum(len(m.get("content") or "") for m in messages) // 4
         ctx_max = getattr(provider, "context_length", 0) or 0
         provider_online = provider is not None
-        from core.tools._state import _scheduler
-
-        schedules = _scheduler.list_for_agent(agent_id) if _scheduler else []
         await self.broadcast(
             {
                 "type": "context_usage",
@@ -105,19 +102,10 @@ class AiBundleRuntime:
                 "max": ctx_max,
                 "provider": str(provider) if provider else None,
                 "provider_online": provider_online,
-                "schedules": len(schedules),
-                "total_runs": sum(s.get("run_count", 0) for s in schedules),
             }
         )
 
         return ToolResult(data={"ok": True, "response": response})
-
-    async def cli_sync(self, agent_id: str, text: str) -> str:
-        """Sync CLI entry point — run the full agentic loop, return final text."""
-        result = await self._send(agent_id=agent_id, text=text)
-        if isinstance(result, ToolResult) and isinstance(result.data, dict):
-            return result.data.get("response") or result.data.get("error") or ""
-        return str(result)
 
     async def _interrupt(self, agent_id: str = "", **_kw) -> ToolResult:
         self.abort[agent_id] = True

@@ -1,0 +1,6 @@
+{
+  "bundle": "instance",
+  "name": "instance",
+  "description": "Connected fantastic instance (WS or SSH). One agent per instance; verbs (start/stop/status/call) reached via agent_call.",
+  "author_type": 0
+}

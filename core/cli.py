@@ -398,10 +398,7 @@ async def _run_with_server(args, project_dir, port, auto_run_bundle: str | None 
     from .engine import Engine
     from .process_runner import ProcessRunner
     from .tools import init_tools
-    from .scheduler import Scheduler
     from .bus import bus
-    from .dispatch import _DISPATCH
-    from .tools import _state as _tools_state
 
     _install_conversation_log_handler()
 
@@ -428,12 +425,8 @@ async def _run_with_server(args, project_dir, port, auto_run_bundle: str | None 
     # 2a. Post-load hooks (e.g. web announces canvas URLs)
     from .tools import fire_subagents_loaded
 
-    # 3. Scheduler
-    scheduler = Scheduler(engine.project_dir / ".fantastic" / "agents")
-    scheduler.load_all()
-    engine.store.on_agent_deleted(lambda aid: scheduler._cache.pop(aid, None))
-    await scheduler.start(_DISPATCH, bus.broadcast)
-    _tools_state._scheduler = scheduler
+    # 3. (Scheduler runs inside the `scheduler` bundle now — one tick loop
+    #     per scheduler agent, spawned via the `_on_subagents_loaded` hook.)
 
     # 4. Use whatever web agents the user has explicitly added. Do NOT auto-create.
     web_agents = [a for a in engine.store.list_agents() if a.get("bundle") == "web"]
@@ -481,7 +474,6 @@ async def _run_with_server(args, project_dir, port, auto_run_bundle: str | None 
     finally:
         _shutdown()
         await asyncio.gather(*web_tasks, return_exceptions=True)
-        await scheduler.stop()
         await process_runner.close_all()
         await engine.stop()
 

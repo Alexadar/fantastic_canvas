@@ -20,6 +20,3 @@ _on_agent_created: list[Callable] = []
 # Fires once after init_tools() has loaded all bundles.
 # Handlers: async (engine) → None. Bundles register in register_tools().
 _on_subagents_loaded: list[Callable] = []
-
-# Scheduler instance — wired in lifespan
-_scheduler = None

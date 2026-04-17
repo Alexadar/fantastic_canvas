@@ -4,16 +4,17 @@ Usage:
     from core.trace import trace
 
     # Instead of: result = await fn(**args)
-    result = await trace("ws", agent_id, tool_name, args, fn, **args)
+    result = await trace("ws", agent_id, tool_name, args, fn)
 
-Wire this around every place that invokes `_DISPATCH[name]`. The event
-is published to `bus.on_message` subscribers (pure pub/sub, no buffer).
+`args` is passed both as the audit record AND as the kwargs for `fn`.
+Keeping a single dict (rather than splatting) avoids kwarg collisions
+when a dispatched tool itself takes an arg named `tool` / `source` / etc.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from typing import Callable
 
 from .bus import bus
 
@@ -21,20 +22,15 @@ from .bus import bus
 async def trace(
     source: str,
     source_agent_id: str | None,
-    tool: str,
+    tool_name: str,
     args: dict,
     fn: Callable,
-    *call_args: Any,
-    **call_kwargs: Any,
-) -> Any:
-    """Invoke `fn(*call_args, **call_kwargs)` and publish a core_message event.
-
-    Returns whatever fn returns. Re-raises whatever fn raises.
-    """
+) -> object:
+    """Invoke `fn(**args)`, publish a core_message event, return the result."""
     ts = time.time()
     src_tag = f"{source}:{source_agent_id or '-'}"
     try:
-        result = await fn(*call_args, **call_kwargs)
+        result = await fn(**args)
     except Exception as e:
         duration_ms = int((time.time() - ts) * 1000)
         await bus.emit_core_message(
@@ -42,13 +38,13 @@ async def trace(
                 "ts": ts,
                 "source": source,
                 "source_agent_id": source_agent_id,
-                "tool": tool,
+                "tool": tool_name,
                 "args": args,
                 "status": "error",
                 "duration_ms": duration_ms,
                 "result": None,
                 "error": str(e),
-                "message": f"[{src_tag}] {tool}(...) → error: {e}",
+                "message": f"[{src_tag}] {tool_name}(...) → error: {e}",
             }
         )
         raise
@@ -59,13 +55,13 @@ async def trace(
             "ts": ts,
             "source": source,
             "source_agent_id": source_agent_id,
-            "tool": tool,
+            "tool": tool_name,
             "args": args,
             "status": "ok",
             "duration_ms": duration_ms,
             "result": result,
             "error": None,
-            "message": f"[{src_tag}] {tool}(...) → ok ({duration_ms}ms)",
+            "message": f"[{src_tag}] {tool_name}(...) → ok ({duration_ms}ms)",
         }
     )
     return result

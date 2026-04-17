@@ -77,17 +77,6 @@ async def test_update_agent_meta(engine):
 
 
 @pytest.mark.asyncio
-async def test_content_aliases(engine):
-    engine.add_content_alias(
-        "test1", {"type": "url", "url": "http://example.com", "persistent": True}
-    )
-    assert "test1" in engine.content_aliases
-    assert engine.content_aliases["test1"]["url"] == "http://example.com"
-    engine.remove_content_alias("test1")
-    assert "test1" not in engine.content_aliases
-
-
-@pytest.mark.asyncio
 async def test_server_registry(engine):
     entry = engine.register_server("a1", "http://localhost:8000", name="test")
     assert entry["agent_id"] == "a1"
@@ -142,15 +131,3 @@ async def test_resolve_working_dir_child_inherits(engine, tmp_path):
     engine.create_agent(agent_id="t1", parent="c1")
     wd = engine.resolve_working_dir("t1")
     assert wd == tmp_path / "notebooks"
-
-
-@pytest.mark.asyncio
-async def test_file_operations(engine, tmp_path):
-    (tmp_path / "test.txt").write_text("hello")
-    result = engine.read_file("test.txt")
-    assert result["kind"] == "text"
-    assert result["content"] == "hello"
-
-    files = engine.list_files()
-    names = [f["name"] for f in files]
-    assert "test.txt" in names

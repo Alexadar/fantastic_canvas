@@ -14,62 +14,94 @@ logger = logging.getLogger(__name__)
 @register_dispatch("agent_call")
 async def _agent_call(
     target_agent_id: str = "",
-    message: str = "",
+    verb: str = "send",
     from_agent_id: str = "",
+    message: str = "",
+    **kwargs,
 ) -> ToolResult:
-    target = target_agent_id
+    """Universal inter-agent RPC.
 
+    Routing:
+      verb=="send" and target has PTY  → type `message` (or kwargs["text"]) into pty
+      otherwise                        → look up _DISPATCH[f"{bundle}_{verb}"]
+                                         and invoke with (agent_id=target, **kwargs)
+
+    Any bundle that registers `{bundle}_{verb}` becomes reachable. Core knows
+    no bundle names.
+    """
+    target = target_agent_id
     agent = _state._engine.get_agent(target)
     if agent is None:
         return ToolResult(data={"error": f"Agent {target} not found"})
 
-    timestamp = time.time()
+    # Legacy: agent_call(target, message="hi") is sugar for verb="send" text="hi".
+    if verb == "send" and "text" not in kwargs and message:
+        kwargs["text"] = message
 
-    delivered_to_process = False
-    delivered_to_chat = False
+    timestamp = time.time()
     has_process = _state._process_runner and _state._process_runner.exists(target)
-    logger.info(f"agent_call: target={target}, has_process={has_process}")
-    if has_process:
-        for ch in message:
+
+    # 1) verb=send + PTY  →  type into the pty.
+    if verb == "send" and has_process:
+        text = kwargs.get("text", "")
+        for ch in text:
             await _state._process_runner.write(target, ch)
             await asyncio.sleep(0.02)
         await asyncio.sleep(0.5)
         await _state._process_runner.write(target, "\r")
-        logger.info(f"agent_call: typed {len(message)} chars + Enter to pty")
-        delivered_to_process = True
-    else:
-        # Capability-based routing: any bundle that registered `{bundle}_send`
-        # is reachable via agent_call. No hardcoded bundle list.
-        bundle = agent.get("bundle", "")
-        handler = _DISPATCH.get(f"{bundle}_send") if bundle else None
-        if handler:
-            from ..trace import trace
+        logger.info(f"agent_call: typed {len(text)} chars + Enter to pty")
+        return ToolResult(
+            data={
+                "delivered": True,
+                "delivered_to_process": True,
+                "delivered_to_chat": False,
+                "target_agent_id": target,
+                "verb": verb,
+                "timestamp": timestamp,
+            },
+        )
 
-            send_args = {"agent_id": target, "text": message}
-            result = await trace(
-                "agent_call",
-                from_agent_id or target,
-                f"{bundle}_send",
-                send_args,
-                handler,
-                **send_args,
-            )
-            delivered_to_chat = True
-            logger.info(f"agent_call: routed to {bundle}_send")
-            # Fire any broadcasts the handler returned (route via bus).
-            if isinstance(result, ToolResult) and result.broadcast:
-                from ..bus import bus as _bus
+    # 2) Dispatch to `{bundle}_{verb}`.
+    bundle = agent.get("bundle", "")
+    handler = _DISPATCH.get(f"{bundle}_{verb}") if bundle else None
+    if handler is None:
+        return ToolResult(
+            data={
+                "delivered": False,
+                "error": f"no '{bundle}_{verb}' handler on agent {target}",
+                "target_agent_id": target,
+                "verb": verb,
+            },
+        )
 
-                for msg in result.broadcast:
-                    await _bus.broadcast(msg)
+    from ..trace import trace
 
+    call_args = {"agent_id": target, **kwargs}
+    result = await trace(
+        "agent_call",
+        from_agent_id or target,
+        f"{bundle}_{verb}",
+        call_args,
+        handler,
+    )
+    if isinstance(result, ToolResult) and result.broadcast:
+        from ..bus import bus as _bus
+
+        for msg in result.broadcast:
+            await _bus.broadcast(msg)
+
+    data = result.data if isinstance(result, ToolResult) else {"raw": str(result)}
+    if not isinstance(data, dict):
+        data = {"result": data}
     return ToolResult(
         data={
             "delivered": True,
-            "delivered_to_process": delivered_to_process,
-            "delivered_to_chat": delivered_to_chat,
+            "delivered_to_process": False,
+            "delivered_to_chat": True,
             "target_agent_id": target,
+            "verb": verb,
             "timestamp": timestamp,
+            **data,
         },
     )
 
@@ -77,20 +109,29 @@ async def _agent_call(
 @register_tool("agent_call")
 async def agent_call(
     target_agent_id: str,
-    message: str,
+    verb: str = "send",
     from_agent_id: str = "",
+    message: str = "",
+    **kwargs,
 ) -> dict:
-    """Send a message to another agent.
+    """Universal inter-agent RPC.
 
-    Delivered to its process (if one exists). Use this for inter-agent communication.
+    `verb="send"` + PTY agent → writes message into the pty.
+    Otherwise looks up `{bundle}_{verb}` in the dispatch registry and calls it.
 
     Args:
-        target_agent_id: The agent to send the message to.
-        message: The message content.
-        from_agent_id: Optional — the sending agent's id.
+        target_agent_id: The agent to invoke.
+        verb: The verb to call (default "send").
+        from_agent_id: Optional — the calling agent's id (trace tag).
+        message: Text to send when verb=="send" (legacy shorthand for text).
+        **kwargs: Verb-specific arguments.
     """
     tr = await _agent_call(
-        target_agent_id=target_agent_id, message=message, from_agent_id=from_agent_id
+        target_agent_id=target_agent_id,
+        verb=verb,
+        from_agent_id=from_agent_id,
+        message=message,
+        **kwargs,
     )
     await _fire_broadcasts(tr)
     return tr.data

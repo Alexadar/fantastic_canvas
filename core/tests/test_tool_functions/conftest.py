@@ -55,13 +55,6 @@ async def setup(tmp_path):
     pr = ProcessRunner()
     init_tools(engine, bc, pr)
 
-    # Wire up scheduler for schedule tool tests
-    from core.scheduler import Scheduler
-
-    scheduler = Scheduler(engine.project_dir / ".fantastic" / "agents")
-    scheduler.load_all()
-    _state._scheduler = scheduler
-
     yield engine, bc, pr
     await pr.close_all()
     await engine.stop()
@@ -71,4 +64,3 @@ async def setup(tmp_path):
     _state._engine = None
     _state._broadcast = None
     _state._process_runner = None
-    _state._scheduler = None

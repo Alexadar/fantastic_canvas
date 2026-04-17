@@ -18,18 +18,11 @@ def test_tool_dispatch_has_core_tools():
         "list_agents",
         "read_agent",
         "delete_agent",
-        "content_alias_file",
-        "content_alias_url",
-        "get_aliases",
         "get_state",
         "agent_call",
         "get_handbook",
         "register_template",
         "list_templates",
-        "launch_instance",
-        "stop_instance",
-        "list_instances",
-        "restart_instance",
         "server_logs",
         "core_chat_message",
     }
@@ -94,11 +87,6 @@ def test_dispatch_has_ws_only_operations():
     }
     for name in ws_only:
         assert name in _DISPATCH, f"WS-only operation '{name}' missing from _DISPATCH"
-
-
-def test_dispatch_has_restart_instance():
-    """restart_instance is in _DISPATCH."""
-    assert "restart_instance" in _DISPATCH
 
 
 async def test_dispatch_table_minimum_count(setup):

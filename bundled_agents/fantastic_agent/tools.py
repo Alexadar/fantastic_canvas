@@ -136,25 +136,35 @@ async def on_add(project_dir, name: str = "") -> None:
     logger.info("fantastic_agent bundle added")
 
 
-async def cli_sync(agent_id: str, text: str) -> str:
-    """Sync CLI entry: route to configured upstream AI agent, save to chat.json."""
+@register_dispatch("fantastic_agent_send")
+async def _send(agent_id: str = "", text: str = "", **_kw) -> ToolResult:
+    """Route a message to the configured upstream AI agent.
+
+    Same shape as `{bundle}_send` on AI bundles — returns
+    `ToolResult(data={"response": str})`. This is what the CLI `@{fa_id} <text>`
+    path and the UI chat both call.
+    """
     from core.dispatch import _DISPATCH
 
+    if not agent_id or not text:
+        return ToolResult(data={"error": "agent_id and text required"})
     agent = _engine.get_agent(agent_id)
     if not agent:
-        return f"[error] agent {agent_id} not found"
+        return ToolResult(data={"error": f"agent {agent_id} not found"})
     upstream_id = agent.get("upstream_agent_id", "")
     upstream_bundle = agent.get("upstream_bundle", "")
     if not upstream_id or not upstream_bundle:
-        return (
-            "[fantastic_agent] not configured — set upstream_agent_id + upstream_bundle"
+        return ToolResult(
+            data={
+                "error": "fantastic_agent not configured — set upstream_agent_id + upstream_bundle",
+            }
         )
 
     save_message(_engine.project_dir, agent_id, "user", text)
 
     handler = _DISPATCH.get(f"{upstream_bundle}_send")
     if not handler:
-        return f"[error] no {upstream_bundle}_send handler"
+        return ToolResult(data={"error": f"no {upstream_bundle}_send handler"})
 
     result = await handler(agent_id=upstream_id, text=text)
     reply = ""
@@ -163,4 +173,4 @@ async def cli_sync(agent_id: str, text: str) -> str:
 
     if reply:
         save_message(_engine.project_dir, agent_id, "assistant", reply)
-    return reply
+    return ToolResult(data={"ok": True, "response": reply})

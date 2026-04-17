@@ -34,7 +34,3 @@ def register_tools(engine, fire_broadcasts, process_runner=None) -> dict:
     # on_delete is registered by AiBundleRuntime.register() via pool.release
     # which calls provider.unload() → clears torch model from VRAM
     return {}
-
-
-# Module-level CLI entry point — used by core input loop for @{agent_id} <text>
-cli_sync = _runtime.cli_sync

@@ -117,28 +117,16 @@ def _format_outputs(outputs: list[dict[str, Any]]) -> str:
 # ─── Import submodules so @register_dispatch / @register_tool decorators fire ──
 
 from . import _agents  # noqa: F401, E402
-from . import _content  # noqa: F401, E402
 from . import _process  # noqa: F401, E402
 from . import _process_handlers  # noqa: F401, E402
 from . import _conversation  # noqa: F401, E402
 from . import _registry  # noqa: F401, E402
-from . import _instances  # noqa: F401, E402
 from . import _server_log  # noqa: F401, E402
 from . import _bundles  # noqa: F401, E402
-from . import _schedules  # noqa: F401, E402
 
-# Re-exports used by other modules (lifespan, recipients, tests)
-from ._instance_tracking import (  # noqa: F401, E402
-    _launched_processes,
-    _load_tracked,
-    _pid_alive,
-    _instance_list_sync,
-)
 from ._server_log import install_log_buffer, SERVER_LOG_BUFFER_SIZE  # noqa: F401, E402
 
 # Re-exports for tests and recipients that import from core.tools directly
 from ._agents import execute_python, get_state  # noqa: F401, E402
-from ._content import content_alias_file, content_alias_url, get_aliases  # noqa: F401, E402
 from ._registry import get_handbook  # noqa: F401, E402
-from ._instance_tracking import _save_tracked, _instance_id, _get_own_port  # noqa: F401, E402
 from ._bundles import _add_bundle  # noqa: F401, E402

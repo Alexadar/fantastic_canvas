@@ -14,11 +14,14 @@ async def test_agent_call_no_target(setup):
     assert "error" in tr.data
 
 
-async def test_agent_call_to_existing_agent(setup):
-    await _create_agent(agent_id="t1")
+async def test_agent_call_to_existing_agent_no_handler(setup):
+    """Terminal agent with no running PTY and no `terminal_send` handler
+    → explicit error, not silent 'delivered:True'."""
+    await _create_agent(agent_id="t1", template="terminal")
     tr = await _agent_call(target_agent_id="t1", message="hello")
-    assert tr.data["delivered"] is True
+    assert tr.data["delivered"] is False
     assert tr.data["target_agent_id"] == "t1"
+    assert "no 'terminal_send' handler" in tr.data["error"]
 
 
 async def test_terminal_output_no_process(setup):

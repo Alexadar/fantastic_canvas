@@ -73,7 +73,3 @@ async def on_add(project_dir, name: str = "") -> None:
         meta["model"] = model
     store.update_agent_meta(agent["id"], **meta)
     print(f"  ollama '{display}' created: {agent['id']}  model={model or '(none)'}")
-
-
-# Module-level CLI entry point — used by core input loop for @{agent_id} <text>
-cli_sync = _runtime.cli_sync

@@ -30,6 +30,7 @@ class AgentStore:
         self._root = project_dir / ".fantastic"
         self._agents_dir = self._root / "agents"
         self._on_delete_hooks: list[Callable[[str], None]] = []
+        self._on_update_hooks: list[Callable[[str, dict], None]] = []
         self._enrich_hooks: list[Callable[[str, dict], None]] = []
         self._memory_locks: dict[str, asyncio.Lock] = {}
 

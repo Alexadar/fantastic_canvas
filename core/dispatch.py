@@ -15,6 +15,12 @@ from typing import Any
 _DISPATCH: dict[str, Any] = {}
 _TOOL_DISPATCH: dict[str, Any] = {}
 
+# Private per-bundle verb table. Shape: _BUNDLE_VERBS[bundle][verb] → callable.
+# Callers never reach these names directly — only through `agent_call(target,
+# verb, **args)` which resolves `{bundle}` from the target agent and looks
+# the verb up here.
+_BUNDLE_VERBS: dict[str, dict[str, Any]] = {}
+
 
 @dataclass
 class ToolResult:
@@ -36,6 +42,21 @@ def register_dispatch(name: str = ""):
 
     def decorator(fn):
         _DISPATCH[name or fn.__name__] = fn
+        return fn
+
+    return decorator
+
+
+def register_bundle_verb(bundle: str, verb: str):
+    """Decorator: register a bundle-scoped verb handler.
+
+    Handlers are NOT part of the public `_DISPATCH` surface. The only way
+    in is `agent_call(target_agent_id, verb, **args)` which resolves the
+    `bundle` from the target agent and invokes the matching entry here.
+    """
+
+    def decorator(fn):
+        _BUNDLE_VERBS.setdefault(bundle, {})[verb] = fn
         return fn
 
     return decorator

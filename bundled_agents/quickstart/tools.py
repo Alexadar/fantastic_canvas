@@ -51,6 +51,7 @@ async def run(ask, say):
     # Pre-create with deterministic IDs:
     #   web_main  ─ transport root (is_container)
     #     └─ canvas_main  ─ spatial host (parent = web_main)
+    # Plus file_project at the root (no parent) — filesystem access for everything.
     # Subsequent agents (terminal, ollama, etc.) auto-parent to canvas_main.
     store = _engine.store
     if not store.get_agent("web_main"):
@@ -65,6 +66,16 @@ async def run(ask, say):
     if not store.get_agent("canvas_main"):
         store.create_agent(bundle="canvas", agent_id="canvas_main", parent="web_main")
         store.update_agent_meta("canvas_main", display_name="main", is_container=True)
+    if not store.get_agent("file_project"):
+        store.create_agent(bundle="file", agent_id="file_project")
+        store.update_agent_meta(
+            "file_project", display_name="project", root="", readonly=False
+        )
+    if not store.get_agent("scheduler_main"):
+        store.create_agent(bundle="scheduler", agent_id="scheduler_main")
+        store.update_agent_meta(
+            "scheduler_main", display_name="main", tick_sec=1.0, paused=False
+        )
 
     # Web transport first — every UI agent needs a web agent to serve it.
     tr = await _add_bundle("web", name="main")
@@ -74,6 +85,14 @@ async def run(ask, say):
     tr = await _add_bundle("canvas", name="main")
     if hasattr(tr, "data") and "error" in tr.data:
         say(f"  canvas error: {tr.data['error']}")
+
+    tr = await _add_bundle("file", name="project")
+    if hasattr(tr, "data") and "error" in tr.data:
+        say(f"  file error: {tr.data['error']}")
+
+    tr = await _add_bundle("scheduler", name="main")
+    if hasattr(tr, "data") and "error" in tr.data:
+        say(f"  scheduler error: {tr.data['error']}")
 
     # Self-delete
     qs = _engine.store.find_by_bundle("quickstart")

@@ -53,7 +53,9 @@ def load_single_bundle(
             mod = importlib.util.module_from_spec(spec)
             _sys.modules[mod_name] = mod
             spec.loader.exec_module(mod)
-        # Also expose under the short name so get_bundle_module() works.
+        # Also expose under the short name so `_call_bundle_hook` in
+        # core/tools/_bundles.py can reuse this module (keeps bundle
+        # singletons like `_engine` consistent between load + hook calls).
         _sys.modules[f"bundle_{entry.name}_tools"] = mod
         if hasattr(mod, "register_tools"):
             tools = mod.register_tools(
@@ -143,13 +145,6 @@ def load_bundle_tools(
         result = load_single_bundle(entry, engine, fire_broadcasts, process_runner)
         combined.tools.update(result.tools)
     return combined
-
-
-def get_bundle_module(bundle_name: str):
-    """Return the loaded tools module for a bundle directory name, or None."""
-    import sys
-
-    return sys.modules.get(f"bundle_{bundle_name}_tools")
 
 
 def load_project_plugins(

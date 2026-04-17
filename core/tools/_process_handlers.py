@@ -5,18 +5,14 @@ from typing import Any
 
 from ..dispatch import ToolResult, register_dispatch
 from . import _state
-from ._instance_tracking import _instance_list_sync
 
 logger = logging.getLogger(__name__)
 
 
 @register_dispatch("get_state")
 async def _get_state() -> ToolResult:
-    """Get state including instances (for WS clients). VFX added via state hooks."""
+    """Get state (for WS clients). VFX + other fields added via state hooks."""
     state = _state._engine.get_state()
-    instances = _instance_list_sync()
-    if instances:
-        state["instances"] = instances
     return ToolResult(
         data=state,
         reply=[{"type": "state", "state": state}],

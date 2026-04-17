@@ -34,7 +34,3 @@ def register_tools(engine, fire_broadcasts, process_runner=None) -> dict:
 
     _runtime.register(engine, _bus.broadcast)
     return {}
-
-
-# Module-level CLI entry point — used by core input loop for @{agent_id} <text>
-cli_sync = _runtime.cli_sync

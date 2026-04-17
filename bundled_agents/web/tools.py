@@ -1,9 +1,19 @@
-"""Web agent bundle — HTTP/WS transport, serves all agent UIs with injected transport."""
+"""Web agent bundle — HTTP/WS transport, serves all agent UIs with injected transport.
+
+Also owns per-web-agent **content aliases** (`/content/{alias_id}` → file
+or URL redirect). Each web agent's aliases live in a sidecar
+`.fantastic/agents/{web_id}/aliases.json` and are exposed via the three
+`agent_call` verbs `alias` / `aliases` / `unalias` (handler names
+`web_alias`, `web_aliases`, `web_unalias`).
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import secrets
 from pathlib import Path
 
 from core.dispatch import (
@@ -19,6 +29,41 @@ NAME = "web"
 _engine = None
 _serve_tasks: dict[str, asyncio.Task] = {}  # agent_id → uvicorn task
 _should_restart: set[str] = set()
+# In-memory alias map per web agent. Loaded from sidecar on first use;
+# also handed to the FastAPI app factory so HTTP handlers can read it.
+_aliases_cache: dict[str, dict[str, dict]] = {}
+
+
+# ─── alias storage ─────────────────────────────────────────────────
+
+
+def _aliases_path(web_id: str) -> Path:
+    return Path(_engine.project_dir) / ".fantastic" / "agents" / web_id / "aliases.json"
+
+
+def load_aliases(web_id: str) -> dict[str, dict]:
+    """Return the in-memory alias dict for `web_id`, loading from disk if first use."""
+    cached = _aliases_cache.get(web_id)
+    if cached is not None:
+        return cached
+    path = _aliases_path(web_id)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+            # Only persistent entries survive across restarts.
+            loaded = {k: v for k, v in data.items() if v.get("persistent")}
+        except Exception:
+            loaded = {}
+    else:
+        loaded = {}
+    _aliases_cache[web_id] = loaded
+    return loaded
+
+
+def _save_aliases(web_id: str) -> None:
+    path = _aliases_path(web_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_aliases_cache.get(web_id, {})))
 
 
 async def serve(agent_id: str) -> None:
@@ -93,6 +138,102 @@ async def _configure(
         data={"ok": True, "agent_id": agent_id, **updates},
         broadcast=[{"type": "agent_updated", "agent_id": agent_id, **updates}],
     )
+
+
+# ─── alias verb handlers ────────────────────────────────────────────
+
+
+def _require_web_agent(agent_id: str) -> tuple[dict | None, ToolResult | None]:
+    if not agent_id:
+        return None, ToolResult(data={"error": "agent_id required"})
+    agent = _engine.get_agent(agent_id)
+    if not agent or agent.get("bundle") != "web":
+        return None, ToolResult(data={"error": f"{agent_id} is not a web agent"})
+    return agent, None
+
+
+def _alias_path_str(alias_id: str) -> str:
+    return f"/content/{alias_id}"
+
+
+@_dispatch_deco("web_alias")
+async def _alias(
+    agent_id: str = "",
+    kind: str = "",
+    path: str = "",
+    url: str = "",
+    persistent: bool = True,
+    **_kw,
+) -> ToolResult:
+    _, err = _require_web_agent(agent_id)
+    if err:
+        return err
+    if kind not in ("file", "url"):
+        return ToolResult(data={"error": "kind must be 'file' or 'url'"})
+    aliases = load_aliases(agent_id)
+    alias_id = secrets.token_hex(4)
+    if kind == "file":
+        if not path:
+            return ToolResult(data={"error": "path required for kind='file'"})
+        abs_path = os.path.abspath(path)
+        try:
+            rel = os.path.relpath(abs_path, str(_engine.project_dir))
+            if not rel.startswith(".."):
+                entry = {
+                    "type": "file",
+                    "path": rel,
+                    "relative": True,
+                    "persistent": persistent,
+                }
+            else:
+                entry = {"type": "file", "path": abs_path, "persistent": persistent}
+        except ValueError:
+            entry = {"type": "file", "path": abs_path, "persistent": persistent}
+    else:
+        if not url:
+            return ToolResult(data={"error": "url required for kind='url'"})
+        entry = {"type": "url", "url": url, "persistent": persistent}
+    aliases[alias_id] = entry
+    _save_aliases(agent_id)
+    return ToolResult(
+        data={"alias_id": alias_id, "alias_path": _alias_path_str(alias_id)}
+    )
+
+
+@_dispatch_deco("web_aliases")
+async def _aliases(agent_id: str = "", **_kw) -> ToolResult:
+    _, err = _require_web_agent(agent_id)
+    if err:
+        return err
+    out = []
+    for aid, entry in load_aliases(agent_id).items():
+        info = {
+            "alias_id": aid,
+            "alias_path": _alias_path_str(aid),
+            "type": entry.get("type"),
+            "persistent": entry.get("persistent", False),
+        }
+        if entry.get("type") == "file":
+            info["path"] = entry.get("path", "")
+            info["relative"] = entry.get("relative", False)
+        elif entry.get("type") == "url":
+            info["url"] = entry.get("url", "")
+        out.append(info)
+    return ToolResult(data={"aliases": out})
+
+
+@_dispatch_deco("web_unalias")
+async def _unalias(agent_id: str = "", alias_id: str = "", **_kw) -> ToolResult:
+    _, err = _require_web_agent(agent_id)
+    if err:
+        return err
+    if not alias_id:
+        return ToolResult(data={"error": "alias_id required"})
+    aliases = load_aliases(agent_id)
+    removed = aliases.pop(alias_id, None) is not None
+    if removed:
+        _save_aliases(agent_id)
+    return ToolResult(data={"removed": removed, "alias_id": alias_id})
 
 
 @_tool_deco("web_configure")
