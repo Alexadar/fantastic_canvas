@@ -1,0 +1,172 @@
+# ollama_backend selftest
+
+> scopes: kernel, ai, persistence, http
+> requires: `uv sync`; live ollama at a reachable endpoint with a
+> tool-calling model (gemma4:e2b, llama3.1+, qwen2.5+); tests run
+> against a running `kernel.py serve` so the provider HTTP client +
+> in-flight tasks stay alive across calls
+> out-of-scope: HTTP routes (covered by webapp selftest), browser
+
+Reflect-driven LLM agent. Tests prompt assembly, native tool-calls,
+file_agent persistence.
+
+**Why a running serve is required:** ollama_backend caches the
+`OllamaProvider` HTTP client and in-flight `_run` tasks in
+process-memory. Multi-step tests would lose state between separate
+`kernel.py call` invocations. Drive via serve + HTTP.
+
+## Pre-flight
+
+ASK USER which provider + model:
+- ollama endpoint (default `http://localhost:11434`)
+- model name (e.g. `gemma4:e2b`, `qwen2.5:3b`, `llama3.1:8b`)
+
+Verify reachable BEFORE wiping state:
+```bash
+curl -s http://localhost:11434/api/tags | head
+# confirm the named model is in the list
+```
+If unreachable or model missing → STOP, report.
+
+```bash
+cd new_codebase
+rm -rf .fantastic
+PORT=18911
+pkill -9 -f "kernel.py serve" 2>/dev/null; sleep 0.3
+uv run --active python kernel.py serve --port $PORT > /tmp/s.log 2>&1 &
+SPID=$!
+for i in $(seq 1 20); do grep -q "kernel up" /tmp/s.log 2>/dev/null && break; sleep 0.5; done
+
+call() { curl -s -X POST "http://localhost:$PORT/$1/call" -H 'content-type: application/json' -d "$2"; }
+```
+
+After all tests:
+```bash
+kill -9 $SPID 2>/dev/null; rm -rf .fantastic /tmp/s.log
+```
+
+## Tests
+
+### Test 1: send without file_agent_id → failfast
+
+```bash
+OB=$(call core '{"type":"create_agent","handler_module":"ollama_backend.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+call $OB '{"type":"send","text":"hi"}'
+```
+Expected: `{"error":"ollama_backend: file_agent_id required"}`.
+
+### Test 2: configure file_agent_id, reflect shows it
+
+```bash
+FA=$(call core '{"type":"create_agent","handler_module":"file.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+call core "{\"type\":\"update_agent\",\"id\":\"$OB\",\"file_agent_id\":\"$FA\"}"
+call $OB '{"type":"reflect"}' | python -m json.tool | grep -F "\"file_agent_id\": \"$FA\""
+```
+Expected: matches.
+
+### Test 3: simple send streams tokens, persists chat_cli.json
+
+The default caller is `client_id="cli"` (REPL/headless flow). With
+per-client chat storage, the file lives at `chat_cli.json` — passing
+a different `client_id` would write `chat_<that>.json`.
+
+```bash
+call $OB '{"type":"send","text":"reply with the single word: ok"}' | python -m json.tool | grep -F '"final"'
+test -f .fantastic/agents/$OB/chat_cli.json && python -c "
+import json
+d = json.load(open('.fantastic/agents/$OB/chat_cli.json'))
+print('messages:', len(d), 'last:', d[-1]['content'][:50])
+"
+```
+Expected: messages ≥ 2; last message contains "ok" (case-insensitive).
+
+### Test 4: tool-call round-trip
+
+```bash
+call $OB '{"type":"send","text":"how many agents are online? actually check using the send tool"}' | python -c "import json,sys; print(json.load(sys.stdin).get('final',''))"
+```
+Expected: model emits a tool_call to `core` with `list_agents`, reads
+the reply, summarizes. Final answer mentions a number.
+Regression signal: model just says "I cannot check" without emitting
+tool_calls → either model lacks tool support or SEND_TOOL definition broke.
+
+### Test 5: history persists across calls
+
+```bash
+call $OB '{"type":"send","text":"my favorite color is teal, remember it"}' >/dev/null
+call $OB '{"type":"send","text":"what color did I just say?"}' | python -c "import json,sys; print(json.load(sys.stdin).get('final','').lower())"
+```
+Expected: response mentions "teal" — proves chat_cli.json round-trip via file agent.
+
+### Test 6: history verb returns messages
+
+```bash
+call $OB '{"type":"history"}' | python -c "import json,sys; d=json.load(sys.stdin); print('messages:', len(d['messages']))"
+```
+Expected: ≥ 4 (multiple user/assistant pairs after Tests 3 + 5).
+
+### Test 7: contended send → caller receives `queued` event
+
+```bash
+# Background a slow send (alice). While it's holding the lock, fire
+# a second send (bob). Bob should receive a `queued` event tagged
+# with his client_id BEFORE his first `token` arrives.
+uv run --active python -c "
+import asyncio, json, websockets
+async def main():
+    async with websockets.connect('ws://localhost:$PORT/$OB/ws') as wsB:
+        await wsB.send(json.dumps({'type':'watch','src':'$OB'}))
+
+        # Alice (client A) starts first.
+        async with websockets.connect('ws://localhost:$PORT/$OB/ws') as wsA:
+            await wsA.send(json.dumps({'type':'watch','src':'$OB'}))
+            await wsA.send(json.dumps({
+                'type':'call','target':'$OB',
+                'payload':{'type':'send','text':'count slowly to 20','client_id':'alice'},
+                'id':'A',
+            }))
+
+            # Tiny pause so alice acquires the lock.
+            await asyncio.sleep(0.5)
+
+            # Bob (client B) sends — should hit the lock and get queued.
+            await wsB.send(json.dumps({
+                'type':'call','target':'$OB',
+                'payload':{'type':'send','text':'one word reply','client_id':'bob'},
+                'id':'B',
+            }))
+
+            queued_seen = False
+            token_after_queued = False
+            async for msg in wsB:
+                ev = json.loads(msg)
+                if ev.get('type') != 'event': continue
+                p = ev['payload']
+                if p.get('client_id') != 'bob': continue
+                if p.get('type') == 'queued':
+                    queued_seen = True
+                elif p.get('type') == 'token' and queued_seen:
+                    token_after_queued = True
+                    break
+            print('PASS' if queued_seen and token_after_queued else f'FAIL queued={queued_seen} token={token_after_queued}')
+asyncio.run(main())
+"
+```
+Expected: `PASS`. Bob's WS sees the `queued` event before any token,
+then tokens arrive once alice releases the lock.
+
+## Summary
+
+| # | Test | Pass |
+|---|------|------|
+| 1 | send fails without file_agent_id | |
+| 2 | reflect shows file_agent_id | |
+| 3 | send streams + persists chat_<client_id>.json | |
+| 4 | tool-call round-trip | |
+| 5 | history persists across calls | |
+| 6 | history verb returns messages | |
+| 7 | contended send emits queued event | |
+
+Also report:
+- provider + model used.
+- whether tool-calling Test 4 was skipped (model dependent).

@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>canvas</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #06060c; color: #aaa; font-family: system-ui, sans-serif; overflow: hidden; }
+  #bg { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; pointer-events: none; display: block; }
+  #canvas { position: relative; width: 100%; height: 100vh; overflow: hidden; z-index: 1; }
+  /* Wheel-zoom + drag-pan applied to .canvas-world; agent frames are children of it. */
+  .canvas-world { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+  #canvas.panning { cursor: grabbing; }
+  /* During pan, iframes don't capture pointer events — drag continues
+     across cells without losing input. Clears on mouseup (class drops). */
+  #canvas.panning .agent-frame iframe { pointer-events: none; }
+  .agent-frame {
+    position: absolute;
+    border: 1px solid #333;
+    border-radius: 6px;
+    background: #0e0e16;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    z-index: 2;
+  }
+  .agent-frame.dragging, .agent-frame.resizing { border-color: #5cf; }
+  .frame-head {
+    height: 24px;
+    background: #181826;
+    color: #aac;
+    font-size: 11px;
+    font-family: monospace;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: move;
+    user-select: none;
+    flex: 0 0 24px;
+  }
+  .frame-head .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .frame-head .actions { display: flex; gap: 4px; align-items: center; flex: 0 0 auto; }
+  .frame-head .reload { color: #aac; cursor: pointer; padding: 0 4px; user-select: none; font-size: 13px; }
+  .frame-head .reload:hover { color: #fff; }
+  .frame-head .lock { color: #aac; cursor: pointer; padding: 0 4px; user-select: none; font-size: 12px; }
+  .frame-head .lock:hover { color: #fff; }
+  .frame-head .lock.locked { color: #ffd166; }
+  .frame-head .close { color: #f88; cursor: pointer; padding: 0 4px; }
+  .frame-body { flex: 1; position: relative; }
+  .frame-body iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
+  .resize-handle {
+    position: absolute;
+    bottom: 0; right: 0;
+    width: 14px; height: 14px;
+    cursor: nwse-resize;
+    background: linear-gradient(135deg, transparent 50%, #555 50%);
+  }
+  #toolbar {
+    position: fixed; top: 8px; left: 8px;
+    background: #181826; padding: 6px 10px; border-radius: 6px;
+    font-size: 12px; z-index: 100; color: #aac;
+  }
+  #toolbar code { color: #cde; background: #222; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<div id="canvas"></div>
+<div id="toolbar"><span id="status">…</span></div>
+<script type="module">
+import * as THREE from 'https://esm.sh/three@0.160.0';
+
+(async () => {
+  const t = fantastic_transport();
+  await t.ready;
+  const me = t.agentId;
+  const meReflect = await t.call(me, { type: 'reflect' });
+  const upstream = meReflect.upstream_id;
+  if (!upstream) {
+    document.body.innerHTML =
+      `<pre style="padding:24px;font-family:monospace">canvas_webapp ${me}: upstream_id not set.\n` +
+      `Configure with:\n  add canvas_webapp upstream_id=&lt;canvas_backend_id&gt;\n` +
+      `or:\n  @core update_agent id=${me} upstream_id=&lt;canvas_backend_id&gt;</pre>`;
+    return;
+  }
+
+  // ─── particle background ──────────────────────────────────────
+  const PARTICLE_COUNT = 12000;
+  const bgCanvas = document.getElementById('bg');
+  const renderer = new THREE.WebGLRenderer({ canvas: bgCanvas, antialias: false, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x06060c, 1);
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+  // Position pulled back and slightly above floor so FANTASTIC reads
+  // centered with the Tron-grid receding to the horizon below it.
+  // Pose driven by `view` (zoom/pan) via applyCamera() — see below.
+  const BASE_Z = 140, BASE_Y = 14, LOOK_Y = -2;
+  camera.position.set(0, BASE_Y, BASE_Z);
+  camera.lookAt(0, LOOK_Y, 0);
+
+  const positions = new Float32Array(PARTICLE_COUNT * 3);
+  const colors = new Float32Array(PARTICLE_COUNT * 3);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 1.6,
+    sizeAttenuation: true,
+    vertexColors: true,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const points = new THREE.Points(geom, mat);
+  scene.add(points);
+
+  // Reused per-particle scratch objects (zero allocation in hot loop).
+  const target = new THREE.Vector3();
+  const particleColor = new THREE.Color();
+
+  // bganim.md helpers — stubs, no UI per project policy.
+  const noop = () => {};
+  const noopControl = (_id, _label, _min, _max, init) => init;
+
+  let renderFn = null;
+  async function loadAndCompile() {
+    const r = await t.call(me, { type: 'get_bganim' });
+    if (!r || !r.source) {
+      console.warn('[bganim] empty source from get_bganim:', r);
+      return;
+    }
+    try {
+      renderFn = new Function(
+        'i', 'count', 'target', 'color', 'time', 'THREE',
+        'addControl', 'setInfo', 'annotate',
+        r.source,
+      );
+      console.log('[bganim] compiled', r.origin, 'source —', r.source.length, 'chars');
+    } catch (e) {
+      console.error('[bganim] compile failed:', e);
+      // keep previous renderFn
+    }
+  }
+  await loadAndCompile();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    applyCamera();    // recomputes pan offset against new innerHeight
+  });
+
+  const startMs = performance.now();
+  function frame() {
+    const time = (performance.now() - startMs) / 1000;
+    if (renderFn) {
+      const posArr = geom.attributes.position.array;
+      const colArr = geom.attributes.color.array;
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        try {
+          renderFn(i, PARTICLE_COUNT, target, particleColor, time, THREE,
+                   noopControl, noop, noop);
+        } catch (e) {
+          // One bad particle shouldn't kill the loop. Log once per frame max.
+          if (i === 0) console.error('[bganim] runtime error:', e);
+          target.set(0, 0, 0);
+          particleColor.setRGB(0, 0, 0);
+        }
+        const o = i * 3;
+        posArr[o]     = target.x;
+        posArr[o + 1] = target.y;
+        posArr[o + 2] = target.z;
+        colArr[o]     = particleColor.r;
+        colArr[o + 1] = particleColor.g;
+        colArr[o + 2] = particleColor.b;
+      }
+      geom.attributes.position.needsUpdate = true;
+      geom.attributes.color.needsUpdate = true;
+    }
+    // Camera pose is driven by view (zoom/pan) via applyCamera() —
+    // changes get reflected the moment the user pans/zooms, not on a
+    // per-frame timer. Bganims that want motion drive it via `time`.
+    renderer.render(scene, camera);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // Live refresh: when set_bganim writes a new source, the verb emits
+  // {type:"bganim_updated"} on this agent's inbox. We watch ourselves
+  // and recompile.
+  await t.watch(me);
+  t.on('bganim_updated', loadAndCompile);
+
+  // ─── iframe layer (frames for sibling webapps) ────────────────
+  const canvas = document.getElementById('canvas');
+  const status = document.getElementById('status');
+  const frames = new Map();
+
+  // .canvas-world wraps all frames; zoom/pan is applied as a CSS
+  // transform on this wrapper so frames scale + translate together.
+  // (Particle bg stays in WebGL world space, unaffected.)
+  const world = document.createElement('div');
+  world.className = 'canvas-world';
+  canvas.appendChild(world);
+
+  const view = { z: 1, ox: 0, oy: 0 };
+  const ZOOM_MIN = 0.1, ZOOM_MAX = 5;
+  function applyView() {
+    world.style.transform = `translate(${view.ox}px, ${view.oy}px) scale(${view.z})`;
+    applyCamera();
+  }
+  // Three.js camera follows `view` so the particle bg stays in lock-step
+  // with the iframe layer. Pan: shift camera position by view ox/oy
+  // mapped through pixels-to-world at the camera's distance. Zoom: use
+  // the camera's `.zoom` (a 2D projection multiplier — no perspective
+  // distortion from approaching the world).
+  function applyCamera() {
+    const fovRad = camera.fov * Math.PI / 180;
+    const worldH = 2 * BASE_Z * Math.tan(fovRad / 2);     // visible world height at z=BASE_Z
+    const wpp = worldH / window.innerHeight;              // world units per CSS pixel
+    const px = -view.ox * wpp;
+    const py =  view.oy * wpp;
+    camera.position.set(px, BASE_Y + py, BASE_Z);
+    camera.zoom = view.z;
+    camera.updateProjectionMatrix();
+    camera.lookAt(px, LOOK_Y + py, 0);                    // keep look direction parallel to baseline
+  }
+  applyView();
+
+  // Cursor-anchored zoom: keep the canvas point under the cursor fixed.
+  // Wheel over a cell stays inside that cell (e.g. xterm scroll, chat
+  // scroll); only wheel on empty canvas triggers zoom.
+  canvas.addEventListener('wheel', (e) => {
+    if (e.target.closest('.agent-frame')) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const factor = e.deltaY > 0 ? 0.95 : 1.05;
+    const newZ = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, view.z * factor));
+    const ratio = newZ / view.z;
+    view.ox = mx - (mx - view.ox) * ratio;
+    view.oy = my - (my - view.oy) * ratio;
+    view.z = newZ;
+    applyView();
+  }, { passive: false });
+
+  // Pan with click-and-hold on empty canvas. Pan only engages after the
+  // cursor moves > 4px so a plain click still propagates to dblclick
+  // (which spawns a terminal pair). Middle-click engages immediately.
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.agent-frame')) return;
+    if (e.button !== 0 && e.button !== 1) return;
+    e.preventDefault();
+    const sx = e.clientX, sy = e.clientY;
+    const ox0 = view.ox, oy0 = view.oy;
+    let engaged = e.button === 1;          // middle-click: engage now
+    function move(ev) {
+      const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (!engaged && (dx * dx + dy * dy) > 16) {
+        engaged = true;
+        canvas.classList.add('panning');
+      }
+      if (engaged) {
+        view.ox = ox0 + dx;
+        view.oy = oy0 + dy;
+        applyView();
+      }
+    }
+    function up() {
+      canvas.classList.remove('panning');
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    }
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+
+  // Map screen coords (relative to #canvas) → world coords (inside .canvas-world).
+  function screenToWorld(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = clientX - rect.left;
+    const sy = clientY - rect.top;
+    return { x: (sx - view.ox) / view.z, y: (sy - view.oy) / view.z };
+  }
+
+  function rectFromRec(rec, wa, idx) {
+    return {
+      x: typeof rec.x === 'number' ? rec.x : 40 + (idx % 4) * 360,
+      y: typeof rec.y === 'number' ? rec.y : 40 + Math.floor(idx / 4) * 280,
+      w: rec.width || wa.default_width || 340,
+      h: rec.height || wa.default_height || 240,
+    };
+  }
+
+  function makeFrame(rec, wa, idx) {
+    const r = rectFromRec(rec, wa, idx);
+    const el = document.createElement('div');
+    el.className = 'agent-frame';
+    el.style.left = r.x + 'px'; el.style.top = r.y + 'px';
+    el.style.width = r.w + 'px'; el.style.height = r.h + 'px';
+    const locked = !!rec.delete_lock;
+    el.innerHTML = `
+      <div class="frame-head">
+        <span class="id">${wa.title || rec.id} · <code style="opacity:0.6;font-size:10px">${rec.id}</code></span>
+        <span class="actions">
+          <span class="lock ${locked ? 'locked' : ''}" title="${locked ? 'unlock (allow delete)' : 'lock (refuse delete)'}">${locked ? '🔒' : '⊕'}</span>
+          <span class="reload" title="reload">⟳</span>
+          <span class="close" title="delete">×</span>
+        </span>
+      </div>
+      <div class="frame-body">
+        <iframe src="${wa.url}" loading="lazy"></iframe>
+      </div>
+      <div class="resize-handle"></div>
+    `;
+    world.appendChild(el);
+
+    const head = el.querySelector('.frame-head');
+    head.addEventListener('mousedown', (e) => {
+      // Don't start a frame drag when the click is on an actions button.
+      if (e.target.closest('.actions')) return;
+      startDrag(e, rec.id, el);
+    });
+    el.querySelector('.resize-handle').addEventListener('mousedown', (e) => startResize(e, rec.id, el));
+    el.querySelector('.reload').addEventListener('click', (e) => {
+      // Same plumbing as set_html → reload_html: emit on the agent's
+      // inbox; transport.js's universal listener calls location.reload()
+      // inside the iframe.
+      e.stopPropagation();
+      t.emit(rec.id, { type: 'reload_html' });
+    });
+    el.querySelector('.lock').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const live = frames.get(rec.id);
+      const cur = !!(live && live.rec && live.rec.delete_lock);
+      // Toggle the record's delete_lock flag. Optimistic UI: flip the
+      // icon now; agent_updated event triggers a refresh that confirms.
+      const lockEl = el.querySelector('.lock');
+      lockEl.classList.toggle('locked', !cur);
+      lockEl.textContent = !cur ? '🔒' : '⊕';
+      lockEl.title = !cur ? 'unlock (allow delete)' : 'lock (refuse delete)';
+      await t.call('core', {
+        type: 'update_agent',
+        id: rec.id,
+        delete_lock: !cur,
+      });
+    });
+    el.querySelector('.close').addEventListener('click', async () => {
+      // Lookup latest rec at click time — upstream_id may have been
+      // reassigned via update_agent since this frame was created.
+      const live = frames.get(rec.id);
+      const upstream = (live && live.rec && live.rec.upstream_id) || rec.upstream_id;
+      // Webapp first: removes the iframe via agent_deleted → refresh → removeFrame
+      // (so the iframe doesn't try to talk to a dead backend).
+      const r = await t.call('core', { type: 'delete_agent', id: rec.id });
+      // If delete_lock blocked the webapp, abort the cascade — don't
+      // orphan-delete the backend. Caller (LLM or human) can unlock
+      // and retry.
+      if (r && r.locked) {
+        console.warn('[canvas] delete refused — delete_lock on', rec.id);
+        return;
+      }
+      if (upstream) {
+        const r2 = await t.call('core', { type: 'delete_agent', id: upstream });
+        if (r2 && r2.locked) {
+          console.warn('[canvas] backend delete refused — delete_lock on', upstream);
+        }
+      }
+    });
+    return el;
+  }
+
+  function removeFrame(aid) {
+    const f = frames.get(aid);
+    if (f) { f.el.remove(); frames.delete(aid); }
+  }
+
+  async function persistRect(aid, x, y, w, h) {
+    const meta = {};
+    if (x !== undefined) { meta.x = Math.round(x); meta.y = Math.round(y); }
+    if (w !== undefined) { meta.width = Math.round(w); meta.height = Math.round(h); }
+    await t.call('core', { type: 'update_agent', id: aid, ...meta });
+  }
+
+  function startDrag(e, aid, el) {
+    e.preventDefault();
+    el.classList.add('dragging');
+    const sx = e.clientX, sy = e.clientY;
+    const ox = parseFloat(el.style.left), oy = parseFloat(el.style.top);
+    function move(ev) {
+      // Divide screen-pixel deltas by zoom so drag tracks the cursor 1:1
+      // even when the world is scaled.
+      el.style.left = (ox + (ev.clientX - sx) / view.z) + 'px';
+      el.style.top  = (oy + (ev.clientY - sy) / view.z) + 'px';
+    }
+    function up() {
+      el.classList.remove('dragging');
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      persistRect(aid, parseFloat(el.style.left), parseFloat(el.style.top));
+    }
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }
+
+  function startResize(e, aid, el) {
+    e.preventDefault(); e.stopPropagation();
+    el.classList.add('resizing');
+    const sx = e.clientX, sy = e.clientY;
+    const ow = parseFloat(el.style.width), oh = parseFloat(el.style.height);
+    function move(ev) {
+      el.style.width = Math.max(180, ow + (ev.clientX - sx) / view.z) + 'px';
+      el.style.height = Math.max(120, oh + (ev.clientY - sy) / view.z) + 'px';
+    }
+    function up() {
+      el.classList.remove('resizing');
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      persistRect(aid, undefined, undefined, parseFloat(el.style.width), parseFloat(el.style.height));
+    }
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }
+
+  async function refresh() {
+    const r = await t.call('core', { type: 'list_agents' });
+    const myRec = r.agents.find((a) => a.id === me);
+    const myBundle = myRec ? myRec.handler_module : null;
+    // Same-bundle siblings (other canvases) are excluded to prevent
+    // recursive iframe nesting and infinite-frame jitter.
+    const probes = await Promise.all(r.agents.map(async (a) => {
+      if (a.id === me || a.id === upstream) return null;
+      if (myBundle && a.handler_module === myBundle) return null;
+      try {
+        const wa = await t.call(a.id, { type: 'get_webapp' });
+        if (wa && wa.url && !wa.error) return { rec: a, wa };
+      } catch (e) {}
+      return null;
+    }));
+    const webapps = probes.filter(Boolean);
+
+    const seen = new Set();
+    let idx = 0;
+    for (const { rec, wa } of webapps) {
+      seen.add(rec.id);
+      if (!frames.has(rec.id)) {
+        const el = makeFrame(rec, wa, idx);
+        frames.set(rec.id, { el, rec, wa });
+      } else {
+        const f = frames.get(rec.id);
+        if (typeof rec.x === 'number') { f.el.style.left = rec.x + 'px'; f.el.style.top = rec.y + 'px'; }
+        if (rec.width)  { f.el.style.width  = rec.width  + 'px'; }
+        if (rec.height) { f.el.style.height = rec.height + 'px'; }
+        // Sync the lock-toggle icon with the latest record state so
+        // remote updates (e.g. an LLM setting delete_lock) reflect in UI.
+        const lockEl = f.el.querySelector('.lock');
+        if (lockEl) {
+          const locked = !!rec.delete_lock;
+          lockEl.classList.toggle('locked', locked);
+          lockEl.textContent = locked ? '🔒' : '⊕';
+          lockEl.title = locked ? 'unlock (allow delete)' : 'lock (refuse delete)';
+        }
+        f.rec = rec;
+        f.wa = wa;
+      }
+      idx++;
+    }
+    for (const aid of [...frames.keys()]) {
+      if (!seen.has(aid)) removeFrame(aid);
+    }
+    status.innerHTML = `canvas <code>${me}</code> → <code>${upstream}</code> · ${frames.size} webapp${frames.size===1?'':'s'}`;
+  }
+
+  await t.watch('core');
+  t.on('agent_updated', () => refresh());
+  t.on('agent_created', () => refresh());
+  t.on('agent_deleted', () => refresh());
+
+  // Double-click on empty canvas → create a terminal pair at click coords.
+  // Backend first (no x/y — invisible to canvas anyway), then webapp
+  // pointing at it with the click position. agent_created events
+  // trigger refresh() which renders the new frame.
+  canvas.addEventListener('dblclick', async (e) => {
+    if (e.target.closest('.agent-frame')) return;   // ignore dblclick inside frames
+    // Map screen click to world coords so the new frame lands under the
+    // cursor regardless of current zoom/pan.
+    const w = screenToWorld(e.clientX, e.clientY);
+    const x = Math.round(w.x);
+    const y = Math.round(w.y);
+    const tb = await t.call('core', {
+      type: 'create_agent',
+      handler_module: 'terminal_backend.tools',
+    });
+    if (!tb || !tb.id) {
+      console.error('[canvas] failed to create terminal_backend:', tb);
+      return;
+    }
+    const tw = await t.call('core', {
+      type: 'create_agent',
+      handler_module: 'terminal_webapp.tools',
+      upstream_id: tb.id,
+      x, y,
+    });
+    if (!tw || !tw.id) {
+      console.error('[canvas] failed to create terminal_webapp; orphan backend:', tb.id);
+    }
+  });
+
+  await refresh();
+  setInterval(refresh, 5000);
+})();
+</script>
+</body>
+</html>

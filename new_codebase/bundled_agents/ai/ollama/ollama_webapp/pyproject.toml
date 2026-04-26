@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fantastic-ollama-webapp"
+version = "0.1.0"
+description = "Fantastic ollama webapp — chat UI fronting an LLM backend."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.entry-points."fantastic.bundles"]
+ollama_webapp = "ollama_webapp.tools"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ollama_webapp"]
