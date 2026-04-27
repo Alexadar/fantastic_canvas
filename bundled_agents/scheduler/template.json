@@ -1,6 +1,0 @@
-{
-  "bundle": "scheduler",
-  "name": "scheduler",
-  "description": "Persistent recurring-task scheduler as an agent. One agent per scheduler instance; verbs (schedule/unschedule/list/pause/resume/tick_now/history) via agent_call.",
-  "author_type": 0
-}

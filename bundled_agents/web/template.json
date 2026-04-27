@@ -1,8 +1,0 @@
-{
-  "name": "web",
-  "bundle": "web",
-  "parameters": {
-    "default_width": 300,
-    "default_height": 200
-  }
-}

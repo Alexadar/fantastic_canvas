@@ -1,118 +1,167 @@
-# Fantastic
+# fantastic-kernel
 
-[![Tests](https://github.com/Alexadar/fantastic_canvas/actions/workflows/test-on-label.yml/badge.svg)](https://github.com/Alexadar/fantastic_canvas/actions/workflows/test-on-label.yml)
-[![Lint & Type Check](https://github.com/Alexadar/fantastic_canvas/actions/workflows/lint-typecheck.yml/badge.svg)](https://github.com/Alexadar/fantastic_canvas/actions/workflows/lint-typecheck.yml)
-[![CodeQL](https://github.com/Alexadar/fantastic_canvas/actions/workflows/codeql.yml/badge.svg)](https://github.com/Alexadar/fantastic_canvas/actions/workflows/codeql.yml)
+A medium that unifies humans and AIs into a single workspace.
+Plugin-discovered agents, one primitive (`send`), hermetic protocol.
 
-A post-IDE editor — an infinite canvas where AI agents build anything.
+## Concept
 
-## How it looks
+- **kernel** — one Python class, in-process. Owns agent records, inboxes,
+  watchers. Single primitive: `send(target_id, payload) → reply | None`.
+- **agents** — anything addressable. Pip-installable Python packages
+  (one per bundle), discovered via the `fantastic.bundles` entry-point group.
+  Each agent answers `{type:"reflect"}` returning a flat self-description.
+- **webapp** — transport bundle. Runs uvicorn, serves each agent's UI at
+  `/{agent_id}/`, proxies WebSocket frames to/from `kernel.send`. Auto-injects
+  `fantastic_transport()` into every served HTML.
+- **html_agent** — UI-as-a-record. The agent's `html_content` field
+  IS the page; webapp serves it at `/<id>/` (transport auto-injected),
+  duck-typed via the `render_html` verb. A coding agent can spawn a
+  full UI cell in one `create_agent` call. Pair with `python_runtime`
+  for backend logic and a `file` agent (via `/<id>/file/<path>`) for
+  static assets.
+- **python_runtime** — subprocess Python exec. `exec(code, timeout, cwd)`
+  spawns `python -c <code>`, captures stdout/stderr, returns exit code.
+  Stateless per call; per-agent `interrupt`/`stop`.
+- **canvas** — `canvas_backend` + `canvas_webapp` pair. The webapp lists
+  every agent that responds to `{type:"get_webapp"}`, iframes them at the
+  coordinates stored on each agent's record. Same-bundle siblings excluded
+  to prevent recursion. Ships a particle background animation; each
+  canvas_webapp's bg is a per-particle JS body (API at
+  `bundled_agents/canvas/canvas_webapp/src/canvas_webapp/webapp/bganim.md`)
+  swappable live via `{type:"set_bganim", source:"…"}`. THREE.js loads from
+  esm.sh at runtime.
+- **webapps** — UI bundles (`*_webapp`) that hold an `upstream_id`
+  pointing at a backend they front. Pure browser code; no compute.
+  Duck-typed via `get_webapp` — any agent that returns `{url, ...}` is
+  treated as a UI by the canvas.
+- **browser-only message bus** — every page also gets
+  `fantastic_transport().bus`, a `BroadcastChannel("fantastic")` wrapper.
+  Same envelope as kernel (`{type, target_id, source_id, ...}`) with
+  structured-clone payloads — bytes/objects/strings native, **bypasses the
+  kernel entirely**. Use for high-frequency intra-browser traffic (audio
+  frames, drag events) where round-tripping the server adds nothing.
 
-![Fantastic Canvas](imgs/scr1.png)
-
-A Fantastic environment created by Claude to help learn Conditional Flow Matching. I asked the coding agent to learn from `.fantastic`, read the handbook, find/clone and understand the CFM repo, and create explanation, training, and visualisation UI. A very fun and quick way to do self-presentations and learning sessions.
-
-## Architecture
+Two-tier message flow:
 
 ```
-┌────────────────────────┐
-│   CORE (orchestrator)  │   Engine + AgentStore + Dispatch + Bus + Scheduler
-│   No HTTP. No UI.      │   Pure Python, async throughout.
-└──────────┬─────────────┘
-           │  dispatch / bus events
-           ▼
-┌────────────────────────────────────────────────┐
-│                BUNDLED AGENTS                   │
-│                                                 │
-│  web/     — HTTP + WS transport (uvicorn)       │
-│             injects fantastic_transport() JS    │
-│                                                 │
-│  canvas/  — layout + iframe host  (has web/)    │
-│  terminal/— PTY + xterm page      (has web/)    │
-│  fantastic_agent/ — chat UI proxy (has web/)    │
-│                                                 │
-│  ollama/ openai/ anthropic/ integrated/         │
-│           — headless AI backends                │
-│                                                 │
-│  html/ dashboard/ quickstart/                   │
-└────────────────────┬───────────────────────────┘
-                     │
-                     ▼  ws://host/{agent_id}/ws
-               ┌──────────────┐
-               │   Browser    │  fantastic_transport() global
-               │              │  → dispatch / on / watch / ...
-               └──────────────┘
+                       SERVER                              BROWSER
+  agent ──┐                                              ┌── iframe
+           ├── kernel.send / emit / watch ──── WS ──── ┤
+  agent ──┘   (text + binary frames)                    ├── iframe
+                                                          │   ↕
+                                                          │  BroadcastChannel("fantastic")
+                                                          │   ↕
+                                                          └── iframe
 ```
 
-UI code never sees WebSocket — it uses the injected `fantastic_transport()` global. Same dispatch names on frontend and backend. See `CLAUDE.md` for the full protocol.
-
-## Requirements
-
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- Node.js 18+ (for frontend build)
+## Install
 
 ```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# Or via Homebrew
-brew install uv
+uv sync                 # builds & installs all workspace bundles editable
+uv sync --dev           # + pytest, xdist, etc. (for tests)
 ```
 
-## Installation
+New bundles dropped under `bundled_agents/` or `installed_agents/` with a
+`pyproject.toml` are auto-picked up on the next `uv sync`.
+
+## Run
 
 ```bash
-# From source (development)
-uv sync                                  # Python 3.11+ deps + venv
-cd bundled_agents/canvas/web
-npm install && npm run build             # builds canvas UI + _web_shared/dist/transport.js
-
-# Install globally
-uv tool install ./core
-uv tool install ./core[torch]            # with PyTorch (CPU/CUDA/MPS auto)
+uv run python kernel.py                       # interactive REPL (default)
+uv run python kernel.py serve --port 8888     # headless: webapp on :8888
+uv run python kernel.py call <id> <verb> [k=v ...]   # one-shot RPC
+uv run python kernel.py reflect [<id>]        # shorthand for reflect
 ```
 
-## Usage
+REPL example:
+
+```
+fantastic> add webapp                                       # uvicorn boots
+fantastic> add file
+fantastic> add ollama_backend file_agent_id=<file_id>
+fantastic> add ollama_webapp upstream_id=<ollama_backend_id>
+fantastic> add canvas_backend
+fantastic> add canvas_webapp upstream_id=<canvas_backend_id>
+# browse http://localhost:8888/<canvas_webapp_id>/  → all webapps in one view
+```
+
+## Drive from outside
+
+After `kernel.py serve`, the entire kernel is reachable over HTTP+WS:
 
 ```bash
-fantastic                                # engine + auto-creates default web agent on :8888
-# Open http://localhost:8888/{canvas_agent_id}/ in browser
+curl http://localhost:8888/_kernel/reflect             # substrate primer
+curl http://localhost:8888/_agents                     # list_agents
+curl -X POST http://localhost:8888/<id>/call -H 'content-type: application/json' -d '{...}'
+# WS: ws://host/<id>/ws  — frames per the protocol shown in /_kernel/reflect
 ```
 
-### Adding agents
+The protocol IS the API — no client library. `/_kernel/reflect` returns
+the substrate primer with `transports` (in-process / in-prompt / cli /
+http / ws), `available_bundles` (entry-point inventory), running
+`agents`, `well_known` singletons, plus `binary_protocol` and
+`browser_bus`. Any LLM CLI dropped in cold can bootstrap from one
+reflect call.
+
+## Plugin system
+
+Each bundle is a real Python package with its own `pyproject.toml`,
+declaring `[project.entry-points."fantastic.bundles"]`. The kernel
+discovers bundles uniformly via `importlib.metadata.entry_points` —
+works for in-tree workspace members AND `pip install` third-party plugins.
+
+## Tests
+
+Two complementary layers:
+
+- **Unit/integration via `pytest`** — fast, parallel, in-process. 221 tests.
+  ```bash
+  uv run --active pytest -n auto         # ~3s parallel
+  ```
+- **Self-tests** — hand-written, scope-tagged markdown specs. AI agents
+  (Claude Code, etc.) read them, ask required pre-flight questions, drive
+  the system at the user-facing surface (CLI, HTTP, WS, PTY, browser),
+  and fill summary tables. Each component owns one. Index + LLM protocol
+  + scope taxonomy at **`selftest.md`** (root). Tell the AI things like
+  *"perform non-web self tests"* or *"I'm in a canvas, do all webapp
+  tests"* — the AI selects the right subset based on scope tags.
+
+## Pre-push checks
+
+CI gates run on PR; mirror them locally before pushing:
 
 ```bash
-> add canvas                             # spatial canvas host
-> add terminal                           # PTY terminal
-> add ollama                             # headless Ollama backend
-> add fantastic_agent                    # chat UI proxy — configure upstream_agent_id
+uvx ruff check kernel.py bundled_agents/ tests/
+uvx ruff format --check kernel.py bundled_agents/ tests/
+uv run pytest -n auto
 ```
 
-AI providers are now bundled agents. Create a backend (e.g. `ollama`), then a `fantastic_agent` UI to chat with it. Configure via dispatch:
+## Layout
 
 ```
-fantastic_agent_configure(agent_id=<fa_id>, upstream_agent_id=<ollama_id>, upstream_bundle="ollama")
+.                                            # project root
+├── kernel.py                                 # Kernel + REPL + serve/call/reflect
+├── pyproject.toml                            # workspace + bundle deps
+├── selftest.md                               # selftest INDEX + LLM protocol
+├── conftest.py                               # pytest fixtures
+├── tests/                                    # kernel-level tests
+├── installed_agents/                         # third-party drop-ins (empty)
+└── bundled_agents/
+    ├── core/                                 # system verbs (singleton)
+    ├── cli/                                  # terminal renderer (singleton)
+    ├── webapp/                               # HTTP+WS transport (uvicorn)
+    ├── file/, scheduler/                     # filesystem + recurring tasks
+    ├── python_runtime/                       # exec Python in subprocess
+    ├── html_agent/                           # UI-as-record (html_content per instance)
+    ├── terminal/{terminal_backend, terminal_webapp}
+    ├── ai/ollama/{ollama_backend, ollama_webapp}
+    └── canvas/{canvas_backend, canvas_webapp}
 ```
 
-### Multiple web agents
+## Universal verb
 
-```bash
-> add web                                # another web agent
-# Then: web_configure(agent_id=<web_id>, port=9000, base_route="/admin")
-```
-
-Each web agent has its own uvicorn, its own config, its own base route. Hot-reloads on config change.
-
-## Testing
-
-```bash
-uv run pytest core/tests/ bundled_agents/ -v -x   # backend
-cd bundled_agents/canvas/web && npx vitest run   # frontend
-```
-
-## Security
-
-Intended for personal use. Do not expose to the web — it can compromise your machine.
-
-## License
-
-Apache 2.0 — see [LICENSE](LICENSE).
+Every agent answers `{type:"reflect"}`. Returns `{id, sentence, verbs:{name:doc}, …flat state}`.
+Reflect on the kernel itself (`send("kernel", {reflect})`) returns the
+substrate primer — transports, available bundles, running agents, plus
+binary protocol + browser bus details. The only thing an external tool
+needs to bootstrap.
