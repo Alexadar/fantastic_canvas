@@ -39,27 +39,37 @@ curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/
 ```
 Expected: `{url, default_width:800, default_height:600, title:"canvas"}`.
 
-### Test 2: served HTML has same-bundle exclusion + bus reference
+### Test 2: served HTML uses explicit membership (drift guard)
 
 ```bash
-curl -s "http://localhost:$PORT/$CW/" | grep -ic "same-bundle siblings"
-curl -s "http://localhost:$PORT/$CW/" | grep -c "BroadcastChannel"
+HTML=$(curl -s "http://localhost:$PORT/$CW/")
+echo "$HTML" | grep -qF "list_members" && echo "  uses list_members: OK"
+echo "$HTML" | grep -qF "members_updated" && echo "  subscribes to members_updated: OK"
+echo "$HTML" | grep -qF "add_agent" && echo "  dblclick auto-adds to membership: OK"
+echo "$HTML" | grep -c "BroadcastChannel"
 ```
-Expected: first ≥ 1 (recursion guard comment), second 0 (canvas itself
-doesn't use the bus — that's per-agent. Only checks transport.js has it,
-and transport.js is fetched separately).
+Expected: first three checks PASS; last (BroadcastChannel) 0
+(canvas itself doesn't use the bus — transport.js carries it; fetched
+separately). Regression signal: any of these missing → the
+membership rewrite regressed and the canvas is auto-discovering again.
 
-### Test 3 (manual, browser): canvas filters webapps only
+### Test 3 (manual, browser): explicit membership renders only members
 
-Provision additional agents:
+Provision a target webapp (terminal pair) AND add it to this canvas:
 ```bash
-TB=$(curl -s -X POST ... terminal_backend ... | …id)
-TW=$(curl -s -X POST ... terminal_webapp upstream_id=TB ... | …id)
+TB=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d '{"type":"create_agent","handler_module":"terminal_backend.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+TW=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"create_agent\",\"handler_module\":\"terminal_webapp.tools\",\"upstream_id\":\"$TB\"}" | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+# IMPORTANT: explicit add — without this, the canvas shows 0 frames.
+curl -s -X POST "http://localhost:$PORT/$CB/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"add_agent\",\"agent_id\":\"$TW\"}"
 ```
-Open `http://localhost:$PORT/$CW/` in browser.
-Expected: ONE frame visible (terminal_webapp), with title "xterm".
-Backend agents (TB, CB, file_agent) → NOT framed (404'd via get_webapp).
-Regression signal: extra empty frames → get_webapp probe filter regressed.
+Open `http://localhost:$PORT/$CW/` in a browser.
+Expected: ONE frame (terminal_webapp), title "xterm". Backend agents
+and any UN-added html_agents stay out of frame. **Without the
+add_agent call, the canvas would be empty** — that's the new model.
+Regression signal: frames appear without an explicit add → auto-discover regressed.
 
 ### Test 4 (manual, browser): drag persists position
 
@@ -70,17 +80,31 @@ curl -s -X POST http://localhost:$PORT/core/call -H 'content-type: application/j
 ```
 Expected: x/y match the drop position roughly.
 
-### Test 5 (manual, browser): two canvases don't iframe each other
+### Test 5 (manual, browser): two canvases hold disjoint members
 
-Provision a second canvas pair:
+Provision a second canvas pair AND two distinct member webapps:
 ```bash
-CB2=$(... canvas_backend ...)
-CW2=$(... canvas_webapp upstream_id=CB2 ...)
+CB2=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d '{"type":"create_agent","handler_module":"canvas_backend.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+CW2=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"create_agent\",\"handler_module\":\"canvas_webapp.tools\",\"upstream_id\":\"$CB2\"}" | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+H1=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d '{"type":"create_agent","handler_module":"html_agent.tools","html_content":"<h1>in canvas A</h1>"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+H2=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d '{"type":"create_agent","handler_module":"html_agent.tools","html_content":"<h1>in canvas B</h1>"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+# Disjoint membership: H1 in A only, H2 in B only.
+curl -s -X POST "http://localhost:$PORT/$CB/call"  -H 'content-type: application/json' -d "{\"type\":\"add_agent\",\"agent_id\":\"$H1\"}"
+curl -s -X POST "http://localhost:$PORT/$CB2/call" -H 'content-type: application/json' -d "{\"type\":\"add_agent\",\"agent_id\":\"$H2\"}"
 ```
 Open `/$CW/` in tab A and `/$CW2/` in tab B.
-Expected: neither tab shows a frame for the OTHER canvas. Same-bundle
-exclusion rule kicks in. Drag in A → does NOT cause infinite frame
-recursion or jitter in B.
+Expected:
+- Tab A shows ONLY the "in canvas A" frame.
+- Tab B shows ONLY the "in canvas B" frame.
+- Adding H2 to canvas A's members (`add_agent agent_id=$H2` on `$CB`)
+  → tab A's `members_updated` fires → frame appears live in A; tab B is unchanged.
+Regression signal: an agent appears in both tabs without being added to
+both → membership filter regressed. A canvas iframes itself or its
+sibling → the self/upstream skip regressed.
 
 ### Test 6: bganim default loads via get_bganim
 
@@ -144,10 +168,10 @@ a page reload.
 Regression signal: page reloads, white flash, or particles freeze →
 either the watch wiring broke or the rAF loop crashed on rebuild.
 
-### Test 11: terminal pair lifecycle (programmatic — mirrors dblclick + close)
+### Test 11: terminal pair lifecycle + canvas membership add (programmatic — mirrors dblclick + close)
 
-Verifies that the substrate supports the create-pair / cascade-delete
-flow that the canvas_webapp UI exercises on dblclick / "×":
+Verifies the create-pair → add-to-canvas → cascade-delete flow that
+the canvas_webapp UI exercises on dblclick / "×":
 
 ```bash
 # 1. dblclick create — backend first, then webapp pointing at it
@@ -161,13 +185,19 @@ echo "  created TB=$TB TW=$TW"
 curl -s -X POST "http://localhost:$PORT/$TW/call" -H 'content-type: application/json' \
   -d '{"type":"reflect"}' | python -m json.tool | grep -F "\"upstream_id\": \"$TB\""
 
-# 3. close — webapp first, then backend (mirrors × button order)
+# 3. add_agent on the canvas backend so it appears in this canvas
+curl -s -X POST "http://localhost:$PORT/$CB/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"add_agent\",\"agent_id\":\"$TW\"}" | python -m json.tool | grep -F '"ok": true'
+curl -s -X POST "http://localhost:$PORT/$CB/call" -H 'content-type: application/json' \
+  -d '{"type":"list_members"}' | python -m json.tool | grep -F "\"$TW\""
+
+# 4. close — webapp first, then backend (mirrors × button order)
 curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
   -d "{\"type\":\"delete_agent\",\"id\":\"$TW\"}" | python -m json.tool | grep -F '"deleted": true'
 curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
   -d "{\"type\":\"delete_agent\",\"id\":\"$TB\"}" | python -m json.tool | grep -F '"deleted": true'
 
-# 4. neither lingers
+# 5. neither lingers in list_agents
 curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
   -d '{"type":"list_agents"}' | python -c "
 import json, sys
@@ -175,6 +205,12 @@ d = json.load(sys.stdin)
 ids = {a['id'] for a in d['agents']}
 print('PASS' if '$TB' not in ids and '$TW' not in ids else f'FAIL leftover={ids & {\"$TB\",\"$TW\"}}')
 "
+
+# 6. members list still has the now-stale TW id (no auto-cleanup) —
+#    that's documented behavior; iframe layer hides via record lookup.
+#    Operator can scrub:
+curl -s -X POST "http://localhost:$PORT/$CB/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"remove_agent\",\"agent_id\":\"$TW\"}" | python -m json.tool | grep -F '"removed":'
 ```
 Expected: every grep matches AND final line prints `PASS`.
 Regression signal: orphan agent in `list_agents` after delete → cascade
@@ -187,9 +223,12 @@ Open `http://localhost:$PORT/$CW/` in a browser.
 **Spawn + close:**
 - **Dblclick** on empty canvas → a new xterm frame appears at the click
   position. (Backend `terminal_backend_xxx` + webapp `terminal_webapp_xxx`
-  are both created; only the webapp is iframed.)
+  are both created AND the new webapp is added to THIS canvas's members.
+  Other canvases are unaffected.)
 - Type a command in the xterm — works (proves the upstream_id link).
 - Click **×** on the frame head → both agents deleted; frame disappears.
+  (Stale member id stays in `list_members` — iframe lookup hides it; can
+  be scrubbed via `remove_agent`.)
 
 **Reload button (⟳):**
 - Spawn another frame. Click **⟳** on its head. The iframe reloads

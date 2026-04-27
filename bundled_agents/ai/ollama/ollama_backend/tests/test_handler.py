@@ -185,6 +185,38 @@ async def test_run_persists_per_client_threads(seeded_kernel, file_agent, tmp_pa
         ot._providers.pop(oid, None)
 
 
+async def test_run_unbounded_steps_until_no_tool_calls(seeded_kernel, file_agent):
+    """Old MAX_STEPS=5 cap is gone. Loop continues as long as the
+    model emits tool_calls; safety bounds are SEND_TIMEOUT (180s wall)
+    and the user-callable `interrupt` verb. Verify a 7-step chain
+    (which old code would have truncated at step 5) completes cleanly."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    scripts = [
+        [
+            {
+                "tool_call": {
+                    "id": f"call_{i}",
+                    "name": "send",
+                    "arguments": {
+                        "target_id": "core",
+                        "payload": {"type": "list_agents"},
+                    },
+                }
+            }
+        ]
+        for i in range(6)
+    ]
+    scripts.append(["finally done."])
+    fp = _FakeProvider(scripts)
+    ot._providers[oid] = fp
+    try:
+        r = await seeded_kernel.send(oid, {"type": "send", "text": "loop"})
+        assert r["final"] == "finally done."
+        assert fp.calls == 7  # old MAX_STEPS=5 would have truncated here
+    finally:
+        ot._providers.pop(oid, None)
+
+
 async def test_unknown_verb_errors(seeded_kernel, file_agent):
     oid = await _make_ollama(seeded_kernel, file_agent)
     r = await seeded_kernel.send(oid, {"type": "garbage"})

@@ -3,7 +3,9 @@
 The `send` verb does Phase 1 (assemble prompt from real reflect replies,
 nothing baked in) + Phase 2 (stream the model with one universal SEND
 tool, execute every tool_call via kernel.send, feed reply back via
-role:tool with tool_call_id linkage). Loops up to MAX_STEPS.
+role:tool with tool_call_id linkage). Loops UNTIL the model stops
+emitting tool_calls — bounded only by SEND_TIMEOUT (hard) and the
+`interrupt` verb (user-driven). No fixed max-step ceiling.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ def _invalidate_menu(self_id: str) -> None:
     _menu_cache.pop(self_id, None)
 
 
-MAX_STEPS = 5
 SEND_TIMEOUT = 180.0  # hard ceiling per-generation; releases the lock
 DEFAULT_CLIENT_ID = "cli"  # headless / REPL caller defaults here
 
@@ -250,7 +251,11 @@ async def _run(self_id: str, user_text: str, kernel, client_id: str) -> dict:
     messages = await _assemble(self_id, user_text, kernel, client_id)
     last_text = ""
 
-    for _ in range(MAX_STEPS):
+    # Loop until the model stops emitting tool_calls. Bounded only by
+    # SEND_TIMEOUT (asyncio.wait_for around the whole _run task) and
+    # the user-callable `interrupt` verb. No fixed step cap — Claude
+    # Code-style runs as long as the model keeps proposing tools.
+    while True:
         content_parts: list[str] = []
         tool_calls: list[dict] = []
         async for chunk in provider.chat(messages, tools=[SEND_TOOL]):

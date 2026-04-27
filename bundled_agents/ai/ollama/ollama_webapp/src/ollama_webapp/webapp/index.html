@@ -27,8 +27,10 @@
   .msg.assistant { align-self: flex-start; background: #1f1f2c; color: #cde; }
   #row { display: flex; padding: 10px; gap: 6px; border-top: 1px solid #222; }
   #input { flex: 1; background: #1a1a26; border: 1px solid #333; border-radius: 6px; padding: 8px 12px; color: #e0e0ff; font-size: 14px; outline: none; }
-  #send { background: #4a3a8a; border: none; border-radius: 6px; color: white; padding: 8px 14px; cursor: pointer; }
+  #send { background: #4a3a8a; border: none; border-radius: 6px; color: white; padding: 8px 14px; cursor: pointer; transition: background 0.15s; }
   #send:disabled { opacity: 0.5; cursor: wait; }
+  #send.stop { background: #b04646; }
+  #send.stop:hover { background: #c05050; }
   #err { padding: 24px; font-family: monospace; }
 </style>
 </head>
@@ -97,6 +99,23 @@
   // "queued" on the `queued` event and clear the marker when streaming
   // begins (first `token` for our client_id).
   let pendingUserBubble = null;
+  // Send/Stop button state. While a generation is in flight the button
+  // says "stop" and clicking it calls the interrupt verb (Claude
+  // Code-style cancel-mid-stream).
+  let busy = false;
+  function setBusy(on) {
+    busy = on;
+    if (on) {
+      sendBtn.textContent = 'stop';
+      sendBtn.classList.add('stop');
+      sendBtn.title = 'interrupt the in-flight generation';
+    } else {
+      sendBtn.textContent = 'send';
+      sendBtn.classList.remove('stop');
+      sendBtn.title = '';
+    }
+    sendBtn.disabled = false;
+  }
 
   function clearQueuedMarker() {
     if (pendingUserBubble && pendingUserBubble.classList.contains('queued')) {
@@ -133,7 +152,7 @@
     streamEl = null;
     streamText = '';
     pendingUserBubble = null;
-    sendBtn.disabled = false;
+    setBusy(false);
     inputEl.focus();
   });
 
@@ -142,19 +161,26 @@
     if (!text) return;
     inputEl.value = '';
     pendingUserBubble = addMsg('user', text);
-    sendBtn.disabled = true;
+    setBusy(true);
     try {
       await t.call(upstream, { type: 'send', text, client_id: clientId });
     } catch (e) {
       addMsg('assistant', 'ERROR: ' + e.message);
-      sendBtn.disabled = false;
+      setBusy(false);
       pendingUserBubble = null;
     }
   }
 
-  sendBtn.addEventListener('click', submit);
+  async function interrupt() {
+    // Fire-and-forget. Backend cancels its in-flight task and emits
+    // `done` with interrupted:true → setBusy(false) via t.on('done').
+    try { await t.call(upstream, { type: 'interrupt' }); }
+    catch (e) { console.warn('[chat] interrupt failed:', e); }
+  }
+
+  sendBtn.addEventListener('click', () => (busy ? interrupt() : submit()));
   inputEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!busy) submit(); }
   });
 })();
 </script>

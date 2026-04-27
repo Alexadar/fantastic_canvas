@@ -1,14 +1,25 @@
 """canvas bundle — spatial UI host as an agent.
 
 The canvas is a web page that renders OTHER agents as positioned iframes.
+Membership is **explicit**: each canvas keeps a `members: [agent_id, ...]`
+list on its own record; the webapp iframes only those agents. There is
+NO auto-include — two canvases can host disjoint sets cleanly.
+
 Layout is stored on each agent's record: x, y, width, height. Drag/resize
 in the browser sends update_agent through core; everyone watching `core`
 (including this canvas) gets `agent_updated` events.
 
 Verbs:
-  reflect     -> {sentence, agent_count, viewport_default}
-  discover    args: x, y, w, h  -> {agents: [...]} agents intersecting the rect
-  boot        -> nothing (canvas is purely browser-driven)
+  reflect       -> {sentence, member_count, viewport_default, ...}
+  add_agent     args: agent_id:str (req)  -> {ok, members[], already?}
+                  Refused if target doesn't answer get_webapp.
+  remove_agent  args: agent_id:str (req)  -> {removed:bool, members[]}
+  list_members  -> {members:[id,...]}
+  discover      args: x, y, w, h          -> {agents:[...]}  spatial intersection
+  boot          -> no-op (canvas is browser-driven)
+
+Emits:
+  members_updated  {type, members:[id,...]}  on add/remove
 """
 
 from __future__ import annotations
@@ -31,22 +42,35 @@ def _intersects(
     return not (ax + aw < bx or bx + bw < ax or ay + ah < by or by + bh < ay)
 
 
+def _members_of(rec: dict | None) -> list[str]:
+    """Defensive read — record may be missing or have non-list members."""
+    if not rec:
+        return []
+    m = rec.get("members")
+    return list(m) if isinstance(m, list) else []
+
+
 # ─── verbs ──────────────────────────────────────────────────────
 
 
 async def _reflect(id, payload, kernel):
-    """Identity + viewport defaults + total agent count. No args."""
+    """Identity + viewport defaults + member count. No args."""
     rec = kernel.get(id) or {}
+    members = _members_of(rec)
     return {
         "id": id,
-        "sentence": "Spatial canvas. Renders other agents as positioned iframes; drag/resize updates their record.",
+        "sentence": "Spatial canvas with explicit membership. Renders agents listed in `members` as positioned iframes; drag/resize updates their record.",
         "viewport_default": {
             "width": int(rec.get("width", 1600)),
             "height": int(rec.get("height", 900)),
         },
+        "member_count": len(members),
         "agent_count": len(kernel.list()),
         "verbs": {
             n: (f.__doc__ or "").strip().splitlines()[0] for n, f in VERBS.items()
+        },
+        "emits": {
+            "members_updated": "{type:'members_updated', members:[id,...]} — broadcast on this canvas's inbox after every add_agent / remove_agent",
         },
     }
 
@@ -54,6 +78,50 @@ async def _reflect(id, payload, kernel):
 async def _boot(id, payload, kernel):
     """No-op. Returns None."""
     return None
+
+
+async def _list_members(id, payload, kernel):
+    """No args. Returns {members:[agent_id,...]} — explicit list of agents this canvas hosts."""
+    rec = kernel.get(id) or {}
+    return {"members": _members_of(rec)}
+
+
+async def _add_agent(id, payload, kernel):
+    """args: agent_id:str (req). Append to this canvas's members. Refused if target doesn't currently answer get_webapp (no dead/non-UI ids). Idempotent — re-adding returns {ok, already:true} without re-emit. Emits members_updated on first add."""
+    target = payload.get("agent_id")
+    if not target or not isinstance(target, str):
+        return {"error": "add_agent: agent_id (str) required"}
+    if not kernel.get(target):
+        return {"error": f"add_agent: no agent {target!r}"}
+    # Sanity: target must answer get_webapp (else nothing to render).
+    probe = await kernel.send(target, {"type": "get_webapp"})
+    if not isinstance(probe, dict) or not probe.get("url") or probe.get("error"):
+        return {
+            "error": f"add_agent: {target!r} does not answer get_webapp; not addable to a canvas"
+        }
+    rec = kernel.get(id) or {}
+    members = _members_of(rec)
+    if target in members:
+        return {"ok": True, "members": members, "already": True}
+    members.append(target)
+    kernel.update(id, members=members)
+    await kernel.emit(id, {"type": "members_updated", "members": members})
+    return {"ok": True, "members": members}
+
+
+async def _remove_agent(id, payload, kernel):
+    """args: agent_id:str (req). Remove from members. Idempotent — non-member returns {removed:false} without emit. Emits members_updated when an actual removal happens. Returns {removed:bool, members}."""
+    target = payload.get("agent_id")
+    if not target or not isinstance(target, str):
+        return {"error": "remove_agent: agent_id (str) required"}
+    rec = kernel.get(id) or {}
+    members = _members_of(rec)
+    if target not in members:
+        return {"removed": False, "members": members}
+    members.remove(target)
+    kernel.update(id, members=members)
+    await kernel.emit(id, {"type": "members_updated", "members": members})
+    return {"removed": True, "members": members}
 
 
 async def _discover(id, payload, kernel):
@@ -88,6 +156,9 @@ async def _discover(id, payload, kernel):
 VERBS = {
     "reflect": _reflect,
     "boot": _boot,
+    "list_members": _list_members,
+    "add_agent": _add_agent,
+    "remove_agent": _remove_agent,
     "discover": _discover,
 }
 

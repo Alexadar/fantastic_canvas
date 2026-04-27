@@ -427,17 +427,28 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
   }
 
   async function refresh() {
-    const r = await t.call('core', { type: 'list_agents' });
-    const myRec = r.agents.find((a) => a.id === me);
-    const myBundle = myRec ? myRec.handler_module : null;
-    // Same-bundle siblings (other canvases) are excluded to prevent
-    // recursive iframe nesting and infinite-frame jitter.
-    const probes = await Promise.all(r.agents.map(async (a) => {
-      if (a.id === me || a.id === upstream) return null;
-      if (myBundle && a.handler_module === myBundle) return null;
+    // Explicit membership: ask upstream canvas_backend for the list of
+    // agent ids it hosts. We render ONLY those (still gated by
+    // get_webapp as a sanity check). Two canvases can host disjoint
+    // sets cleanly — no auto-include.
+    const lr = await t.call(upstream, { type: 'list_members' });
+    const memberIds = new Set((lr && lr.members) || []);
+    if (memberIds.size === 0) {
+      for (const aid of [...frames.keys()]) removeFrame(aid);
+      status.innerHTML = `canvas <code>${me}</code> → <code>${upstream}</code> · 0 webapps`;
+      return;
+    }
+    // Hoisted single list_agents → records-by-id lookup for the loop.
+    const all = (await t.call('core', { type: 'list_agents' })).agents;
+    const recordsById = new Map(all.map(a => [a.id, a]));
+    const probes = await Promise.all([...memberIds].map(async (mid) => {
+      // Defensive: skip self/upstream if a misconfigured caller adds them.
+      if (mid === me || mid === upstream) return null;
+      const rec = recordsById.get(mid);
+      if (!rec) return null;     // stale member id (agent deleted) — hide silently
       try {
-        const wa = await t.call(a.id, { type: 'get_webapp' });
-        if (wa && wa.url && !wa.error) return { rec: a, wa };
+        const wa = await t.call(mid, { type: 'get_webapp' });
+        if (wa && wa.url && !wa.error) return { rec, wa };
       } catch (e) {}
       return null;
     }));
@@ -475,15 +486,20 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
     status.innerHTML = `canvas <code>${me}</code> → <code>${upstream}</code> · ${frames.size} webapp${frames.size===1?'':'s'}`;
   }
 
+  // core: agent record changes (geometry, delete) keep frames in sync.
   await t.watch('core');
   t.on('agent_updated', () => refresh());
-  t.on('agent_created', () => refresh());
   t.on('agent_deleted', () => refresh());
+  // agent_created NO LONGER triggers refresh — explicit add_agent is the
+  // way new agents become visible. (The dblclick handler below adds
+  // automatically on creation; programmatic creators can decide.)
 
-  // Double-click on empty canvas → create a terminal pair at click coords.
-  // Backend first (no x/y — invisible to canvas anyway), then webapp
-  // pointing at it with the click position. agent_created events
-  // trigger refresh() which renders the new frame.
+  // upstream canvas_backend: membership changes refresh us live.
+  await t.watch(upstream);
+  t.on('members_updated', () => refresh());
+
+  // Double-click on empty canvas → create a terminal pair at click coords
+  // AND add the new webapp to THIS canvas's membership so it appears here.
   canvas.addEventListener('dblclick', async (e) => {
     if (e.target.closest('.agent-frame')) return;   // ignore dblclick inside frames
     // Map screen click to world coords so the new frame lands under the
@@ -507,7 +523,12 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
     });
     if (!tw || !tw.id) {
       console.error('[canvas] failed to create terminal_webapp; orphan backend:', tb.id);
+      return;
     }
+    // Add the fresh webapp to THIS canvas's membership; members_updated
+    // fires → refresh() renders the new frame here only.
+    const ar = await t.call(upstream, { type: 'add_agent', agent_id: tw.id });
+    if (ar && ar.error) console.error('[canvas] add_agent failed:', ar.error);
   });
 
   await refresh();
