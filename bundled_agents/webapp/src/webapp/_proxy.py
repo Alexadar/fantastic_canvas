@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+
+from starlette.websockets import WebSocketState
 import json
 import logging
 import secrets
@@ -124,23 +126,45 @@ async def run(ws, kernel, host_agent_id: str) -> None:
         q = kernel._ensure_inbox(client_id)
         while True:
             payload = await q.get()
+            if ws.application_state != WebSocketState.CONNECTED:
+                return
+            frame, is_bin = encode_outbound({"type": "event", "payload": payload})
             try:
-                frame, is_bin = encode_outbound({"type": "event", "payload": payload})
                 if is_bin:
                     await ws.send_bytes(frame)
                 else:
                     await ws.send_text(frame.decode("utf-8"))
-            except Exception:
+            except RuntimeError as e:
+                # Same close race as _send_envelope: WS may close
+                # between the state check and the send. Narrow catch.
+                if "close message has been sent" not in str(e):
+                    raise
                 return
 
     drain_task = asyncio.create_task(drain_outbound())
 
     async def _send_envelope(envelope: dict) -> None:
+        # Browser tab can close mid-call: an ollama `send` holds the WS
+        # for tens of seconds while tokens stream; refreshing in that
+        # window is normal. Two-step guard:
+        #   1) check ws.application_state up front and skip if not
+        #      CONNECTED — common case, no exception involved
+        #   2) the close can still race in between the check and the
+        #      actual send; narrow that to the ONE specific RuntimeError
+        #      starlette raises ("Cannot call ... once a close message
+        #      has been sent"). Any other RuntimeError is a real bug
+        #      and propagates.
+        if ws.application_state != WebSocketState.CONNECTED:
+            return
         frame, is_bin = encode_outbound(envelope)
-        if is_bin:
-            await ws.send_bytes(frame)
-        else:
-            await ws.send_text(frame.decode("utf-8"))
+        try:
+            if is_bin:
+                await ws.send_bytes(frame)
+            else:
+                await ws.send_text(frame.decode("utf-8"))
+        except RuntimeError as e:
+            if "close message has been sent" not in str(e):
+                raise
 
     # ─── inbound frame handlers ─────────────────────────────────
     async def _on_call(frame):
@@ -168,8 +192,18 @@ async def run(ws, kernel, host_agent_id: str) -> None:
             kernel.unwatch(src, client_id)
             watching.discard(src)
 
-    FRAME_HANDLERS = {
-        "call": _on_call,
+    # `call` handlers may await for tens of seconds (LLM streams).
+    # Awaiting them inline blocks the receive loop, so a peer-close
+    # only registers AFTER the generation completes — backend keeps
+    # burning resources on a now-orphaned conversation. Dispatch
+    # `call` as a task and track pending; cancel on disconnect so
+    # `kernel.send` (and downstream e.g. ollama_backend._run) sees
+    # CancelledError and releases the lock immediately. The other
+    # frame types (emit/watch/unwatch) are local state mutations —
+    # cheap, awaited inline.
+    pending: set[asyncio.Task] = set()
+
+    FRAME_HANDLERS_INLINE = {
         "emit": _on_emit,
         "watch": _on_watch,
         "unwatch": _on_unwatch,
@@ -191,12 +225,25 @@ async def run(ws, kernel, host_agent_id: str) -> None:
             if raw is None:
                 continue
             frame = decode_inbound(raw)
-            handler_fn = FRAME_HANDLERS.get(frame.get("type"))
-            if handler_fn is not None:
-                await handler_fn(frame)
+            ftype = frame.get("type")
+            if ftype == "call":
+                t = asyncio.create_task(_on_call(frame))
+                pending.add(t)
+                t.add_done_callback(pending.discard)
+            else:
+                inline = FRAME_HANDLERS_INLINE.get(ftype)
+                if inline is not None:
+                    await inline(frame)
             # Unknown frame types are silently dropped (forward-compat).
     finally:
         drain_task.cancel()
+        # Cancel any in-flight `call` handlers so the underlying
+        # kernel.send tasks unwind (ollama_backend honors
+        # CancelledError, releases its FIFO lock, emits done).
+        for t in list(pending):
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         for src in watching:
             kernel.unwatch(src, client_id)
         kernel._inboxes.pop(client_id, None)

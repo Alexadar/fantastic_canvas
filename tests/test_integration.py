@@ -36,7 +36,7 @@ async def test_get_webapp_probe_matrix(seeded_kernel, file_agent):
             "core",
             {
                 "type": "create_agent",
-                "handler_module": "ollama_webapp.tools",
+                "handler_module": "ai_chat_webapp.tools",
                 "upstream_id": ob,
             },
         )

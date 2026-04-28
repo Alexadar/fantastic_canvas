@@ -65,7 +65,9 @@ fantastic> @core list_agents
 | `python_runtime` | subprocess Python exec (`python -c <code>`); per-agent interrupt/stop |
 | `html_agent` | UI-as-record; `html_content` stored on agent.json, served at `/<id>/` |
 | `terminal/{terminal_backend, terminal_webapp}` | PTY shell + xterm UI |
-| `ai/ollama/{ollama_backend, ollama_webapp}` | LLM agent + chat UI; per-client chat threads, FIFO lock, menu cache |
+| `ai/ollama/ollama_backend` | local LLM agent (ollama); per-client chat threads, FIFO lock, menu cache |
+| `ai/nvidia/nvidia_nim_backend` | NVIDIA NIM LLM agent (OpenAI-compatible); api_key sidecar via `file_agent_id`; rate-limit retry; same surface as ollama_backend |
+| `ai/ai_chat_webapp` | provider-agnostic chat UI; fronts any backend that answers `send`/`history`/`interrupt` |
 | `canvas/{canvas_backend, canvas_webapp}` | spatial UI host; iframes every agent that answers `get_webapp` |
 
 Each bundle is a real Python package with its own `pyproject.toml`,

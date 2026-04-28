@@ -1,11 +1,23 @@
-"""ollama bundle — reflect-driven LLM agent with native tool-calling.
+"""nvidia_nim_backend — reflect-driven LLM agent against NVIDIA NIM (OpenAI-compatible).
 
-The `send` verb does Phase 1 (assemble prompt from real reflect replies,
-nothing baked in) + Phase 2 (stream the model with one universal SEND
-tool, execute every tool_call via kernel.send, feed reply back via
-role:tool with tool_call_id linkage). Loops UNTIL the model stops
-emitting tool_calls — bounded only by SEND_TIMEOUT (hard) and the
-`interrupt` verb (user-driven). No fixed max-step ceiling.
+Same surface as ollama_backend (send/history/interrupt/refresh_menu/reflect)
+so the chat UI (`ai_chat_webapp`) and any other caller can swap providers
+by changing `upstream_id` only. Differences from ollama_backend:
+
+- API key required. Stored OUT-OF-BAND in `.fantastic/agents/<id>/api_key`
+  via `file_agent_id`. Never lives in agent.json (which is exposed by
+  `kernel.list()` and `/_agents`). Verbs: `set_api_key`, `clear_api_key`.
+  `reflect` reports `has_api_key:bool` only — never the key value.
+- Provider speaks OpenAI HTTP+SSE; tool_call argument fragments are
+  aggregated per index inside the provider. The yield contract is
+  identical to OllamaProvider, so `_run` is mechanically the same.
+- Free tier rate-limits at ~40 RPM/model. On HTTP 429 BEFORE any chunk
+  has been yielded, we retry once after sleeping `Retry-After` (capped
+  at RATE_LIMIT_MAX_WAIT). `say` event surfaces the wait so the chat UI
+  shows progress. Mid-stream 429 is rare and propagates unchanged.
+
+The agentic loop runs UNTIL the model stops emitting tool_calls —
+bounded only by SEND_TIMEOUT (hard) and the `interrupt` verb.
 """
 
 from __future__ import annotations
@@ -15,28 +27,18 @@ import json
 import secrets
 import time
 
+import httpx
+
 _providers: dict = {}
 _tasks: dict[str, asyncio.Task] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
-# Per-backend cache of "what other agents exist + what they answer".
-# Built lazily at assemble time; invalidated automatically after every
-# tool_call (which may have mutated the population) and on the
-# `refresh_menu` verb (so the LLM can self-invalidate). Never persisted
-# to chat.json — it's prepended to the system block on each turn.
 _menu_cache: dict[str, list[dict]] = {}
 
-# Structural state for the `status` verb + status events. One channel,
-# one source of truth — UI subscribes to `status` events for live phase
-# transitions and calls the `status` verb to rebuild after page reload.
-#
-# _queue[backend_id]: pending entries waiting on the per-backend lock,
-#   in arrival order. Each: {client_id, text, queued_at, send_id}.
-# _current[backend_id]: the entry that holds the lock right now, or
-#   absent. Carries the same fields plus `started_at` and `phase`.
-#   Phases: queued → thinking → streaming → tool_calling → thinking
-#   → ... → done. Surfaces "still working" between tool calls so the
-#   UI can show a pulse indicator (claude-code style).
+# Structural state for the `status` verb + status events. Mirrors
+# ollama_backend/tools.py — see that file for the rationale + phase
+# state machine. Phases:
+#   queued → thinking → streaming → tool_calling → thinking → … → done.
 _queue: dict[str, list[dict]] = {}
 _current: dict[str, dict] = {}
 
@@ -45,22 +47,18 @@ _current: dict[str, dict] = {}
 
 
 def _new_send_id() -> str:
-    """Opaque id for a single user submission. Travels through every
-    status event of that submission so the UI can correlate phases."""
+    """Opaque id for one user submission. Travels through every status
+    event of that submission so the UI can correlate phases."""
     return secrets.token_urlsafe(8)
 
 
 def _enqueue(self_id: str, entry: dict) -> int:
-    """Append entry to the per-backend FIFO. Returns the position
-    (1-based: 1 means front of line / next to acquire lock)."""
     q = _queue.setdefault(self_id, [])
     q.append(entry)
     return len(q)
 
 
 def _dequeue_send(self_id: str, send_id: str) -> dict | None:
-    """Remove the entry with this send_id from the queue, return it.
-    Returns None if not found (already dequeued / never enqueued)."""
     q = _queue.get(self_id, [])
     for i, e in enumerate(q):
         if e.get("send_id") == send_id:
@@ -69,8 +67,6 @@ def _dequeue_send(self_id: str, send_id: str) -> dict | None:
 
 
 def _set_current(self_id: str, entry: dict) -> None:
-    """Promote a queued entry to `_current` — called once we hold the
-    backend lock. Adds started_at, phase=thinking, empty text_so_far."""
     _current[self_id] = {
         **entry,
         "started_at": time.time(),
@@ -84,32 +80,21 @@ def _clear_current(self_id: str) -> None:
 
 
 def _redact_text(d: dict | None) -> dict | None:
-    """Return a copy of a current/queue entry with text-bearing fields
-    stripped. Used to surface the existence of someone else's in-flight
-    work to a caller without leaking content."""
     if d is None:
         return None
-    redacted = {
-        k: v for k, v in d.items() if k not in ("text", "text_so_far", "last_tool")
-    }
-    return redacted
+    return {k: v for k, v in d.items() if k not in ("text", "text_so_far", "last_tool")}
 
 
 def _status_snapshot(self_id: str, requesting_client_id: str | None) -> dict:
-    """Build the response for the `status` verb.
-
-    With requesting_client_id: full text only for that caller's entries;
-    other clients collapse to `others_pending` count. Without it: text
-    is redacted everywhere — useful for headless inspection without
-    leaking browser content.
-    """
+    """Privacy-filtered snapshot. With requesting_client_id: full text
+    only for that caller's entries; other clients collapse to
+    `others_pending` count. Without it: text is redacted everywhere."""
     cur = _current.get(self_id)
     queue = list(_queue.get(self_id, []))
     if requesting_client_id:
         is_mine = bool(cur and cur.get("client_id") == requesting_client_id)
-        cur_out: dict | None
         if cur is None:
-            cur_out = None
+            cur_out: dict | None = None
         else:
             cur_out = {
                 "phase": cur.get("phase"),
@@ -157,13 +142,31 @@ def _invalidate_menu(self_id: str) -> None:
     _menu_cache.pop(self_id, None)
 
 
-SEND_TIMEOUT = 180.0  # hard ceiling per-generation; releases the lock
-DEFAULT_CLIENT_ID = "cli"  # headless / REPL caller defaults here
+SEND_TIMEOUT = 180.0
+DEFAULT_CLIENT_ID = "cli"
+
+# Free tier of NIM rate-limits at ~40 RPM/model. On 429 we retry ONCE
+# (per provider.chat call) after honoring `Retry-After`, capped so a
+# misbehaving server can't pin us forever inside SEND_TIMEOUT.
+RATE_LIMIT_MAX_WAIT = 60
+RATE_LIMIT_DEFAULT_WAIT = 5
+RATE_LIMIT_MAX_RETRIES = 1
+
+
+def _parse_retry_after(resp: "httpx.Response") -> int:
+    """Read Retry-After (seconds), clamp to [1, RATE_LIMIT_MAX_WAIT]."""
+    val = resp.headers.get("retry-after", "")
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return RATE_LIMIT_DEFAULT_WAIT
+    if n < 1:
+        return 1
+    return min(n, RATE_LIMIT_MAX_WAIT)
 
 
 def _lock_for(self_id: str) -> asyncio.Lock:
-    """Per-backend FIFO serializer: only one `_send` runs at a time per
-    agent. Concurrent callers (cli, browser tabs) wait their turn."""
+    """Per-backend FIFO serializer: only one `_send` runs at a time per agent."""
     if self_id not in _locks:
         _locks[self_id] = asyncio.Lock()
     return _locks[self_id]
@@ -200,15 +203,18 @@ SEND_TOOL = {
 
 
 def _safe_client(client_id: str) -> str:
-    """Trim and sanitize a client id so it's safe as a filename suffix.
-    Spaces / slashes / weirdness collapse to underscores."""
     s = (client_id or DEFAULT_CLIENT_ID).strip() or DEFAULT_CLIENT_ID
     return "".join(c if (c.isalnum() or c in "._-") else "_" for c in s)[:64]
 
 
 def _chat_path(self_id: str, client_id: str) -> str:
-    """Per-client chat thread. Two callers (cli, browser tab) → two files."""
     return f".fantastic/agents/{self_id}/chat_{_safe_client(client_id)}.json"
+
+
+def _key_path(self_id: str) -> str:
+    """Sidecar file holding the API key. Kept out of agent.json so it
+    never leaks through `kernel.list()` / `/_agents`."""
+    return f".fantastic/agents/{self_id}/api_key"
 
 
 def _file_agent_id(self_id: str, kernel) -> str | None:
@@ -245,19 +251,39 @@ async def _save_history(
     )
 
 
-def _get_provider(id: str, kernel):
-    if id not in _providers:
-        from ollama_backend.provider import (
-            DEFAULT_ENDPOINT,
-            DEFAULT_MODEL,
-            OllamaProvider,
-        )
+async def _read_api_key(self_id: str, kernel) -> str | None:
+    fid = _file_agent_id(self_id, kernel)
+    if not fid:
+        return None
+    r = await kernel.send(fid, {"type": "read", "path": _key_path(self_id)})
+    if not r or "content" not in r:
+        return None
+    key = (r.get("content") or "").strip()
+    return key or None
 
-        rec = kernel.get(id) or {}
-        endpoint = rec.get("endpoint", DEFAULT_ENDPOINT)
-        model = rec.get("model", DEFAULT_MODEL)
-        _providers[id] = OllamaProvider(endpoint=endpoint, model=model)
-    return _providers[id]
+
+async def _has_api_key(self_id: str, kernel) -> bool:
+    return bool(await _read_api_key(self_id, kernel))
+
+
+async def _get_provider(self_id: str, kernel):
+    """Returns a cached NvidiaNimProvider or None when no api_key is set yet."""
+    if self_id in _providers:
+        return _providers[self_id]
+    key = await _read_api_key(self_id, kernel)
+    if not key:
+        return None
+    from nvidia_nim_backend.provider import (
+        DEFAULT_ENDPOINT,
+        DEFAULT_MODEL,
+        NvidiaNimProvider,
+    )
+
+    rec = kernel.get(self_id) or {}
+    endpoint = rec.get("endpoint", DEFAULT_ENDPOINT)
+    model = rec.get("model", DEFAULT_MODEL)
+    _providers[self_id] = NvidiaNimProvider(api_key=key, endpoint=endpoint, model=model)
+    return _providers[self_id]
 
 
 # ─── prompt assembly (Phase 1) ──────────────────────────────────
@@ -273,15 +299,11 @@ def _render_reflect(d: dict) -> str:
 
 
 async def _build_menu(self_id: str, kernel) -> list[dict]:
-    """Reflect on every running agent (skip self) and collect their
-    one-line sentence + verb names. Used to grow the system prompt
-    into a real "menu of capabilities" the model can see at a glance.
-    """
     online = await kernel.send("core", {"type": "list_agents"})
     items: list[dict] = []
     for a in online.get("agents", []):
         if a["id"] == self_id:
-            continue  # self is described separately in the prompt
+            continue
         try:
             r = await kernel.send(a["id"], {"type": "reflect"})
         except Exception:
@@ -301,7 +323,6 @@ async def _build_menu(self_id: str, kernel) -> list[dict]:
 
 
 def _render_menu(menu: list[dict]) -> str:
-    """Format the menu as bullet lines for the system prompt."""
     if not menu:
         return "## Available agents\n(none — only `core` and `self`)"
     lines = [
@@ -332,7 +353,6 @@ async def _assemble(self_id: str, user_text: str, kernel, client_id: str) -> lis
     primer = await kernel.send("kernel", {"type": "reflect"})
     me = await kernel.send(self_id, {"type": "reflect"})
 
-    # Lazy menu: rebuild only when invalidated (None / missing).
     if self_id not in _menu_cache:
         _menu_cache[self_id] = await _build_menu(self_id, kernel)
     menu = _menu_cache[self_id]
@@ -343,9 +363,6 @@ async def _assemble(self_id: str, user_text: str, kernel, client_id: str) -> lis
         _render_menu(menu),
         _SEND_HOWTO,
     ]
-    # System block is rebuilt on EVERY user turn; chat.json holds only
-    # the user/assistant turns. Menu + howto are not persisted — they
-    # always reflect the latest state at send-time.
     messages: list[dict] = [{"role": "system", "content": "\n\n".join(sys_blocks)}]
     messages.extend(await _load_history(self_id, kernel, client_id))
     messages.append({"role": "user", "content": user_text})
@@ -356,16 +373,6 @@ async def _assemble(self_id: str, user_text: str, kernel, client_id: str) -> lis
 
 
 async def _to_caller(kernel, self_id: str, client_id: str, ev: dict) -> None:
-    """Route a stream event to the originating caller ONLY.
-
-    - client_id == 'cli': dispatch via `kernel.send` so cli's handler
-      runs and prints to stdout (REPL/headless flow).
-    - client_id == anything else (browser uuid, etc.): emit on the
-      backend's inbox tagged with client_id; the browser's WS
-      subscription mirrors it and filters to its own id.
-
-    No fan-out: cli does NOT see browser tokens, and vice versa.
-    """
     ev = {**ev, "client_id": client_id}
     if client_id == DEFAULT_CLIENT_ID:
         await kernel.send("cli", ev)
@@ -376,22 +383,11 @@ async def _to_caller(kernel, self_id: str, client_id: str, ev: dict) -> None:
 async def _emit_status(
     kernel, self_id: str, client_id: str, phase: str, **detail
 ) -> None:
-    """Broadcast a structured `status` event AND update _current's phase
-    so the on-demand `status` verb stays in sync. Phases:
-        queued, thinking, streaming, tool_calling, done.
-    UI subscribes for live phase transitions (animate a pulse indicator
-    while phase is thinking/tool_calling), and calls the `status` verb
-    on page boot to rebuild lost state.
-
-    `send_id` and `started_at` for the in-flight entry are pulled from
-    `_current[self_id]` so callers don't have to thread them through
-    every emit site. `phase='queued'` callers (where `_current` may not
-    hold this entry yet) pass `send_id` explicitly via `**detail`.
-    """
+    """Mirror of ollama_backend's _emit_status. See that file for the
+    rationale + phase state machine."""
     cur = _current.get(self_id)
     if cur is not None:
         cur["phase"] = phase
-        # Auto-fill correlation fields when the entry is the current one.
         detail.setdefault("send_id", cur.get("send_id"))
         detail.setdefault("started_at", cur.get("started_at"))
     detail.setdefault("queue_depth", len(_queue.get(self_id, [])))
@@ -409,38 +405,81 @@ async def _emit_status(
     )
 
 
+async def _stream_with_rate_limit_retry(
+    provider, messages, kernel, self_id: str, client_id: str
+):
+    """Wrap provider.chat() with retry-once-on-429.
+
+    On HTTP 429 BEFORE any chunk is yielded, sleep `Retry-After` (clamped)
+    and retry once. Mid-stream 429 (rare — quota usually checked up front)
+    or any non-429 error propagates unchanged. A back-compat `say` event
+    AND a `status(thinking, waiting_on='rate_limit')` event surface the
+    wait so the chat UI can pulse "waiting on provider".
+    """
+    attempt = 0
+    while True:
+        yielded_anything = False
+        try:
+            async for chunk in provider.chat(messages, tools=[SEND_TOOL]):
+                yielded_anything = True
+                yield chunk
+            return
+        except httpx.HTTPStatusError as e:
+            if (
+                yielded_anything
+                or e.response.status_code != 429
+                or attempt >= RATE_LIMIT_MAX_RETRIES
+            ):
+                raise
+            attempt += 1
+            wait = _parse_retry_after(e.response)
+            await _to_caller(
+                kernel,
+                self_id,
+                client_id,
+                {
+                    "type": "say",
+                    "text": f"[provider rate limited (429); waiting {wait}s]",
+                    "source": self_id,
+                },
+            )
+            await _emit_status(
+                kernel,
+                self_id,
+                client_id,
+                "thinking",
+                waiting_on="rate_limit",
+                wait_s=wait,
+            )
+            await asyncio.sleep(wait)
+
+
 async def _run(self_id: str, user_text: str, kernel, client_id: str) -> dict:
-    provider = _get_provider(self_id, kernel)
+    provider = await _get_provider(self_id, kernel)
+    # Caller (`_send`) pre-checks api_key; this branch is defensive.
+    if provider is None:
+        return {"error": "nvidia_nim_backend: api_key not set"}
     messages = await _assemble(self_id, user_text, kernel, client_id)
     last_text = ""
 
-    # Loop until the model stops emitting tool_calls. Bounded only by
-    # SEND_TIMEOUT (asyncio.wait_for around the whole _run task) and
-    # the user-callable `interrupt` verb. No fixed step cap — Claude
-    # Code-style runs as long as the model keeps proposing tools.
     iteration = 0
     while True:
         iteration += 1
         if iteration > 1:
             # Re-entering the loop after tool_calls — phase transitions
-            # streaming/tool_calling back to `thinking` while the model
-            # decides its next move. UI uses this to keep the pulse
-            # animation alive between tool blocks.
+            # back to thinking while the model decides its next move.
             await _emit_status(kernel, self_id, client_id, "thinking")
         content_parts: list[str] = []
         tool_calls: list[dict] = []
         first_chunk = True
-        async for chunk in provider.chat(messages, tools=[SEND_TOOL]):
+        async for chunk in _stream_with_rate_limit_retry(
+            provider, messages, kernel, self_id, client_id
+        ):
             if isinstance(chunk, str):
                 if first_chunk:
-                    # First text chunk for this iteration — phase
-                    # transitions thinking → streaming.
                     await _emit_status(kernel, self_id, client_id, "streaming")
                     first_chunk = False
                 content_parts.append(chunk)
-                # Accumulate so the `status` verb's snapshot includes
-                # everything streamed so far, letting the UI rebuild a
-                # mid-stream view on page reload.
                 if self_id in _current:
                     _current[self_id]["text_so_far"] = (
                         _current[self_id].get("text_so_far", "") + chunk
@@ -458,8 +497,7 @@ async def _run(self_id: str, user_text: str, kernel, client_id: str) -> dict:
         if not tool_calls:
             break
 
-        # Record assistant turn carrying its tool_calls.
-        # ollama wants `arguments` as a dict (not a JSON string).
+        # OpenAI wants tool_call.function.arguments as a JSON string.
         messages.append(
             {
                 "role": "assistant",
@@ -470,17 +508,13 @@ async def _run(self_id: str, user_text: str, kernel, client_id: str) -> dict:
                         "type": "function",
                         "function": {
                             "name": c["name"],
-                            "arguments": c["arguments"],
+                            "arguments": json.dumps(c["arguments"]),
                         },
                     }
                     for c in tool_calls
                 ],
             }
         )
-        # Execute each tool_call; append role:tool reply linked by tool_call_id.
-        # Invalidate menu after every tool_call — population may have changed
-        # (create_agent / delete_agent), and even unchanged agents may have
-        # gained/lost verbs via update. Cheap to rebuild on next user turn.
         for c in tool_calls:
             args = c["arguments"]
             target = args.get("target_id", "")
@@ -492,8 +526,7 @@ async def _run(self_id: str, user_text: str, kernel, client_id: str) -> dict:
                 "verb": verb,
                 "args": args,
             }
-            # ENTRY: emit before invocation so the UI can render an
-            # in-progress tool block (header pulses, body empty).
+            # ENTRY before invocation.
             if self_id in _current:
                 _current[self_id]["last_tool"] = tool_entry
             await _emit_status(
@@ -505,11 +538,8 @@ async def _run(self_id: str, user_text: str, kernel, client_id: str) -> dict:
                 reply = {"error": str(e)}
             _invalidate_menu(self_id)
             reply_str = json.dumps(reply, default=str)
-            tool_entry_done = {
-                **tool_entry,
-                "reply_preview": reply_str[:120],
-            }
-            # EXIT: same call_id, with reply_preview now filled.
+            tool_entry_done = {**tool_entry, "reply_preview": reply_str[:120]}
+            # EXIT — same call_id, reply_preview filled.
             if self_id in _current:
                 _current[self_id]["last_tool"] = tool_entry_done
             await _emit_status(
@@ -534,8 +564,7 @@ async def _run(self_id: str, user_text: str, kernel, client_id: str) -> dict:
                 }
             )
 
-    # Status before the back-compat `done` event so subscribers can
-    # observe the final phase transition first.
+    # Status before the back-compat `done` event.
     await _emit_status(kernel, self_id, client_id, "done", reason="ok")
     await _to_caller(kernel, self_id, client_id, {"type": "done", "source": self_id})
 
@@ -550,35 +579,39 @@ async def _run(self_id: str, user_text: str, kernel, client_id: str) -> dict:
 
 
 async def _reflect(id, payload, kernel):
-    """Identity + model + endpoint + generating flag + file_agent_id binding. No args."""
+    """Identity + model + endpoint + has_api_key + generating + file_agent_id binding. No args. The api_key value itself is NEVER returned — only the boolean."""
     rec = kernel.get(id) or {}
-    from ollama_backend.provider import DEFAULT_ENDPOINT, DEFAULT_MODEL
+    from nvidia_nim_backend.provider import DEFAULT_ENDPOINT, DEFAULT_MODEL
 
     return {
         "id": id,
-        "sentence": "Ollama-backed LLM agent (native tool-calling).",
+        "sentence": "NVIDIA NIM-backed LLM agent (OpenAI-compatible, native tool-calling).",
         "model": rec.get("model", DEFAULT_MODEL),
         "endpoint": rec.get("endpoint", DEFAULT_ENDPOINT),
         "file_agent_id": rec.get("file_agent_id"),
+        "has_api_key": await _has_api_key(id, kernel),
         "verbs": {
             n: (f.__doc__ or "").strip().splitlines()[0] for n, f in VERBS.items()
         },
         "generating": id in _tasks and not _tasks[id].done(),
         "emits": {
             "queued": "{type:'queued', source, client_id, send_id} — back-compat: emitted when send arrives but a previous generation holds the lock. The new `status` event with phase='queued' carries the same signal plus structured fields.",
-            "token": "{type:'token', text:str, source, client_id} — streaming chunk. Routed ONLY to the caller: cli (stdout) when client_id='cli', else this agent's own inbox (browser filters by client_id).",
-            "say": "{type:'say', text:'[tool target -> reply…]', source, client_id} — per tool_call summary. Back-compat; the new `status` event with phase='tool_calling' carries structured target/verb/args/reply_preview.",
-            "status": "{type:'status', source, client_id, ts, phase:'queued'|'thinking'|'streaming'|'tool_calling'|'done', detail:{send_id, started_at, queue_depth, ...phase_specific}} — single channel for phase transitions. detail.tool={call_id,target,verb,args,reply_preview?} for tool_calling (entry has no reply_preview, exit re-emits same call_id with it). detail.reason='ok'|'interrupted'|'timeout'|'error' for done. detail.ahead for queued.",
+            "token": "{type:'token', text:str, source, client_id} — streaming chunk. Routed ONLY to the caller.",
+            "say": "{type:'say', text:'[tool target -> reply…]', source, client_id} — per tool_call summary, plus rate-limit notices on 429 retry. Back-compat; `status` with phase='tool_calling' or detail.waiting_on='rate_limit' carries the same signal structured.",
+            "status": "{type:'status', source, client_id, ts, phase:'queued'|'thinking'|'streaming'|'tool_calling'|'done', detail:{send_id, started_at, queue_depth, ...phase_specific}} — single channel for phase transitions. detail.tool={call_id,target,verb,args,reply_preview?} for tool_calling (entry has no reply_preview, exit re-emits same call_id with it). detail.reason='ok'|'interrupted'|'timeout'|'error' for done. detail.ahead for queued. detail.waiting_on='rate_limit' + wait_s during 429 backoff.",
             "done": "{type:'done', source, client_id} — back-compat: end of generation, interrupted, or timed out. Always preceded by status(phase='done', detail.reason).",
         },
-        "concurrency": "Per-backend FIFO lock around `send`: one generation at a time. Other callers wait (and receive a `queued` event so their UI can show it). `reflect`/`history`/`interrupt` skip the lock and stay snappy.",
+        "concurrency": "Per-backend FIFO lock around `send`; reflect/history/interrupt/set_api_key/clear_api_key skip the lock.",
     }
 
 
 async def _send(id, payload, kernel):
-    """args: text:str (req), client_id:str? (default 'cli'). Streams tokens to ONLY the caller — cli (stdout) for client_id='cli', or the browser tab whose WS is subscribed and filters by client_id otherwise. Persists per-client chat.json. Per-backend FIFO lock: concurrent callers serialize. If the lock is held when this call arrives, emits both a back-compat `queued` event AND a structured `status` event (phase='queued', detail.ahead) for the caller; first `token` (or `status` of phase != queued) for the same client_id implicitly unqueues. Returns {response, final, client_id}."""
+    """args: text:str (req), client_id:str? (default 'cli'). Same surface as ollama_backend.send. Failfast if file_agent_id unset OR api_key not set (call set_api_key first). Streams tokens to ONLY the caller. Persists per-client chat.json. Per-backend FIFO lock. Emits both a back-compat `queued` event AND a structured `status` event (phase='queued', detail.ahead) when contended; first `token`/`status(thinking)` for the same client_id implicitly unqueues."""
     if not _file_agent_id(id, kernel):
-        return {"error": "ollama_backend: file_agent_id required"}
+        return {"error": "nvidia_nim_backend: file_agent_id required"}
+    provider = await _get_provider(id, kernel)
+    if provider is None:
+        return {"error": "nvidia_nim_backend: api_key not set; call set_api_key first"}
     text = payload.get("text", "")
     client_id = _safe_client(payload.get("client_id") or DEFAULT_CLIENT_ID)
     send_id = _new_send_id()
@@ -591,10 +624,6 @@ async def _send(id, payload, kernel):
     _enqueue(id, entry)
 
     lock = _lock_for(id)
-    # Best-effort contention detection — at this point our entry is in
-    # the queue. If lock.locked(), there's at least one other entry
-    # ahead of us (the holder + any others queued). Compute `ahead` as
-    # the queue position minus 1.
     if lock.locked():
         ahead = max(0, len(_queue.get(id, [])) - 1)
         await _to_caller(
@@ -608,9 +637,6 @@ async def _send(id, payload, kernel):
         )
 
     async with lock:
-        # We've got the lock — pop ourselves from the queue and become
-        # the in-flight entry. _set_current establishes phase='thinking'
-        # and the started_at timestamp.
         _dequeue_send(id, send_id)
         _set_current(id, entry)
         await _emit_status(kernel, id, client_id, "thinking")
@@ -630,6 +656,18 @@ async def _send(id, payload, kernel):
             await _emit_status(kernel, id, client_id, "done", reason="interrupted")
             await _to_caller(kernel, id, client_id, {"type": "done", "source": id})
             return {"response": "", "interrupted": True, "client_id": client_id}
+        except httpx.HTTPStatusError as e:
+            # Rate-limit retries exhausted, or non-429 HTTP error from
+            # the provider. Surface cleanly to the caller.
+            code = e.response.status_code
+            if code == 429:
+                wait = _parse_retry_after(e.response)
+                msg = f"send: rate limited (429); retry in {wait}s"
+            else:
+                msg = f"send: provider HTTP {code}"
+            await _emit_status(kernel, id, client_id, "done", reason="error", error=msg)
+            await _to_caller(kernel, id, client_id, {"type": "done", "source": id})
+            return {"error": msg, "client_id": client_id}
         except Exception as e:
             await _emit_status(
                 kernel, id, client_id, "done", reason="error", error=str(e)
@@ -642,9 +680,9 @@ async def _send(id, payload, kernel):
 
 
 async def _history(id, payload, kernel):
-    """args: client_id:str? (default 'cli'). Returns {messages:[...], client_id} — that client's persisted chat. Failfast if file_agent_id unset."""
+    """args: client_id:str? (default 'cli'). Returns {messages:[...], client_id}. Failfast if file_agent_id unset."""
     if not _file_agent_id(id, kernel):
-        return {"error": "ollama_backend: file_agent_id required"}
+        return {"error": "nvidia_nim_backend: file_agent_id required"}
     client_id = _safe_client(payload.get("client_id") or DEFAULT_CLIENT_ID)
     return {
         "messages": await _load_history(id, kernel, client_id),
@@ -653,7 +691,7 @@ async def _history(id, payload, kernel):
 
 
 async def _interrupt(id, payload, kernel):
-    """No args. Cancels any in-flight `send` (releases the per-backend lock immediately). Returns {interrupted:bool}."""
+    """No args. Cancels any in-flight `send`. Returns {interrupted:bool}."""
     task = _tasks.get(id)
     if task and not task.done():
         task.cancel()
@@ -662,9 +700,37 @@ async def _interrupt(id, payload, kernel):
 
 
 async def _refresh_menu(id, payload, kernel):
-    """No args. Drops the cached agent menu so the next user turn rebuilds it from live reflect. Useful right after the LLM creates/deletes/updates an agent. Returns {refreshed:true}."""
+    """No args. Drops the cached agent menu so the next user turn rebuilds it from live reflect. Returns {refreshed:true}."""
     _invalidate_menu(id)
     return {"refreshed": True}
+
+
+async def _set_api_key(id, payload, kernel):
+    """args: api_key:str (req). Persists the key to `.fantastic/agents/<id>/api_key` via file_agent_id. Drops the cached provider so the next send reads fresh. Failfast if file_agent_id unset or key empty."""
+    if not _file_agent_id(id, kernel):
+        return {"error": "nvidia_nim_backend: file_agent_id required"}
+    key = payload.get("api_key", "")
+    if not isinstance(key, str) or not key.strip():
+        return {"error": "set_api_key: api_key must be a non-empty string"}
+    fid = _file_agent_id(id, kernel)
+    r = await kernel.send(
+        fid,
+        {"type": "write", "path": _key_path(id), "content": key.strip()},
+    )
+    if r and r.get("error"):
+        return {"error": f"set_api_key: file write failed: {r['error']}"}
+    _providers.pop(id, None)
+    return {"ok": True}
+
+
+async def _clear_api_key(id, payload, kernel):
+    """No args. Deletes the api_key sidecar via file_agent_id and drops the cached provider. Returns {ok:true, deleted:bool}."""
+    if not _file_agent_id(id, kernel):
+        return {"error": "nvidia_nim_backend: file_agent_id required"}
+    fid = _file_agent_id(id, kernel)
+    r = await kernel.send(fid, {"type": "delete", "path": _key_path(id)})
+    _providers.pop(id, None)
+    return {"ok": True, "deleted": bool((r or {}).get("deleted", False))}
 
 
 async def _status(id, payload, kernel):
@@ -689,6 +755,8 @@ VERBS = {
     "history": _history,
     "interrupt": _interrupt,
     "refresh_menu": _refresh_menu,
+    "set_api_key": _set_api_key,
+    "clear_api_key": _clear_api_key,
     "status": _status,
     "boot": _boot,
 }
@@ -698,5 +766,5 @@ async def handler(id: str, payload: dict, kernel) -> dict | None:
     t = payload.get("type")
     fn = VERBS.get(t)
     if fn is None:
-        return {"error": f"ollama: unknown type {t!r}"}
+        return {"error": f"nvidia_nim_backend: unknown type {t!r}"}
     return await fn(id, payload, kernel)

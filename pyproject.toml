@@ -16,7 +16,8 @@ dependencies = [
   "fantastic-terminal-backend",
   "fantastic-terminal-webapp",
   "fantastic-ollama-backend",
-  "fantastic-ollama-webapp",
+  "fantastic-nvidia-nim-backend",
+  "fantastic-ai-chat-webapp",
   "fantastic-canvas-backend",
   "fantastic-canvas-webapp",
   "fantastic-html-agent",
@@ -50,7 +51,8 @@ testpaths = [
   "bundled_agents/terminal/terminal_backend/tests",
   "bundled_agents/terminal/terminal_webapp/tests",
   "bundled_agents/ai/ollama/ollama_backend/tests",
-  "bundled_agents/ai/ollama/ollama_webapp/tests",
+  "bundled_agents/ai/nvidia/nvidia_nim_backend/tests",
+  "bundled_agents/ai/ai_chat_webapp/tests",
   "bundled_agents/canvas/canvas_backend/tests",
   "bundled_agents/canvas/canvas_webapp/tests",
   "bundled_agents/html_agent/tests",
@@ -68,7 +70,8 @@ members = [
   "bundled_agents/terminal/terminal_backend",
   "bundled_agents/terminal/terminal_webapp",
   "bundled_agents/ai/ollama/ollama_backend",
-  "bundled_agents/ai/ollama/ollama_webapp",
+  "bundled_agents/ai/nvidia/nvidia_nim_backend",
+  "bundled_agents/ai/ai_chat_webapp",
   "bundled_agents/canvas/canvas_backend",
   "bundled_agents/canvas/canvas_webapp",
   "bundled_agents/html_agent",
@@ -85,7 +88,8 @@ fantastic-file = { workspace = true }
 fantastic-terminal-backend = { workspace = true }
 fantastic-terminal-webapp = { workspace = true }
 fantastic-ollama-backend = { workspace = true }
-fantastic-ollama-webapp = { workspace = true }
+fantastic-nvidia-nim-backend = { workspace = true }
+fantastic-ai-chat-webapp = { workspace = true }
 fantastic-canvas-backend = { workspace = true }
 fantastic-canvas-webapp = { workspace = true }
 fantastic-html-agent = { workspace = true }

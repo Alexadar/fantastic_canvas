@@ -81,7 +81,7 @@ async def test_agent_index_serves_webapp_html(seeded_kernel):
         "core",
         {
             "type": "create_agent",
-            "handler_module": "ollama_webapp.tools",
+            "handler_module": "ai_chat_webapp.tools",
             "upstream_id": "x",
         },
     )

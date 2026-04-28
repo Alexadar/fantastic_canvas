@@ -532,3 +532,367 @@ async def test_concurrent_sends_serialize_per_backend(seeded_kernel, file_agent)
         assert {r["client_id"] for r in results} == {"a", "b"}
     finally:
         ot._providers.pop(oid, None)
+
+
+# ─── status pipeline ───────────────────────────────────────────
+
+
+def _capture(seeded_kernel):
+    """Spy harness: returns (sends, emits, ctx) where ctx is a context
+    manager that patches kernel.send/emit to record dicts."""
+    sends: list[tuple[str, dict]] = []
+    emits: list[tuple[str, dict]] = []
+    real_send, real_emit = seeded_kernel.send, seeded_kernel.emit
+
+    async def spy_send(target, payload):
+        sends.append((target, dict(payload)))
+        return await real_send(target, payload)
+
+    async def spy_emit(target, payload):
+        emits.append((target, dict(payload)))
+        return await real_emit(target, payload)
+
+    class _Ctx:
+        def __enter__(self):
+            self._a = patch.object(seeded_kernel, "send", spy_send)
+            self._b = patch.object(seeded_kernel, "emit", spy_emit)
+            self._a.__enter__()
+            self._b.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            self._b.__exit__(*exc)
+            self._a.__exit__(*exc)
+            return False
+
+    return sends, emits, _Ctx()
+
+
+def _statuses_for(events: list[dict], client_id: str) -> list[dict]:
+    return [
+        p
+        for p in events
+        if p.get("type") == "status" and p.get("client_id") == client_id
+    ]
+
+
+async def test_status_event_sequence_no_tool_calls(seeded_kernel, file_agent):
+    """thinking → streaming → done(reason=ok). All carry the same send_id."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    fp = _FakeProvider([["hello"]])
+    ot._providers[oid] = fp
+    sends, emits, ctx = _capture(seeded_kernel)
+    try:
+        with ctx:
+            await seeded_kernel.send(
+                oid, {"type": "send", "text": "hi", "client_id": "alice"}
+            )
+        statuses = [p for _, p in emits if p.get("type") == "status"]
+        phases = [s["phase"] for s in statuses]
+        assert phases == ["thinking", "streaming", "done"], phases
+        assert statuses[-1]["detail"]["reason"] == "ok"
+        send_ids = {s["detail"].get("send_id") for s in statuses}
+        assert len(send_ids) == 1 and None not in send_ids
+    finally:
+        ot._providers.pop(oid, None)
+
+
+async def test_status_event_sequence_with_tool_call(seeded_kernel, file_agent):
+    """thinking → streaming → tool_calling(entry) → tool_calling(exit) →
+    thinking → streaming → done. Same call_id between tool entry/exit;
+    same send_id across all phases."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    fp = _FakeProvider(
+        [
+            [
+                {
+                    "tool_call": {
+                        "id": "call_a",
+                        "name": "send",
+                        "arguments": {
+                            "target_id": "core",
+                            "payload": {"type": "list_agents"},
+                        },
+                    }
+                }
+            ],
+            ["wrapping up."],
+        ]
+    )
+    ot._providers[oid] = fp
+    sends, emits, ctx = _capture(seeded_kernel)
+    try:
+        with ctx:
+            await seeded_kernel.send(
+                oid, {"type": "send", "text": "list", "client_id": "alice"}
+            )
+        statuses = [p for _, p in emits if p.get("type") == "status"]
+        phases = [s["phase"] for s in statuses]
+        # iter 1: thinking, tool_calling entry, tool_calling exit
+        # (no streaming because the iter only produced a tool_call)
+        # iter 2: thinking (between iterations), streaming, done
+        assert phases == [
+            "thinking",
+            "tool_calling",
+            "tool_calling",
+            "thinking",
+            "streaming",
+            "done",
+        ], phases
+        tool_entries = [s for s in statuses if s["phase"] == "tool_calling"]
+        assert "reply_preview" not in tool_entries[0]["detail"]["tool"]
+        assert "reply_preview" in tool_entries[1]["detail"]["tool"]
+        assert (
+            tool_entries[0]["detail"]["tool"]["call_id"]
+            == tool_entries[1]["detail"]["tool"]["call_id"]
+            == "call_a"
+        )
+        send_ids = {s["detail"].get("send_id") for s in statuses}
+        assert len(send_ids) == 1 and None not in send_ids
+    finally:
+        ot._providers.pop(oid, None)
+
+
+async def test_queue_populated_and_drained_on_contention(seeded_kernel, file_agent):
+    """Two concurrent sends; _queue grows, _current is set; both drain."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+
+    queue_sizes: list[int] = []
+
+    class _SlowFirst:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                # While we're "thinking", measure queue depth.
+                await asyncio.sleep(0.10)
+                queue_sizes.append(len(ot._queue.get(oid, [])))
+                await asyncio.sleep(0.10)
+            yield "ok"
+
+    ot._providers[oid] = _SlowFirst()
+    try:
+        t1 = asyncio.create_task(
+            seeded_kernel.send(
+                oid, {"type": "send", "text": "first", "client_id": "alice"}
+            )
+        )
+        await asyncio.sleep(0.05)
+        t2 = asyncio.create_task(
+            seeded_kernel.send(
+                oid, {"type": "send", "text": "second", "client_id": "bob"}
+            )
+        )
+        await asyncio.gather(t1, t2)
+    finally:
+        ot._providers.pop(oid, None)
+
+    # Mid-flight: alice was the current entry (popped from queue),
+    # bob was waiting in the queue.
+    assert queue_sizes == [1], queue_sizes
+    # After both complete: queue empty, no current.
+    assert ot._queue.get(oid, []) == []
+    assert oid not in ot._current
+
+
+async def test_status_verb_shape_when_idle(seeded_kernel, file_agent):
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    r = await seeded_kernel.send(oid, {"type": "status", "client_id": "alice"})
+    assert r["generating"] is False
+    assert r["current"] is None
+    assert r["mine_pending"] == []
+    assert r["others_pending"] == 0
+    assert r["client_id"] == "alice"
+
+
+async def test_status_verb_shape_during_inflight_mine(seeded_kernel, file_agent):
+    """Mid-flight, the caller's status snapshot reflects current entry
+    with is_mine=True and full text."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    captured_status: list[dict] = []
+
+    class _SlowProvider:
+        async def chat(self, messages, tools):
+            r = await seeded_kernel.send(oid, {"type": "status", "client_id": "alice"})
+            captured_status.append(r)
+            yield "ok"
+
+    ot._providers[oid] = _SlowProvider()
+    try:
+        await seeded_kernel.send(
+            oid, {"type": "send", "text": "hello there", "client_id": "alice"}
+        )
+    finally:
+        ot._providers.pop(oid, None)
+
+    snap = captured_status[0]
+    assert snap["generating"] is True
+    assert snap["current"]["is_mine"] is True
+    assert snap["current"]["phase"] in ("thinking", "streaming")
+    assert snap["current"]["text"] == "hello there"
+    assert snap["current"]["elapsed"] >= 0.0
+
+
+async def test_status_verb_privacy_filter(seeded_kernel, file_agent):
+    """Bob's running, alice's queued. Alice's snapshot: is_mine=False,
+    no text in current. Bob's snapshot: is_mine=True with text;
+    alice's pending shows up as others_pending=1."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    snapshots: dict[str, dict] = {}
+
+    class _PrivacyProvider:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                # bob runs first; alice gets queued behind him
+                await asyncio.sleep(0.15)
+                snapshots["alice"] = await seeded_kernel.send(
+                    oid, {"type": "status", "client_id": "alice"}
+                )
+                snapshots["bob"] = await seeded_kernel.send(
+                    oid, {"type": "status", "client_id": "bob"}
+                )
+            yield "ok"
+
+    ot._providers[oid] = _PrivacyProvider()
+    try:
+        t1 = asyncio.create_task(
+            seeded_kernel.send(
+                oid, {"type": "send", "text": "bob secret", "client_id": "bob"}
+            )
+        )
+        await asyncio.sleep(0.05)
+        t2 = asyncio.create_task(
+            seeded_kernel.send(
+                oid, {"type": "send", "text": "alice secret", "client_id": "alice"}
+            )
+        )
+        await asyncio.gather(t1, t2)
+    finally:
+        ot._providers.pop(oid, None)
+
+    a = snapshots["alice"]
+    assert a["current"]["is_mine"] is False
+    assert "text" not in a["current"]
+    assert "text_so_far" not in a["current"]
+    assert len(a["mine_pending"]) == 1
+    assert a["mine_pending"][0]["text"] == "alice secret"
+    assert a["others_pending"] == 0  # bob is current, not in queue
+
+    b = snapshots["bob"]
+    assert b["current"]["is_mine"] is True
+    assert b["current"]["text"] == "bob secret"
+    assert b["mine_pending"] == []
+    assert b["others_pending"] == 1  # alice's pending
+
+
+async def test_status_verb_no_client_id_redacts_text(seeded_kernel, file_agent):
+    """Without client_id the snapshot redacts text everywhere."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    snap_holder: list[dict] = []
+
+    class _RedactProvider:
+        async def chat(self, messages, tools):
+            snap_holder.append(await seeded_kernel.send(oid, {"type": "status"}))
+            yield "ok"
+
+    ot._providers[oid] = _RedactProvider()
+    try:
+        await seeded_kernel.send(
+            oid, {"type": "send", "text": "private text", "client_id": "alice"}
+        )
+    finally:
+        ot._providers.pop(oid, None)
+
+    snap = snap_holder[0]
+    assert snap["client_id"] is None
+    assert snap["current"] is not None
+    assert "text" not in snap["current"]
+    assert "text_so_far" not in snap["current"]
+    assert snap["others_pending"] >= 0
+
+
+async def test_status_done_emits_with_reason_interrupt(seeded_kernel, file_agent):
+    """Interrupt mid-stream → final status carries reason='interrupted'."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+
+    class _SlowProvider:
+        async def chat(self, messages, tools):
+            await asyncio.sleep(2.0)
+            yield "never"
+
+    ot._providers[oid] = _SlowProvider()
+    sends, emits, ctx = _capture(seeded_kernel)
+    try:
+        with ctx:
+            send_task = asyncio.create_task(
+                seeded_kernel.send(
+                    oid, {"type": "send", "text": "stop me", "client_id": "alice"}
+                )
+            )
+            await asyncio.sleep(0.10)
+            await seeded_kernel.send(oid, {"type": "interrupt"})
+            await send_task
+        done_status = [
+            p
+            for _, p in emits
+            if p.get("type") == "status" and p.get("phase") == "done"
+        ]
+        assert len(done_status) == 1
+        assert done_status[0]["detail"]["reason"] == "interrupted"
+    finally:
+        ot._providers.pop(oid, None)
+
+
+async def test_status_done_emits_with_reason_timeout(
+    seeded_kernel, file_agent, monkeypatch
+):
+    """Patched low SEND_TIMEOUT → done with reason='timeout'."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    monkeypatch.setattr(ot, "SEND_TIMEOUT", 0.05)
+
+    class _ForeverProvider:
+        async def chat(self, messages, tools):
+            await asyncio.sleep(5.0)
+            yield "never"
+
+    ot._providers[oid] = _ForeverProvider()
+    sends, emits, ctx = _capture(seeded_kernel)
+    try:
+        with ctx:
+            r = await seeded_kernel.send(
+                oid, {"type": "send", "text": "slow", "client_id": "alice"}
+            )
+        assert "timeout" in r.get("error", "")
+        done_status = [
+            p
+            for _, p in emits
+            if p.get("type") == "status" and p.get("phase") == "done"
+        ]
+        assert len(done_status) == 1
+        assert done_status[0]["detail"]["reason"] == "timeout"
+    finally:
+        ot._providers.pop(oid, None)
+
+
+async def test_status_event_includes_send_id(seeded_kernel, file_agent):
+    """Drift guard: every status event detail carries a send_id."""
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    fp = _FakeProvider([["ok"]])
+    ot._providers[oid] = fp
+    sends, emits, ctx = _capture(seeded_kernel)
+    try:
+        with ctx:
+            await seeded_kernel.send(
+                oid, {"type": "send", "text": "hi", "client_id": "alice"}
+            )
+        statuses = [p for _, p in emits if p.get("type") == "status"]
+        for s in statuses:
+            assert "send_id" in s["detail"], s
+    finally:
+        ot._providers.pop(oid, None)

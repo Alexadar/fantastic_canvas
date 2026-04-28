@@ -76,7 +76,7 @@ keep state on disk only and run fine via `python kernel.py call`.
 | `http` | needs running webapp (uvicorn) |
 | `ws` | exercises WebSocket proxy |
 | `web` | superset of http+ws (any browser-touching server flow) |
-| `webapp` | a UI bundle (terminal_webapp / ollama_webapp / canvas_webapp) |
+| `webapp` | a UI bundle (terminal_webapp / ai_chat_webapp / canvas_webapp) |
 | `pty` | requires real PTY |
 | `ai` | needs live LLM provider |
 | `persistence` | exercises file-agent-routed I/O |
@@ -95,7 +95,8 @@ keep state on disk only and run fine via `python kernel.py call`.
 | `bundled_agents/terminal/terminal_backend/selftest.md` | kernel, pty | PTY spawn, shell done-token, timeout recovery |
 | `bundled_agents/terminal/terminal_webapp/selftest.md` | webapp, web | get_webapp + xterm UI in browser |
 | `bundled_agents/ai/ollama/ollama_backend/selftest.md` | kernel, ai, persistence | reflect-driven assembly, native tool-calls, multi-step loop |
-| `bundled_agents/ai/ollama/ollama_webapp/selftest.md` | webapp, web | get_webapp + chat UI loaded |
+| `bundled_agents/ai/nvidia/nvidia_nim_backend/selftest.md` | kernel, ai, persistence, http | NVIDIA NIM (OpenAI-compatible); api_key sidecar; rate-limit retry; live single-shot |
+| `bundled_agents/ai/ai_chat_webapp/selftest.md` | webapp, web | provider-agnostic chat UI (fronts ollama_backend, nvidia_nim_backend, etc.) |
 | `bundled_agents/canvas/canvas_backend/selftest.md` | kernel | discover (spatial intersection) |
 | `bundled_agents/canvas/canvas_webapp/selftest.md` | webapp, web, bus | UI filters via get_webapp probe; same-bundle exclusion; browser bus |
 | `bundled_agents/html_agent/selftest.md` | kernel, http, web | UI-as-record agent; render_html duck type; cross-agent calls from iframe |
@@ -107,7 +108,7 @@ keep state on disk only and run fine via `python kernel.py call`.
 |---|---|---|
 | "all tests" | (all) | every file |
 | "non-web tests" / "no browser" | EXCLUDE {http, ws, web, webapp, bus} | core, cli, scheduler, file, terminal_backend, ollama_backend, canvas_backend |
-| "in canvas, run webapp tests" | INCLUDE {web, webapp, bus} | webapp, terminal_webapp, ollama_webapp, canvas_webapp |
+| "in canvas, run webapp tests" | INCLUDE {web, webapp, bus} | webapp, terminal_webapp, ai_chat_webapp, canvas_webapp |
 | "kernel only" | INCLUDE {kernel}, EXCLUDE {pty, ai, web} | core, cli, scheduler, file, canvas_backend |
 | "I have ollama running" | + ai | adds ollama_backend AI tests |
 | "no PTY" | EXCLUDE {pty} | drops terminal_backend |

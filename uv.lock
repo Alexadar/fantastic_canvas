@@ -4,6 +4,7 @@ requires-python = ">=3.11"
 
 [manifest]
 members = [
+    "fantastic-ai-chat-webapp",
     "fantastic-canvas-backend",
     "fantastic-canvas-webapp",
     "fantastic-cli",
@@ -11,8 +12,8 @@ members = [
     "fantastic-file",
     "fantastic-html-agent",
     "fantastic-kernel",
+    "fantastic-nvidia-nim-backend",
     "fantastic-ollama-backend",
-    "fantastic-ollama-webapp",
     "fantastic-python-runtime",
     "fantastic-scheduler",
     "fantastic-terminal-backend",
@@ -195,6 +196,11 @@ wheels = [
 ]
 
 [[package]]
+name = "fantastic-ai-chat-webapp"
+version = "0.1.0"
+source = { editable = "bundled_agents/ai/ai_chat_webapp" }
+
+[[package]]
 name = "fantastic-canvas-backend"
 version = "0.1.0"
 source = { editable = "bundled_agents/canvas/canvas_backend" }
@@ -229,14 +235,15 @@ name = "fantastic-kernel"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "fantastic-ai-chat-webapp" },
     { name = "fantastic-canvas-backend" },
     { name = "fantastic-canvas-webapp" },
     { name = "fantastic-cli" },
     { name = "fantastic-core" },
     { name = "fantastic-file" },
     { name = "fantastic-html-agent" },
+    { name = "fantastic-nvidia-nim-backend" },
     { name = "fantastic-ollama-backend" },
-    { name = "fantastic-ollama-webapp" },
     { name = "fantastic-python-runtime" },
     { name = "fantastic-scheduler" },
     { name = "fantastic-terminal-backend" },
@@ -255,14 +262,15 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fantastic-ai-chat-webapp", editable = "bundled_agents/ai/ai_chat_webapp" },
     { name = "fantastic-canvas-backend", editable = "bundled_agents/canvas/canvas_backend" },
     { name = "fantastic-canvas-webapp", editable = "bundled_agents/canvas/canvas_webapp" },
     { name = "fantastic-cli", editable = "bundled_agents/cli" },
     { name = "fantastic-core", editable = "bundled_agents/core" },
     { name = "fantastic-file", editable = "bundled_agents/file" },
     { name = "fantastic-html-agent", editable = "bundled_agents/html_agent" },
+    { name = "fantastic-nvidia-nim-backend", editable = "bundled_agents/ai/nvidia/nvidia_nim_backend" },
     { name = "fantastic-ollama-backend", editable = "bundled_agents/ai/ollama/ollama_backend" },
-    { name = "fantastic-ollama-webapp", editable = "bundled_agents/ai/ollama/ollama_webapp" },
     { name = "fantastic-python-runtime", editable = "bundled_agents/python_runtime" },
     { name = "fantastic-scheduler", editable = "bundled_agents/scheduler" },
     { name = "fantastic-terminal-backend", editable = "bundled_agents/terminal/terminal_backend" },
@@ -280,6 +288,17 @@ dev = [
 ]
 
 [[package]]
+name = "fantastic-nvidia-nim-backend"
+version = "0.1.0"
+source = { editable = "bundled_agents/ai/nvidia/nvidia_nim_backend" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx" }]
+
+[[package]]
 name = "fantastic-ollama-backend"
 version = "0.1.0"
 source = { editable = "bundled_agents/ai/ollama/ollama_backend" }
@@ -289,11 +308,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "ollama" }]
-
-[[package]]
-name = "fantastic-ollama-webapp"
-version = "0.1.0"
-source = { editable = "bundled_agents/ai/ollama/ollama_webapp" }
 
 [[package]]
 name = "fantastic-python-runtime"

@@ -79,7 +79,7 @@ REPL example:
 fantastic> add webapp                                       # uvicorn boots
 fantastic> add file
 fantastic> add ollama_backend file_agent_id=<file_id>
-fantastic> add ollama_webapp upstream_id=<ollama_backend_id>
+fantastic> add ai_chat_webapp upstream_id=<ollama_backend_id>     # or any LLM backend
 fantastic> add canvas_backend
 fantastic> add canvas_webapp upstream_id=<canvas_backend_id>
 # browse http://localhost:8888/<canvas_webapp_id>/  → all webapps in one view
@@ -154,7 +154,9 @@ uv run pytest -n auto
     ├── python_runtime/                       # exec Python in subprocess
     ├── html_agent/                           # UI-as-record (html_content per instance)
     ├── terminal/{terminal_backend, terminal_webapp}
-    ├── ai/ollama/{ollama_backend, ollama_webapp}
+    ├── ai/ai_chat_webapp                     # provider-agnostic chat UI
+    ├── ai/ollama/ollama_backend              # local LLM (ollama)
+    ├── ai/nvidia/nvidia_nim_backend          # NVIDIA NIM (OpenAI-compatible)
     └── canvas/{canvas_backend, canvas_webapp}
 ```
 

@@ -105,7 +105,57 @@ call $OB '{"type":"history"}' | python -c "import json,sys; d=json.load(sys.stdi
 ```
 Expected: ≥ 4 (multiple user/assistant pairs after Tests 3 + 5).
 
-### Test 7: contended send → caller receives `queued` event
+### Test 7: status verb snapshot when idle
+
+```bash
+call $OB '{"type":"status","client_id":"alice"}' | python -m json.tool
+```
+Expected: `{generating:false, current:null, mine_pending:[], others_pending:0, source:"<OB>", client_id:"alice"}`.
+Reflect should also list `status` in `verbs` and document the `status`
+event type in `emits`:
+```bash
+call $OB '{"type":"reflect"}' | python -c "
+import json,sys
+d=json.load(sys.stdin)
+print('status verb:', 'status' in d['verbs'])
+print('status event:', 'status' in d['emits'])
+"
+```
+Expected: both `True`.
+
+### Test 8: status events fire at every phase transition
+
+```bash
+uv run --active python -c "
+import asyncio, json, websockets
+async def main():
+    async with websockets.connect('ws://localhost:$PORT/$OB/ws') as ws:
+        await ws.send(json.dumps({'type':'watch','src':'$OB'}))
+        await ws.send(json.dumps({
+            'type':'call','target':'$OB',
+            'payload':{'type':'send','text':'use the send tool to call list_agents on core, then summarize in one sentence','client_id':'alice'},
+            'id':'1',
+        }))
+        phases = []
+        async for msg in ws:
+            ev = json.loads(msg)
+            p = ev.get('payload') or {}
+            if p.get('type') == 'status' and p.get('client_id') == 'alice':
+                phases.append(p['phase'])
+                if p['phase'] == 'done': break
+        # Expect: thinking → streaming/tool_calling → … → done.
+        print('phases:', phases)
+        ok = phases[0] == 'thinking' and phases[-1] == 'done' and 'tool_calling' in phases
+        print('PASS' if ok else 'FAIL')
+asyncio.run(main())
+"
+```
+Expected: `PASS`. Phases must start with `thinking`, end with `done`,
+and include at least one `tool_calling` (entry+exit). Each
+`tool_calling` event carries `detail.tool` with `target`, `verb`,
+`args`, and (on exit) `reply_preview`.
+
+### Test 9: contended send → caller receives `queued` event + `status(queued)`
 
 ```bash
 # Background a slow send (alice). While it's holding the lock, fire
@@ -137,6 +187,7 @@ async def main():
             }))
 
             queued_seen = False
+            status_queued_seen = False
             token_after_queued = False
             async for msg in wsB:
                 ev = json.loads(msg)
@@ -145,15 +196,69 @@ async def main():
                 if p.get('client_id') != 'bob': continue
                 if p.get('type') == 'queued':
                     queued_seen = True
+                elif p.get('type') == 'status' and p.get('phase') == 'queued':
+                    status_queued_seen = True
                 elif p.get('type') == 'token' and queued_seen:
                     token_after_queued = True
                     break
-            print('PASS' if queued_seen and token_after_queued else f'FAIL queued={queued_seen} token={token_after_queued}')
+            ok = queued_seen and status_queued_seen and token_after_queued
+            print('PASS' if ok else f'FAIL queued={queued_seen} status_queued={status_queued_seen} token={token_after_queued}')
 asyncio.run(main())
 "
 ```
-Expected: `PASS`. Bob's WS sees the `queued` event before any token,
-then tokens arrive once alice releases the lock.
+Expected: `PASS`. Bob's WS sees BOTH the back-compat `queued` event
+AND a `status` event with `phase='queued'` before any token, then
+tokens arrive once alice releases the lock.
+
+### Test 10: status verb privacy filter (mid-flight)
+
+```bash
+# Drive a long-running send as alice in the background.
+( call $OB '{"type":"send","text":"count slowly to 20","client_id":"alice"}' >/dev/null ) &
+sleep 1.0
+
+# Snapshot from BOB's perspective: alice is current, bob has nothing.
+# Bob must not see alice's text in `current`.
+call $OB '{"type":"status","client_id":"bob"}' | python -c "
+import json,sys
+d=json.load(sys.stdin)
+cur=d['current']
+ok = (cur is not None
+      and cur.get('is_mine') is False
+      and 'text' not in cur
+      and 'text_so_far' not in cur)
+print('PASS' if ok else f'FAIL {cur!r}')
+"
+wait
+```
+Expected: `PASS`. Privacy filter strips `text`/`text_so_far` for any
+client that is not the current entry's owner.
+
+### Test 11: interrupt → status(done, reason=interrupted)
+
+```bash
+( call $OB '{"type":"send","text":"count slowly to 200","client_id":"alice"}' >/dev/null ) &
+sleep 0.8
+
+uv run --active python -c "
+import asyncio, json, websockets
+async def main():
+    async with websockets.connect('ws://localhost:$PORT/$OB/ws') as ws:
+        await ws.send(json.dumps({'type':'watch','src':'$OB'}))
+        # Trigger interrupt
+        await ws.send(json.dumps({'type':'call','target':'$OB','payload':{'type':'interrupt'},'id':'X'}))
+        async for msg in ws:
+            ev = json.loads(msg)
+            p = ev.get('payload') or {}
+            if p.get('type') == 'status' and p.get('phase') == 'done':
+                ok = p.get('detail', {}).get('reason') == 'interrupted'
+                print('PASS' if ok else f'FAIL detail={p.get(\"detail\")}')
+                return
+asyncio.run(main())
+"
+wait
+```
+Expected: `PASS`. The terminal `status` carries `detail.reason='interrupted'`.
 
 ## Summary
 
@@ -165,8 +270,12 @@ then tokens arrive once alice releases the lock.
 | 4 | tool-call round-trip | |
 | 5 | history persists across calls | |
 | 6 | history verb returns messages | |
-| 7 | contended send emits queued event | |
+| 7 | status verb idle snapshot + reflect lists status | |
+| 8 | status events fire at every phase transition | |
+| 9 | contended send emits queued + status(queued) | |
+| 10 | status verb privacy filter (cross-client) | |
+| 11 | interrupt → status(done, reason='interrupted') | |
 
 Also report:
 - provider + model used.
-- whether tool-calling Test 4 was skipped (model dependent).
+- whether tool-calling Test 4 / Test 8 was skipped (model dependent).

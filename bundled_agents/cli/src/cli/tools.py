@@ -1,11 +1,12 @@
 """cli singleton — terminal renderer.
 
-Receives `token`, `done`, `say`, `error` payloads. Prints to stdout.
+Receives `token`, `done`, `say`, `error`, `status` payloads. Prints to stdout.
 Unknown verbs are silently dropped (cli is a render sink).
 """
 
 from __future__ import annotations
 
+import json
 import sys
 
 
@@ -20,7 +21,7 @@ async def _reflect(id, payload, kernel):
         "verbs": {
             n: (f.__doc__ or "").strip().splitlines()[0] for n, f in VERBS.items()
         },
-        "accepts": ["token", "done", "say", "error"],
+        "accepts": ["token", "done", "say", "error", "status"],
     }
 
 
@@ -52,6 +53,41 @@ async def _error(id, payload, kernel):
     return None
 
 
+async def _status(id, payload, kernel):
+    """args: phase:str, source:str?, detail:dict?. Renders one-line phase markers for queued / thinking / tool_calling (entry+exit). `streaming` and `done` produce no output (token + done handlers cover them). Returns None."""
+    phase = payload.get("phase", "")
+    src = payload.get("source", "")
+    detail = payload.get("detail") or {}
+    prefix = f"  [{src}]" if src else " "
+    if phase == "queued":
+        ahead = detail.get("ahead", 0)
+        print(f"{prefix} queued ({ahead} ahead)")
+    elif phase == "thinking":
+        if detail.get("waiting_on") == "rate_limit":
+            print(f"{prefix} rate-limited; waiting {detail.get('wait_s', '?')}s")
+        else:
+            print(f"{prefix} thinking…")
+    elif phase == "tool_calling":
+        tool = detail.get("tool") or {}
+        verb = tool.get("verb", "")
+        target = tool.get("target", "")
+        if "reply_preview" in tool:
+            # exit
+            preview = tool.get("reply_preview", "")
+            if len(preview) > 80:
+                preview = preview[:80] + "…"
+            print(f"{prefix} ← {verb}({target})  {preview}")
+        else:
+            # entry — args summary on the line
+            args = tool.get("args") or {}
+            args_str = json.dumps(args, default=str)
+            if len(args_str) > 80:
+                args_str = args_str[:80] + "…"
+            print(f"{prefix} → {verb}({target})  {args_str}")
+    # `streaming` and `done` are silent — handled by other verbs.
+    return None
+
+
 # ─── dispatch ───────────────────────────────────────────────────
 
 
@@ -61,6 +97,7 @@ VERBS = {
     "done": _done,
     "say": _say,
     "error": _error,
+    "status": _status,
 }
 
 

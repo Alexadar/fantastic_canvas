@@ -1,7 +1,11 @@
-"""ollama_webapp — chat UI agent fronting an ollama_backend.
+"""ai_chat_webapp — provider-agnostic chat UI fronting any LLM backend.
 
-Holds an `upstream_id` pointing at the LLM backend. Real work in
-`webapp/index.html` (read fresh on every GET).
+Holds an `upstream_id` pointing at a backend that answers `send`,
+`history`, `interrupt` (and emits `token`/`done`/`queued`/`status`).
+ollama_backend, nvidia_nim_backend, and any future LLM backend that
+matches that surface all work without changes here.
+
+Real work in `webapp/index.html` (read fresh on every GET).
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from importlib import resources
 
 def _bundled_html() -> str:
     """Read the bundle's index.html from package resources, NOT cached."""
-    return (resources.files("ollama_webapp") / "webapp" / "index.html").read_text(
+    return (resources.files("ai_chat_webapp") / "webapp" / "index.html").read_text(
         "utf-8"
     )
 
@@ -67,5 +71,5 @@ async def handler(id: str, payload: dict, kernel) -> dict | None:
     t = payload.get("type")
     fn = VERBS.get(t)
     if fn is None:
-        return {"error": f"ollama_webapp: unknown type {t!r}"}
+        return {"error": f"ai_chat_webapp: unknown type {t!r}"}
     return await fn(id, payload, kernel)

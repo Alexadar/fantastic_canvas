@@ -56,7 +56,7 @@ def test_find_bundle_module_resolves_via_entry_points():
     # 'core' is registered by the workspace's core bundle entry point.
     assert _find_bundle_module("core") == "core.tools"
     assert _find_bundle_module("terminal_backend") == "terminal_backend.tools"
-    assert _find_bundle_module("ollama_webapp") == "ollama_webapp.tools"
+    assert _find_bundle_module("ai_chat_webapp") == "ai_chat_webapp.tools"
 
 
 def test_find_bundle_module_returns_none_for_missing():
