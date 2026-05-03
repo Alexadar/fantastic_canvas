@@ -56,6 +56,24 @@ async def test_render_html_has_stop_button_and_interrupt_wiring(seeded_kernel):
     assert "queued" in html, "must mark message as queued when lock contended"
 
 
+async def test_render_html_has_esc_to_interrupt(seeded_kernel):
+    """ESC key halts the in-flight generation regardless of focus.
+    Same semantic as clicking the stop button — calls the upstream's
+    `interrupt` verb. Drift guard so a refactor can't silently drop it."""
+    aid = await _make(seeded_kernel)
+    r = await seeded_kernel.send(aid, {"type": "render_html"})
+    html = r["html"]
+    # A keydown listener must check for the Escape key.
+    assert "'Escape'" in html, "must bind ESC key to interrupt"
+    # Window-level binding (not just the input) so ESC works regardless
+    # of focus.
+    assert "window.addEventListener" in html or "document.addEventListener" in html, (
+        "ESC must be bound at window/document level, not just on input"
+    )
+    # Status footer hint should mention esc so users know the binding exists.
+    assert "esc" in html.lower(), "status footer hint must mention esc"
+
+
 async def test_render_html_has_status_pipeline_and_fifo(seeded_kernel):
     """Drift guard: the served HTML must carry the status-stream
     pipeline (status verb on boot, status event subscription, phase

@@ -319,16 +319,16 @@
       }
       const hint = detail.waiting_on === 'rate_limit'
         ? `rate-limited; waiting ${detail.wait_s}s`
-        : 'press stop to interrupt';
+        : 'press stop or esc to interrupt';
       setPhase('thinking', hint);
     } else if (phase === 'streaming') {
       if (!inflight || inflight.send_id !== sendId) {
         promoteQueuedToInflight(sendId, '');
       }
-      setPhase('streaming', 'press stop to interrupt');
+      setPhase('streaming', 'press stop or esc to interrupt');
     } else if (phase === 'tool_calling') {
       handleToolCall(detail.tool || {});
-      setPhase('tool_calling', 'press stop to interrupt');
+      setPhase('tool_calling', 'press stop or esc to interrupt');
     } else if (phase === 'done') {
       setPhase('idle', detail.reason && detail.reason !== 'ok' ? detail.reason : '');
       // Actual inflight clear happens in `done` handler below.
@@ -377,7 +377,7 @@
           fillToolReply(handle, cur.last_tool.reply_preview);
         }
       }
-      setPhase(cur.phase || 'thinking', 'press stop to interrupt');
+      setPhase(cur.phase || 'thinking', 'press stop or esc to interrupt');
     }
     for (const entry of snap.mine_pending || []) {
       const bubble = addMsg('user', entry.text || '', queuedEl);
@@ -431,6 +431,14 @@
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();
+    }
+  });
+  // Global ESC: halt the in-flight generation regardless of focus.
+  // Same semantic as clicking stop. Queued items keep draining.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && inflight) {
+      e.preventDefault();
+      interrupt();
     }
   });
 })();

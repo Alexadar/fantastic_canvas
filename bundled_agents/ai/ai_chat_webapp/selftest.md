@@ -97,6 +97,10 @@ PASS/FAIL signal — note which step regresses if any do.
    "stop" (red). Click it → in-flight cancels mid-stream;
    `done(reason='interrupted')` lands; queued bubbles REMAIN and
    start draining once the lock releases.
+5b. **ESC key**: while a turn streams, press `Esc` (regardless of
+   whether the input has focus). Same effect as clicking stop —
+   `interrupt` verb fires, `done(reason='interrupted')` lands,
+   queued bubbles persist. Confirms the global keydown binding.
 6. **Reload mid-flight**: with a long generation in progress, refresh
    the tab. The boot snapshot rebuilds: in-flight user bubble +
    assistant bubble pre-filled with `text_so_far`, last tool block
@@ -134,6 +138,7 @@ Regression signals:
 | 4.3 (manual) | tool blocks render inline | |
 | 4.4 (manual) | Enter-while-busy stacks queued FIFO | |
 | 4.5 (manual) | stop button interrupts; queue persists | |
+| 4.5b (manual) | ESC key interrupts (any focus); queue persists | |
 | 4.6 (manual) | reload mid-flight rebuilds in-flight + tool blocks | |
 | 4.7 (manual) | reload with queued bubbles rebuilds queue band | |
 | 4.8 (manual) | cross-client privacy (text scoped to own client_id) | |
