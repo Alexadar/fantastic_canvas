@@ -87,17 +87,22 @@ async def _list_members(id, payload, kernel):
 
 
 async def _add_agent(id, payload, kernel):
-    """args: agent_id:str (req). Append to this canvas's members. Refused if target doesn't currently answer get_webapp (no dead/non-UI ids). Idempotent — re-adding returns {ok, already:true} without re-emit. Emits members_updated on first add."""
+    """args: agent_id:str (req). Append to this canvas's members. Refused if target answers neither get_webapp NOR get_gl_view (a canvas needs SOMETHING to render — a DOM iframe, a GL view, or both). Idempotent — re-adding returns {ok, already:true} without re-emit. Emits members_updated on first add."""
     target = payload.get("agent_id")
     if not target or not isinstance(target, str):
         return {"error": "add_agent: agent_id (str) required"}
     if not kernel.get(target):
         return {"error": f"add_agent: no agent {target!r}"}
-    # Sanity: target must answer get_webapp (else nothing to render).
-    probe = await kernel.send(target, {"type": "get_webapp"})
-    if not isinstance(probe, dict) or not probe.get("url") or probe.get("error"):
+    # Probe both presentation verbs. The canvas hosts two layers (DOM
+    # iframe + GL view) and an agent answering EITHER is addable; one
+    # answering both gets BOTH presentations.
+    wa = await kernel.send(target, {"type": "get_webapp"})
+    has_dom = isinstance(wa, dict) and wa.get("url") and not wa.get("error")
+    gl = await kernel.send(target, {"type": "get_gl_view"})
+    has_gl = isinstance(gl, dict) and gl.get("source") and not gl.get("error")
+    if not (has_dom or has_gl):
         return {
-            "error": f"add_agent: {target!r} does not answer get_webapp; not addable to a canvas"
+            "error": f"add_agent: {target!r} answers neither get_webapp nor get_gl_view; nothing to render"
         }
     rec = kernel.get(id) or {}
     members = _members_of(rec)

@@ -10,61 +10,153 @@
   /* Wheel-zoom + drag-pan applied to .canvas-world; agent frames are children of it. */
   .canvas-world { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
   #canvas.panning { cursor: grabbing; }
-  /* During pan, iframes don't capture pointer events — drag continues
-     across cells without losing input. Clears on mouseup (class drops). */
-  #canvas.panning .agent-frame iframe { pointer-events: none; }
+  /* During pan / frame-drag / frame-resize, iframes don't capture
+     pointer events — drag/pan continues across cells even when the
+     cursor passes over another iframe's content (otherwise the iframe
+     swallows window mousemove and the gesture stalls). Class drops on
+     mouseup. */
+  #canvas.panning .agent-frame iframe,
+  body.dragging-frame .agent-frame iframe { pointer-events: none; }
+
+  /* ─── Liquid Glass frame chrome ──────────────────────────────────
+     The canvas (host) styles its own iframe wrappers. Per-agent
+     iframe content is sandboxed and untouched. Three layered
+     effects: translucent dark fill + backdrop-filter blur+saturate
+     for the frosted base, an inset top highlight + hairline rim for
+     the bevel, and a ::before pseudo for the radial specular sheen.
+     Hover/drag escalate the rim toward neon cyan. */
   .agent-frame {
     position: absolute;
-    border: 1px solid #333;
-    border-radius: 6px;
-    background: #0e0e16;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    border-radius: 14px;
     overflow: hidden;
     display: flex;
     flex-direction: column;
     z-index: 2;
+    background: rgba(20, 22, 36, 0.62);
+    backdrop-filter: blur(28px) saturate(180%) brightness(112%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%) brightness(112%);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.10),
+      0 0 0 1px rgba(255,255,255,0.14),
+      0 24px 48px -12px rgba(0,0,0,0.70),
+      0 8px 16px -4px rgba(0,0,0,0.50);
+    transition: box-shadow .25s ease, transform .25s ease;
   }
-  .agent-frame.dragging, .agent-frame.resizing { border-color: #5cf; }
+  .agent-frame::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background:
+      radial-gradient(1200px 240px at 50% -160px, rgba(255,255,255,0.18), transparent 60%),
+      linear-gradient(180deg, rgba(255,255,255,0.07), transparent 28%);
+    z-index: 1;
+  }
+  .agent-frame:hover {
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.16),
+      0 0 0 1px rgba(180,220,255,0.32),
+      0 28px 56px -12px rgba(0,0,0,0.72),
+      0 0 32px rgba(120,200,255,0.16);
+  }
+  .agent-frame.dragging, .agent-frame.resizing {
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.22),
+      0 0 0 1px rgba(120,220,255,0.55),
+      0 32px 64px -12px rgba(0,0,0,0.85),
+      0 0 60px rgba(80,200,255,0.36);
+  }
+
   .frame-head {
-    height: 24px;
-    background: #181826;
-    color: #aac;
-    font-size: 11px;
-    font-family: monospace;
-    padding: 0 8px;
+    position: relative;
+    z-index: 2;
+    height: 28px;
+    flex: 0 0 28px;
+    padding: 0 12px;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    color: rgba(220,230,245,0.92);
+    font: 600 11px ui-monospace, SFMono-Regular, monospace;
     cursor: move;
     user-select: none;
-    flex: 0 0 24px;
   }
   .frame-head .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .frame-head .actions { display: flex; gap: 4px; align-items: center; flex: 0 0 auto; }
-  .frame-head .reload { color: #aac; cursor: pointer; padding: 0 4px; user-select: none; font-size: 13px; }
-  .frame-head .reload:hover { color: #fff; }
-  .frame-head .lock { color: #aac; cursor: pointer; padding: 0 4px; user-select: none; font-size: 12px; }
-  .frame-head .lock:hover { color: #fff; }
-  .frame-head .lock.locked { color: #ffd166; }
-  .frame-head .close { color: #f88; cursor: pointer; padding: 0 4px; }
-  .frame-body { flex: 1; position: relative; }
+  .frame-head .actions { display: flex; gap: 6px; align-items: center; flex: 0 0 auto; }
+  .frame-head .reload,
+  .frame-head .lock,
+  .frame-head .close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px; height: 18px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.06);
+    color: rgba(220,230,245,0.85);
+    font-size: 11px;
+    cursor: pointer;
+    user-select: none;
+    transition: background .15s, color .15s, transform .15s;
+  }
+  .frame-head .reload:hover { background: rgba(120,200,255,0.30); color: #fff; transform: scale(1.08); }
+  .frame-head .lock:hover   { background: rgba(255,209,102,0.30); color: #fff; transform: scale(1.08); }
+  .frame-head .lock.locked  { background: rgba(255,209,102,0.32); color: #ffd166; }
+  .frame-head .close:hover  { background: rgba(255,120,120,0.42); color: #fff; transform: scale(1.08); }
+
+  .frame-body {
+    position: relative;
+    z-index: 2;
+    flex: 1;
+    /* Transparent so the .agent-frame glass surface (translucent fill
+       + backdrop-filter) shows through into the body region. Per-agent
+       iframes opt into this by setting body { background: transparent }
+       (terminal_webapp, ai_chat_webapp do this); agents that paint an
+       opaque body keep their own look. */
+    background: transparent;
+  }
   .frame-body iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
   .resize-handle {
     position: absolute;
-    bottom: 0; right: 0;
+    bottom: 4px; right: 4px;
     width: 14px; height: 14px;
     cursor: nwse-resize;
-    background: linear-gradient(135deg, transparent 50%, #555 50%);
+    background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,0.22) 50%);
+    border-radius: 0 0 10px 0;
+    z-index: 3;
   }
+
   #toolbar {
-    position: fixed; top: 8px; left: 8px;
-    background: #181826; padding: 6px 10px; border-radius: 6px;
-    font-size: 12px; z-index: 100; color: #aac;
+    position: fixed; top: 12px; left: 12px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgba(20, 22, 36, 0.55);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.10),
+      0 0 0 1px rgba(255,255,255,0.10),
+      0 12px 32px -8px rgba(0,0,0,0.55);
+    color: rgba(220,230,245,0.85);
+    font: 500 12px ui-monospace, SFMono-Regular, monospace;
+    z-index: 100;
   }
-  #toolbar code { color: #cde; background: #222; padding: 1px 4px; border-radius: 3px; }
+  #toolbar code { color: #cde; background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 4px; }
 </style>
 </head>
 <body>
+<!-- Optional liquid refraction filter for the .agent-frame::before
+     specular layer. Subtle (scale=6) so it reads as wet glass, not a
+     glitch. Browsers without SVG filter support fall back to plain
+     glass — no JS detection needed. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <filter id="liquid-distort">
+    <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="2" seed="3"/>
+    <feDisplacementMap in="SourceGraphic" scale="6"/>
+  </filter>
+</svg>
 <canvas id="bg"></canvas>
 <div id="canvas"></div>
 <div id="toolbar"><span id="status">…</span></div>
@@ -85,8 +177,14 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
     return;
   }
 
-  // ─── particle background ──────────────────────────────────────
-  const PARTICLE_COUNT = 12000;
+  // ─── WebGL host scaffolding ───────────────────────────────────
+  // The canvas is a generic compositor with two layer surfaces:
+  //   - DOM (#canvas-world) — iframes for agents answering get_webapp
+  //   - GL  (THREE.Scene)   — geometry/sprites for agents answering
+  //                           get_gl_view (e.g. telemetry_pane,
+  //                           future particle/bg/animation agents)
+  // An agent answering BOTH gets both presentations simultaneously
+  // (dual-layer presence is a first-class case).
   const bgCanvas = document.getElementById('bg');
   const renderer = new THREE.WebGLRenderer({ canvas: bgCanvas, antialias: false, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -95,57 +193,53 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
-  // Position pulled back and slightly above floor so FANTASTIC reads
-  // centered with the Tron-grid receding to the horizon below it.
-  // Pose driven by `view` (zoom/pan) via applyCamera() — see below.
+  // Camera framing chosen so a hash/grid of agent sprites around
+  // the origin reads centered with comfortable margins. Pose driven
+  // by `view` (zoom/pan) via applyCamera() — see below.
   const BASE_Z = 140, BASE_Y = 14, LOOK_Y = -2;
   camera.position.set(0, BASE_Y, BASE_Z);
   camera.lookAt(0, LOOK_Y, 0);
 
-  const positions = new Float32Array(PARTICLE_COUNT * 3);
-  const colors = new Float32Array(PARTICLE_COUNT * 3);
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  const mat = new THREE.PointsMaterial({
-    size: 1.6,
-    sizeAttenuation: true,
-    vertexColors: true,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const points = new THREE.Points(geom, mat);
-  scene.add(points);
+  // GL view registry: agent_id -> { cleanup: fn[] }. Each GL agent's
+  // `get_gl_view` source body runs inside its own function scope with
+  // `(THREE, scene, t, onFrame, cleanup)` injected. The host calls
+  // every cleanup closure on remove_agent.
+  const glViews = new Map();
+  const glFrameCbs = new Map();   // agent_id -> Set<fn> (per-frame ticks)
 
-  // Reused per-particle scratch objects (zero allocation in hot loop).
-  const target = new THREE.Vector3();
-  const particleColor = new THREE.Color();
-
-  // bganim.md helpers — stubs, no UI per project policy.
-  const noop = () => {};
-  const noopControl = (_id, _label, _min, _max, init) => init;
-
-  let renderFn = null;
-  async function loadAndCompile() {
-    const r = await t.call(me, { type: 'get_bganim' });
-    if (!r || !r.source) {
-      console.warn('[bganim] empty source from get_bganim:', r);
+  function installGlView(agent_id, view) {
+    if (glViews.has(agent_id)) return;
+    if (!view || typeof view.source !== 'string' || !view.source) {
+      console.warn('[gl] empty view from', agent_id);
       return;
     }
+    const cleanup = [];
+    const cbs = new Set();
+    const onFrame = (cb) => { cbs.add(cb); };
+    glFrameCbs.set(agent_id, cbs);
     try {
-      renderFn = new Function(
-        'i', 'count', 'target', 'color', 'time', 'THREE',
-        'addControl', 'setInfo', 'annotate',
-        r.source,
+      const fn = new Function(
+        'THREE', 'scene', 't', 'onFrame', 'cleanup',
+        view.source,
       );
-      console.log('[bganim] compiled', r.origin, 'source —', r.source.length, 'chars');
+      fn(THREE, scene, t, onFrame, cleanup);
+      glViews.set(agent_id, { cleanup });
+      console.log('[gl] installed', agent_id, '—', view.source.length, 'chars');
     } catch (e) {
-      console.error('[bganim] compile failed:', e);
-      // keep previous renderFn
+      console.error('[gl] install failed for', agent_id, ':', e);
+      glFrameCbs.delete(agent_id);
     }
   }
-  await loadAndCompile();
+
+  function removeGlView(agent_id) {
+    const entry = glViews.get(agent_id);
+    if (!entry) return;
+    for (const fn of entry.cleanup) {
+      try { fn(); } catch (e) { console.error('[gl] cleanup raised:', e); }
+    }
+    glViews.delete(agent_id);
+    glFrameCbs.delete(agent_id);
+  }
 
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -156,43 +250,17 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
   const startMs = performance.now();
   function frame() {
     const time = (performance.now() - startMs) / 1000;
-    if (renderFn) {
-      const posArr = geom.attributes.position.array;
-      const colArr = geom.attributes.color.array;
-      for (let i = 0; i < PARTICLE_COUNT; i++) {
-        try {
-          renderFn(i, PARTICLE_COUNT, target, particleColor, time, THREE,
-                   noopControl, noop, noop);
-        } catch (e) {
-          // One bad particle shouldn't kill the loop. Log once per frame max.
-          if (i === 0) console.error('[bganim] runtime error:', e);
-          target.set(0, 0, 0);
-          particleColor.setRGB(0, 0, 0);
-        }
-        const o = i * 3;
-        posArr[o]     = target.x;
-        posArr[o + 1] = target.y;
-        posArr[o + 2] = target.z;
-        colArr[o]     = particleColor.r;
-        colArr[o + 1] = particleColor.g;
-        colArr[o + 2] = particleColor.b;
+    // Per-frame ticks for any GL agents that registered an onFrame
+    // callback (e.g. animations, time-driven motion).
+    for (const cbs of glFrameCbs.values()) {
+      for (const cb of cbs) {
+        try { cb(time); } catch (e) { console.error('[gl] onFrame raised:', e); }
       }
-      geom.attributes.position.needsUpdate = true;
-      geom.attributes.color.needsUpdate = true;
     }
-    // Camera pose is driven by view (zoom/pan) via applyCamera() —
-    // changes get reflected the moment the user pans/zooms, not on a
-    // per-frame timer. Bganims that want motion drive it via `time`.
     renderer.render(scene, camera);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-
-  // Live refresh: when set_bganim writes a new source, the verb emits
-  // {type:"bganim_updated"} on this agent's inbox. We watch ourselves
-  // and recompile.
-  await t.watch(me);
-  t.on('bganim_updated', loadAndCompile);
 
   // ─── iframe layer (frames for sibling webapps) ────────────────
   const canvas = document.getElementById('canvas');
@@ -212,21 +280,31 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
     world.style.transform = `translate(${view.ox}px, ${view.oy}px) scale(${view.z})`;
     applyCamera();
   }
-  // Three.js camera follows `view` so the particle bg stays in lock-step
-  // with the iframe layer. Pan: shift camera position by view ox/oy
-  // mapped through pixels-to-world at the camera's distance. Zoom: use
-  // the camera's `.zoom` (a 2D projection multiplier — no perspective
-  // distortion from approaching the world).
+  // Three.js camera follows `view` so the GL bg stays in lock-step
+  // with the iframe layer. The DOM uses `transform: translate(ox, oy)
+  // scale(z)` with origin (0,0), so screen center (W/2, H/2) shows
+  // canvas-world point ((W/2-ox)/z, (H/2-oy)/z). The camera must look
+  // at the SAME canvas-world point — at zoom != 1 the cursor-anchored
+  // wheel zoom shifts where the screen center lands in canvas-world,
+  // and the camera has to track that shift, not just the pan.
   function applyCamera() {
     const fovRad = camera.fov * Math.PI / 180;
     const worldH = 2 * BASE_Z * Math.tan(fovRad / 2);     // visible world height at z=BASE_Z
-    const wpp = worldH / window.innerHeight;              // world units per CSS pixel
-    const px = -view.ox * wpp;
-    const py =  view.oy * wpp;
-    camera.position.set(px, BASE_Y + py, BASE_Z);
+    const wpp = worldH / window.innerHeight;              // world units per CSS pixel at zoom=1
+    const W = window.innerWidth, H = window.innerHeight;
+    // Canvas-world point under screen center, post-pan, post-scale.
+    const cwX = (W / 2 - view.ox) / view.z;
+    const cwY = (H / 2 - view.oy) / view.z;
+    // Map canvas-world (W/2, H/2) at zoom=1, no-pan to 3js (0, LOOK_Y).
+    // CSS Y goes down; 3js Y goes up — flip on Y.
+    const lookX = (cwX - W / 2) * wpp;
+    const lookY = -(cwY - H / 2) * wpp + LOOK_Y;
+    // Camera sits BASE_Z back on Z and (BASE_Y - LOOK_Y) above the
+    // lookAt on Y so the slight downward tilt stays constant.
+    camera.position.set(lookX, lookY + (BASE_Y - LOOK_Y), BASE_Z);
     camera.zoom = view.z;
     camera.updateProjectionMatrix();
-    camera.lookAt(px, LOOK_Y + py, 0);                    // keep look direction parallel to baseline
+    camera.lookAt(lookX, lookY, 0);
   }
   applyView();
 
@@ -307,7 +385,7 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
       <div class="frame-head">
         <span class="id">${wa.title || rec.id} · <code style="opacity:0.6;font-size:10px">${rec.id}</code></span>
         <span class="actions">
-          <span class="lock ${locked ? 'locked' : ''}" title="${locked ? 'unlock (allow delete)' : 'lock (refuse delete)'}">${locked ? '🔒' : '⊕'}</span>
+          <span class="lock ${locked ? 'locked' : ''}" title="${locked ? 'unlock (allow delete)' : 'lock (refuse delete)'}">${locked ? '🔒' : '🔓'}</span>
           <span class="reload" title="reload">⟳</span>
           <span class="close" title="delete">×</span>
         </span>
@@ -341,7 +419,7 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
       // icon now; agent_updated event triggers a refresh that confirms.
       const lockEl = el.querySelector('.lock');
       lockEl.classList.toggle('locked', !cur);
-      lockEl.textContent = !cur ? '🔒' : '⊕';
+      lockEl.textContent = !cur ? '🔒' : '🔓';
       lockEl.title = !cur ? 'unlock (allow delete)' : 'lock (refuse delete)';
       await t.call('core', {
         type: 'update_agent',
@@ -353,8 +431,17 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
       // Lookup latest rec at click time — upstream_id may have been
       // reassigned via update_agent since this frame was created.
       const live = frames.get(rec.id);
-      const upstream = (live && live.rec && live.rec.upstream_id) || rec.upstream_id;
-      // Webapp first: removes the iframe via agent_deleted → refresh → removeFrame
+      // The framed agent's backend (e.g. terminal_backend behind a
+      // terminal_webapp). NOT the canvas's own upstream — that's the
+      // outer-scope `upstream` (canvas_backend) used just below.
+      const agentBackend = (live && live.rec && live.rec.upstream_id) || rec.upstream_id;
+      // Drop from canvas membership FIRST so canvas_backend.members
+      // doesn't accumulate ghost ids of deleted agents. The refresh()
+      // self-heal also covers paths that bypass this (CLI delete,
+      // programmatic delete), but doing it explicitly here keeps the
+      // common case clean without waiting for the next refresh tick.
+      await t.call(upstream, { type: 'remove_agent', agent_id: rec.id });
+      // Webapp next: removes the iframe via agent_deleted → refresh → removeFrame
       // (so the iframe doesn't try to talk to a dead backend).
       const r = await t.call('core', { type: 'delete_agent', id: rec.id });
       // If delete_lock blocked the webapp, abort the cascade — don't
@@ -364,10 +451,10 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
         console.warn('[canvas] delete refused — delete_lock on', rec.id);
         return;
       }
-      if (upstream) {
-        const r2 = await t.call('core', { type: 'delete_agent', id: upstream });
+      if (agentBackend) {
+        const r2 = await t.call('core', { type: 'delete_agent', id: agentBackend });
         if (r2 && r2.locked) {
-          console.warn('[canvas] backend delete refused — delete_lock on', upstream);
+          console.warn('[canvas] backend delete refused — delete_lock on', agentBackend);
         }
       }
     });
@@ -389,6 +476,7 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
   function startDrag(e, aid, el) {
     e.preventDefault();
     el.classList.add('dragging');
+    document.body.classList.add('dragging-frame');
     const sx = e.clientX, sy = e.clientY;
     const ox = parseFloat(el.style.left), oy = parseFloat(el.style.top);
     function move(ev) {
@@ -399,6 +487,7 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
     }
     function up() {
       el.classList.remove('dragging');
+      document.body.classList.remove('dragging-frame');
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       persistRect(aid, parseFloat(el.style.left), parseFloat(el.style.top));
@@ -410,6 +499,7 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
   function startResize(e, aid, el) {
     e.preventDefault(); e.stopPropagation();
     el.classList.add('resizing');
+    document.body.classList.add('dragging-frame');
     const sx = e.clientX, sy = e.clientY;
     const ow = parseFloat(el.style.width), oh = parseFloat(el.style.height);
     function move(ev) {
@@ -418,6 +508,7 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
     }
     function up() {
       el.classList.remove('resizing');
+      document.body.classList.remove('dragging-frame');
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       persistRect(aid, undefined, undefined, parseFloat(el.style.width), parseFloat(el.style.height));
@@ -428,14 +519,16 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
 
   async function refresh() {
     // Explicit membership: ask upstream canvas_backend for the list of
-    // agent ids it hosts. We render ONLY those (still gated by
-    // get_webapp as a sanity check). Two canvases can host disjoint
-    // sets cleanly — no auto-include.
+    // agent ids it hosts. Two presentation layers — DOM iframe (for
+    // agents answering get_webapp) and GL view (get_gl_view). Both
+    // probes run independently per agent; an agent answering BOTH gets
+    // BOTH presentations (dual-layer is a first-class case).
     const lr = await t.call(upstream, { type: 'list_members' });
     const memberIds = new Set((lr && lr.members) || []);
     if (memberIds.size === 0) {
       for (const aid of [...frames.keys()]) removeFrame(aid);
-      status.innerHTML = `canvas <code>${me}</code> → <code>${upstream}</code> · 0 webapps`;
+      for (const aid of [...glViews.keys()]) removeGlView(aid);
+      status.innerHTML = `canvas <code>${me}</code> → <code>${upstream}</code> · 0 members`;
       return;
     }
     // Hoisted single list_agents → records-by-id lookup for the loop.
@@ -445,45 +538,66 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
       // Defensive: skip self/upstream if a misconfigured caller adds them.
       if (mid === me || mid === upstream) return null;
       const rec = recordsById.get(mid);
-      if (!rec) return null;     // stale member id (agent deleted) — hide silently
-      try {
-        const wa = await t.call(mid, { type: 'get_webapp' });
-        if (wa && wa.url && !wa.error) return { rec, wa };
-      } catch (e) {}
-      return null;
-    }));
-    const webapps = probes.filter(Boolean);
-
-    const seen = new Set();
-    let idx = 0;
-    for (const { rec, wa } of webapps) {
-      seen.add(rec.id);
-      if (!frames.has(rec.id)) {
-        const el = makeFrame(rec, wa, idx);
-        frames.set(rec.id, { el, rec, wa });
-      } else {
-        const f = frames.get(rec.id);
-        if (typeof rec.x === 'number') { f.el.style.left = rec.x + 'px'; f.el.style.top = rec.y + 'px'; }
-        if (rec.width)  { f.el.style.width  = rec.width  + 'px'; }
-        if (rec.height) { f.el.style.height = rec.height + 'px'; }
-        // Sync the lock-toggle icon with the latest record state so
-        // remote updates (e.g. an LLM setting delete_lock) reflect in UI.
-        const lockEl = f.el.querySelector('.lock');
-        if (lockEl) {
-          const locked = !!rec.delete_lock;
-          lockEl.classList.toggle('locked', locked);
-          lockEl.textContent = locked ? '🔒' : '⊕';
-          lockEl.title = locked ? 'unlock (allow delete)' : 'lock (refuse delete)';
-        }
-        f.rec = rec;
-        f.wa = wa;
+      if (!rec) {
+        // Stale member id — agent was deleted (CLI delete, scheduler,
+        // anything that bypasses the close button). Self-heal: prune
+        // from canvas_backend.members so the next caller sees a clean
+        // list. members_updated will fire and trigger another refresh,
+        // but the second refresh finds the id gone → no-op.
+        t.call(upstream, { type: 'remove_agent', agent_id: mid });
+        return null;
       }
-      idx++;
+      const [wa, gl] = await Promise.all([
+        t.call(mid, { type: 'get_webapp' }).catch(() => null),
+        t.call(mid, { type: 'get_gl_view' }).catch(() => null),
+      ]);
+      const hasWa = wa && wa.url && !wa.error;
+      const hasGl = gl && gl.source && !gl.error;
+      if (!hasWa && !hasGl) return null;
+      return { rec, wa: hasWa ? wa : null, gl: hasGl ? gl : null };
+    }));
+    const members = probes.filter(Boolean);
+
+    const seenDom = new Set();
+    const seenGl = new Set();
+    let idx = 0;
+    for (const { rec, wa, gl } of members) {
+      // DOM iframe presentation
+      if (wa) {
+        seenDom.add(rec.id);
+        if (!frames.has(rec.id)) {
+          const el = makeFrame(rec, wa, idx);
+          frames.set(rec.id, { el, rec, wa });
+        } else {
+          const f = frames.get(rec.id);
+          if (typeof rec.x === 'number') { f.el.style.left = rec.x + 'px'; f.el.style.top = rec.y + 'px'; }
+          if (rec.width)  { f.el.style.width  = rec.width  + 'px'; }
+          if (rec.height) { f.el.style.height = rec.height + 'px'; }
+          const lockEl = f.el.querySelector('.lock');
+          if (lockEl) {
+            const locked = !!rec.delete_lock;
+            lockEl.classList.toggle('locked', locked);
+            lockEl.textContent = locked ? '🔒' : '🔓';
+            lockEl.title = locked ? 'unlock (allow delete)' : 'lock (refuse delete)';
+          }
+          f.rec = rec;
+          f.wa = wa;
+        }
+        idx++;
+      }
+      // GL view presentation (independent of DOM — both can apply)
+      if (gl) {
+        seenGl.add(rec.id);
+        if (!glViews.has(rec.id)) installGlView(rec.id, gl);
+      }
     }
     for (const aid of [...frames.keys()]) {
-      if (!seen.has(aid)) removeFrame(aid);
+      if (!seenDom.has(aid)) removeFrame(aid);
     }
-    status.innerHTML = `canvas <code>${me}</code> → <code>${upstream}</code> · ${frames.size} webapp${frames.size===1?'':'s'}`;
+    for (const aid of [...glViews.keys()]) {
+      if (!seenGl.has(aid)) removeGlView(aid);
+    }
+    status.innerHTML = `canvas <code>${me}</code> → <code>${upstream}</code> · ${frames.size} dom · ${glViews.size} gl`;
   }
 
   // core: agent record changes (geometry, delete) keep frames in sync.
@@ -497,6 +611,12 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
   // upstream canvas_backend: membership changes refresh us live.
   await t.watch(upstream);
   t.on('members_updated', () => refresh());
+
+  // Note: the kernel state stream subscription that USED to live
+  // here moved into the `telemetry_pane` bundle's glview.js. To get
+  // the live agent-vis on this canvas, create a telemetry_pane agent
+  // and `add_agent` it to the canvas — its `get_gl_view` source will
+  // be installed by the GL host above.
 
   // Double-click on empty canvas → create a terminal pair at click coords
   // AND add the new webapp to THIS canvas's membership so it appears here.
@@ -531,8 +651,12 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
     if (ar && ar.error) console.error('[canvas] add_agent failed:', ar.error);
   });
 
+  // One refresh on mount to render the current membership; from then
+  // on, the canvas is purely event-driven via the `t.watch` + `t.on`
+  // wiring above (core: agent_updated/agent_deleted; upstream:
+  // members_updated). No polling — if a fanout is dropped the user
+  // can refresh the tab.
   await refresh();
-  setInterval(refresh, 5000);
 })();
 </script>
 </body>

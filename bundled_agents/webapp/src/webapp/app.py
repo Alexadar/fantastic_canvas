@@ -24,6 +24,8 @@ from fastapi.responses import (
     Response,
 )
 
+from kernel import _current_sender
+
 from . import _proxy
 from ._transport_js import TRANSPORT_JS
 
@@ -146,7 +148,14 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
     async def agent_call(agent_id: str, request: Request):
         body = await request.body()
         payload = json.loads(body) if body else {}
-        reply = await kernel.send(agent_id, payload)
+        # Tag the dispatch with this webapp's id so telemetry rays
+        # originate visually from the webapp sprite. Without this an
+        # external HTTP caller has no agent context and rays drop.
+        token = _current_sender.set(web_agent_id)
+        try:
+            reply = await kernel.send(agent_id, payload)
+        finally:
+            _current_sender.reset(token)
         return Response(
             json.dumps(reply, default=str, ensure_ascii=False),
             media_type="application/json",
@@ -155,6 +164,6 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
     @app.websocket("/{agent_id}/ws")
     async def agent_ws(ws: WebSocket, agent_id: str):
         await ws.accept()
-        await _proxy.run(ws, kernel, agent_id)
+        await _proxy.run(ws, kernel, agent_id, web_agent_id)
 
     return app

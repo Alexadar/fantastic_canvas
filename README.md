@@ -22,14 +22,16 @@ Plugin-discovered agents, one primitive (`send`), hermetic protocol.
 - **python_runtime** — subprocess Python exec. `exec(code, timeout, cwd)`
   spawns `python -c <code>`, captures stdout/stderr, returns exit code.
   Stateless per call; per-agent `interrupt`/`stop`.
-- **canvas** — `canvas_backend` + `canvas_webapp` pair. The webapp lists
-  every agent that responds to `{type:"get_webapp"}`, iframes them at the
-  coordinates stored on each agent's record. Same-bundle siblings excluded
-  to prevent recursion. Ships a particle background animation; each
-  canvas_webapp's bg is a per-particle JS body (API at
-  `bundled_agents/canvas/canvas_webapp/src/canvas_webapp/webapp/bganim.md`)
-  swappable live via `{type:"set_bganim", source:"…"}`. THREE.js loads from
-  esm.sh at runtime.
+- **canvas** — `canvas_backend` + `canvas_webapp` pair. The webapp is
+  a two-layer host: a DOM layer (iframes for agents answering
+  `{type:"get_webapp"}`) and a WebGL layer (Three.js content for
+  agents answering `{type:"get_gl_view"}`). An agent answering BOTH
+  gets BOTH presentations. Membership is explicit (`add_agent`).
+  THREE.js loads from esm.sh at runtime.
+- **telemetry_pane** — a GL agent. Subscribes to the kernel state
+  stream and renders each agent as a Three.js sprite with name +
+  backlog dots + send/emit blip. Plug it into any canvas via
+  `add_agent` to get a live system pulse view.
 - **webapps** — UI bundles (`*_webapp`) that hold an `upstream_id`
   pointing at a backend they front. Pure browser code; no compute.
   Duck-typed via `get_webapp` — any agent that returns `{url, ...}` is
@@ -157,7 +159,7 @@ uv run pytest -n auto
     ├── ai/ai_chat_webapp                     # provider-agnostic chat UI
     ├── ai/ollama/ollama_backend              # local LLM (ollama)
     ├── ai/nvidia/nvidia_nim_backend          # NVIDIA NIM (OpenAI-compatible)
-    └── canvas/{canvas_backend, canvas_webapp}
+    └── canvas/{canvas_backend, canvas_webapp, telemetry_pane}
 ```
 
 ## Universal verb

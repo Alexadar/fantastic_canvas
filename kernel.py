@@ -7,15 +7,57 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
 import importlib
 import json
 import os
 import secrets
 import shlex
 import sys
+import time
 from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
+
+# Contextvar set during a handler's dispatch so that nested
+# `kernel.send`/`kernel.emit` calls — which happen FROM INSIDE the
+# handler — know who's calling them. Surfaces in state events as
+# `sender`, letting telemetry views draw "X just sent to Y" rays.
+# None when send/emit is called from outside any handler (e.g. via
+# the WS proxy or `kernel.py call`).
+_current_sender: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_sender", default=None
+)
+
+_SUMMARY_MAX_LEN = 160
+
+
+def _summarize_payload(payload: Any, max_len: int = _SUMMARY_MAX_LEN) -> str:
+    """Compact one-line view of a payload for telemetry overlays.
+
+    Bytes values become `<bytes:N>` so JSON serialization doesn't
+    explode on binary protocol payloads (audio/image frames). The
+    result is JSON-stringified and trimmed to `max_len` chars with an
+    ellipsis. Never raises; falls back to repr.
+    """
+
+    def _shrink(o: Any) -> Any:
+        if isinstance(o, bytes):
+            return f"<bytes:{len(o)}>"
+        if isinstance(o, dict):
+            return {k: _shrink(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_shrink(v) for v in o]
+        return o
+
+    try:
+        s = json.dumps(_shrink(payload), default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        s = repr(payload)
+    if len(s) > max_len:
+        s = s[: max_len - 1] + "…"
+    return s
+
 
 FANTASTIC_DIR = Path(".fantastic")
 AGENTS_DIR = FANTASTIC_DIR / "agents"
@@ -193,6 +235,18 @@ class Kernel:
         self._agents: dict[str, dict] = {}
         self._inboxes: dict[str, asyncio.Queue] = {}
         self._watchers: dict[str, set[str]] = {}
+        # Direct-callback telemetry tap. Subscribers see one event per
+        # `_fanout` (kind='send'|'emit'), one per handler completion
+        # (kind='drain'), and one per agent-lifecycle mutation
+        # (kind='added'|'removed'|'updated'). Never routed through
+        # send/emit/inboxes — no recursion path.
+        self._state_subscribers: list[Callable[[dict], None]] = []
+        # Per-agent count of concurrent handler invocations. Bumped on
+        # `kernel.send` entry, dropped on handler return. This is the
+        # "backlog" surfaced in state events — a real queue depth, not
+        # a lifetime counter. emit() and watch-mirroring don't bump
+        # (no handler is dispatched for those paths).
+        self._in_flight: dict[str, int] = {}
         AGENTS_DIR.mkdir(parents=True, exist_ok=True)
         readme = FANTASTIC_DIR / "readme.md"
         if not readme.exists():
@@ -227,6 +281,9 @@ class Kernel:
     def get(self, id: str) -> dict | None:
         return self._agents.get(id)
 
+    def _notify_lifecycle(self, kind: str, id: str, name: str) -> None:
+        self._notify_state({"agent_id": id, "kind": kind, "name": name})
+
     def ensure(self, id: str, handler_module: str, **meta: Any) -> dict:
         existing = self._agents.get(id)
         if existing:
@@ -234,6 +291,7 @@ class Kernel:
         rec = {"id": id, "handler_module": handler_module, **meta}
         self._agents[id] = rec
         self._persist(rec)
+        self._notify_lifecycle("added", id, rec.get("display_name") or id)
         return rec
 
     def create(self, handler_module: str, id: str | None = None, **meta: Any) -> dict:
@@ -245,6 +303,7 @@ class Kernel:
         rec = {"id": id, "handler_module": handler_module, **meta}
         self._agents[id] = rec
         self._persist(rec)
+        self._notify_lifecycle("added", id, rec.get("display_name") or id)
         return rec
 
     def update(self, id: str, **meta: Any) -> dict | None:
@@ -253,6 +312,7 @@ class Kernel:
             return None
         rec.update(meta)
         self._persist(rec)
+        self._notify_lifecycle("updated", id, rec.get("display_name") or id)
         return rec
 
     def delete(self, id: str) -> bool:
@@ -261,6 +321,9 @@ class Kernel:
             return False
         if rec.get("singleton"):
             return False
+        # Capture name BEFORE the dict mutation so callbacks reading
+        # kernel.get(id) inside their handler see None.
+        name = rec.get("display_name") or id
         del self._agents[id]
         d = self._agent_dir(id)
         if d.exists():
@@ -272,6 +335,7 @@ class Kernel:
         self._watchers.pop(id, None)
         for tgts in self._watchers.values():
             tgts.discard(id)
+        self._notify_lifecycle("removed", id, name)
         return True
 
     def list(self) -> list[dict]:
@@ -299,10 +363,54 @@ class Kernel:
             except asyncio.QueueFull:
                 pass
 
-    def _fanout(self, id: str, payload: dict) -> None:
-        self._put_drop_oldest(self._ensure_inbox(id), payload)
+    def _bump_in_flight(self, id: str, delta: int) -> int:
+        n = self._in_flight.get(id, 0) + delta
+        if n > 0:
+            self._in_flight[id] = n
+        else:
+            self._in_flight.pop(id, None)
+        return n
+
+    def _fanout(self, id: str, payload: dict, kind: str) -> None:
+        # `sender` is whoever's currently dispatching us — set when an
+        # agent's handler calls kernel.send/emit (see contextvar set
+        # in send() below). None for external entry points.
+        sender = _current_sender.get()
+        # Compact one-line view of the payload for telemetry overlays
+        # (the messages pane in the agent-vis trims this further to
+        # fit). Bytes become `<bytes:N>` so binary protocol payloads
+        # don't break JSON serialization on the WS leg.
+        summary = _summarize_payload(payload)
+        q = self._ensure_inbox(id)
+        self._put_drop_oldest(q, payload)
+        self._notify_state(
+            {
+                "agent_id": id,
+                "kind": kind,
+                "backlog": self._in_flight.get(id, 0),
+                "sender": sender,
+                "summary": summary,
+            }
+        )
         for tgt in self._watchers.get(id, ()):
-            self._put_drop_oldest(self._ensure_inbox(tgt), payload)
+            tq = self._ensure_inbox(tgt)
+            self._put_drop_oldest(tq, payload)
+            # Skip telemetry for non-agent watchers: the webapp proxy
+            # registers a `_ws_*` pseudo-client per WS connection
+            # (one per browser tab + one per iframe), and every traffic
+            # event would otherwise mint phantom sprites in the agent
+            # vis. Real agent watchers (rare) DO get their mirrored
+            # fanout reported as their own traffic.
+            if tgt in self._agents:
+                self._notify_state(
+                    {
+                        "agent_id": tgt,
+                        "kind": kind,
+                        "backlog": self._in_flight.get(tgt, 0),
+                        "sender": sender,
+                        "summary": summary,
+                    }
+                )
 
     async def send(self, id: str, payload: dict) -> dict | None:
         if id == "kernel":
@@ -310,14 +418,29 @@ class Kernel:
         rec = self.get(id)
         if not rec:
             return {"error": f"no agent {id!r}"}
-        self._fanout(id, payload)
+        # Bump BEFORE fanout so the 'send' event reports the post-bump
+        # count — a fresh handler is now "in flight" for this agent.
+        self._bump_in_flight(id, +1)
+        self._fanout(id, payload, "send")
         try:
             mod = importlib.import_module(rec["handler_module"])
         except Exception as e:
             return {"error": f"import {rec['handler_module']!r}: {e}"}
         if not hasattr(mod, "handler"):
             return {"error": f"{rec['handler_module']} has no handler()"}
-        return await mod.handler(id, payload, self)
+        # Set this id as the current sender so any nested send/emit
+        # inside the handler reports back accurate "from→to" pairs in
+        # the state stream. The contextvar is task-local, so concurrent
+        # handlers don't trample each other's sender.
+        token = _current_sender.set(id)
+        try:
+            return await mod.handler(id, payload, self)
+        finally:
+            _current_sender.reset(token)
+            n = self._bump_in_flight(id, -1)
+            # 'drain' fires after handler returns (success OR raise).
+            # UI uses it to drop dots without re-blipping.
+            self._notify_state({"agent_id": id, "kind": "drain", "backlog": n})
 
     def _reflect_substrate(self) -> dict:
         well_known = {
@@ -380,7 +503,7 @@ class Kernel:
         }
 
     async def emit(self, id: str, payload: dict) -> None:
-        self._fanout(id, payload)
+        self._fanout(id, payload, "emit")
 
     def watch(self, src: str, tgt: str) -> None:
         self._watchers.setdefault(src, set()).add(tgt)
@@ -388,6 +511,68 @@ class Kernel:
     def unwatch(self, src: str, tgt: str) -> None:
         if src in self._watchers:
             self._watchers[src].discard(tgt)
+
+    # ─── state stream (telemetry tap, non-recursive) ────────────
+
+    def _notify_state(self, event: dict) -> None:
+        """Synchronously dispatch an event to every state subscriber.
+
+        Event dict carries `agent_id`, `kind`, `ts`, plus kind-specific
+        fields (`backlog` for traffic, `name` for lifecycle). The tap
+        is direct-callback — never routes through send/emit/inboxes.
+        Subscribers can call kernel.send/emit/create/delete from
+        inside their callback; that produces normal traffic events
+        (bounded; never feedback-loops).
+        """
+        if not self._state_subscribers:
+            return
+        event = {**event, "ts": time.time()}
+        # Snapshot the list so a subscriber that unsubscribes itself
+        # mid-iteration doesn't shift indexes under us.
+        for cb in tuple(self._state_subscribers):
+            try:
+                cb(event)
+            except Exception as e:
+                print(
+                    f"  [kernel] state subscriber raised: {e}",
+                    file=sys.stderr,
+                )
+
+    def add_state_subscriber(
+        self, callback: Callable[[dict], None]
+    ) -> Callable[[], None]:
+        """Register a synchronous tap. Returns an unsubscribe closure.
+
+        The callback receives one dict per event. Don't `kernel.send`
+        from inside it unless you mean to (each call produces another
+        traffic event — bounded but visible).
+        """
+        self._state_subscribers.append(callback)
+
+        def unsubscribe() -> None:
+            try:
+                self._state_subscribers.remove(callback)
+            except ValueError:
+                pass
+
+        return unsubscribe
+
+    def state_snapshot(self) -> list[dict]:
+        """Synchronous read of every loaded agent's identity + in-flight
+        handler count.
+
+        Used by new subscribers to bootstrap before the first event
+        arrives. No queue puts, no fanout — does NOT itself produce
+        state events.
+        """
+        return [
+            {
+                "agent_id": a["id"],
+                "name": a.get("display_name") or a["id"],
+                "backlog": self._in_flight.get(a["id"], 0),
+            }
+            for a in self._agents.values()
+        ]
 
     async def recv(self, id: str) -> AsyncIterator[dict]:
         q = self._ensure_inbox(id)

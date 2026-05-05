@@ -539,10 +539,18 @@ async def _run(self_id: str, user_text: str, kernel, client_id: str) -> dict:
     await _emit_status(kernel, self_id, client_id, "done", reason="ok")
     await _to_caller(kernel, self_id, client_id, {"type": "done", "source": self_id})
 
-    history = await _load_history(self_id, kernel, client_id)
-    history.append({"role": "user", "content": user_text})
-    history.append({"role": "assistant", "content": last_text})
-    await _save_history(self_id, kernel, client_id, history)
+    # Final assistant turn (the no-tool_calls completion that broke
+    # the loop) — append so the persisted history is complete.
+    messages.append({"role": "assistant", "content": last_text})
+    # Persist EVERYTHING except the rebuilt-each-turn system prompt
+    # at index 0. Keeping tool_calls + role:tool replies in the
+    # sidecar means:
+    #   1. Faulty tool calls (malformed function names, wrong args,
+    #      Gemma chat-template-token leaks like `<|"|verb<|"|`) are
+    #      auditable on disk after the fact.
+    #   2. The model gets full conversation memory on the next turn,
+    #      not a lossy summary.
+    await _save_history(self_id, kernel, client_id, messages[1:])
     return {"response": last_text, "final": last_text, "client_id": client_id}
 
 

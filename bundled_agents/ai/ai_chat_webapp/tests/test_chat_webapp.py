@@ -74,6 +74,22 @@ async def test_render_html_has_esc_to_interrupt(seeded_kernel):
     assert "esc" in html.lower(), "status footer hint must mention esc"
 
 
+async def test_render_html_clears_stale_state_on_disconnect(seeded_kernel):
+    """When the WS dies (server restart, sleep/wake), the UI must drop
+    its in-flight + queued bubbles and surface a 'disconnected' hint —
+    not stay stuck pretending to stream forever."""
+    aid = await _make(seeded_kernel)
+    r = await seeded_kernel.send(aid, {"type": "render_html"})
+    html = r["html"]
+    # Hook onto transport.js's lifecycle.
+    assert "onLifecycle" in html, "must subscribe to transport lifecycle"
+    assert "'disconnected'" in html, "must handle the 'disconnected' transition"
+    # On disconnect, drop inflight + queue.
+    assert "queuedBubbles.clear" in html, (
+        "queue must be cleared on disconnect (no stale ⌛ bubbles)"
+    )
+
+
 async def test_render_html_has_status_pipeline_and_fifo(seeded_kernel):
     """Drift guard: the served HTML must carry the status-stream
     pipeline (status verb on boot, status event subscription, phase

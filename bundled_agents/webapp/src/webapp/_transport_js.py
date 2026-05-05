@@ -110,55 +110,127 @@ TRANSPORT_JS = r"""
     var agentId = parseAgentId();
     var wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') +
                 location.host + '/' + agentId + '/ws';
-    var ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer';
-    var ready = new Promise(function (res) { ws.onopen = function () { res(); }; });
 
+    // Auto-reconnect with exponential backoff. The previous connect-once
+    // design left tabs stuck on stale state across server restarts: the
+    // WS died silently, `t.call` would either hang or throw inside a
+    // Promise executor (uncaught), and the UI never noticed. New design:
+    //   - ws.onclose schedules a reconnect (1s → 2s → 4s … cap 16s)
+    //   - on reopen, replay standing watches + state_subscribe so
+    //     observers resume seamlessly
+    //   - pending calls reject with Error('disconnected') so callers
+    //     can show an error / reset busy state instead of waiting
+    //     forever
+    //   - lifecycle handlers ('connected'|'disconnected') let the UI
+    //     react to the transition (e.g. clear a stuck inflight bubble)
+    var ws = null;
+    var connected = false;
     var pending = {};
     var listeners = {};
     var anyListeners = [];
+    var stateHandlers = [];     // subscribers to the kernel state stream
+    var watching = {};          // src -> true; replayed on reconnect
     var nextId = 1;
+    var lifecycleHandlers = []; // ('connected'|'disconnected') callbacks
 
-    ws.onmessage = function (ev) {
-      var msg = decodeFrame(ev.data);
-      if (msg.type === 'reply') {
-        var p = pending[msg.id];
-        if (p) {
-          delete pending[msg.id];
-          if (msg.error) p.reject(new Error(msg.error));
-          else p.resolve(msg.data);
-        }
-      } else if (msg.type === 'event') {
-        var t = msg.payload && msg.payload.type;
-        if (t && listeners[t]) listeners[t].forEach(function (h) { try { h(msg.payload); } catch (e) {} });
-        anyListeners.forEach(function (h) { try { h(t, msg.payload); } catch (e) {} });
+    var reconnectDelay = 1000;
+    var MAX_RECONNECT_DELAY = 16000;
+    var readyResolve = null;
+    var ready = new Promise(function (res) { readyResolve = res; });
+
+    function fireLifecycle(state) {
+      lifecycleHandlers.forEach(function (h) { try { h(state); } catch (e) {} });
+    }
+
+    function rejectAllPending() {
+      var snapshot = pending;
+      pending = {};
+      for (var id in snapshot) {
+        try { snapshot[id].reject(new Error('disconnected')); } catch (e) {}
       }
-    };
+    }
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = function () {
+        connected = true;
+        reconnectDelay = 1000;
+        // Replay any standing subscriptions so the new connection
+        // delivers the same event flow as the dead one.
+        for (var src in watching) sendFrame({ type: 'watch', src: src });
+        if (stateHandlers.length > 0) sendFrame({ type: 'state_subscribe' });
+        if (readyResolve) {
+          var r = readyResolve; readyResolve = null; r();
+        }
+        fireLifecycle('connected');
+      };
+      ws.onmessage = function (ev) {
+        var msg = decodeFrame(ev.data);
+        if (msg.type === 'reply') {
+          var p = pending[msg.id];
+          if (p) {
+            delete pending[msg.id];
+            if (msg.error) p.reject(new Error(msg.error));
+            else p.resolve(msg.data);
+          }
+        } else if (msg.type === 'event') {
+          var t = msg.payload && msg.payload.type;
+          if (t && listeners[t]) listeners[t].forEach(function (h) { try { h(msg.payload); } catch (e) {} });
+          anyListeners.forEach(function (h) { try { h(t, msg.payload); } catch (e) {} });
+        } else if (msg.type === 'state_snapshot' || msg.type === 'state_event') {
+          // Telemetry stream from kernel — direct top-level frame, NOT
+          // wrapped in {type:'event', payload}. Dispatch to every
+          // subscribeState() handler.
+          stateHandlers.forEach(function (h) { try { h(msg); } catch (e) {} });
+        }
+      };
+      ws.onerror = function () { /* close will follow */ };
+      ws.onclose = function () {
+        connected = false;
+        rejectAllPending();
+        fireLifecycle('disconnected');
+        setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
+      };
+    }
 
     function sendFrame(envelope) {
-      var f = encodeFrame(envelope);
-      ws.send(f.data);
+      if (!connected) return false;
+      try {
+        var f = encodeFrame(envelope);
+        ws.send(f.data);
+        return true;
+      } catch (e) {
+        return false;
+      }
     }
 
     function call(target, payload) {
-      return ready.then(function () {
+      if (!connected) return Promise.reject(new Error('disconnected'));
+      return new Promise(function (resolve, reject) {
         var id = String(nextId++);
-        return new Promise(function (resolve, reject) {
-          pending[id] = { resolve: resolve, reject: reject };
-          sendFrame({ type: 'call', target: target, payload: payload, id: id });
-        });
+        pending[id] = { resolve: resolve, reject: reject };
+        if (!sendFrame({ type: 'call', target: target, payload: payload, id: id })) {
+          delete pending[id];
+          reject(new Error('disconnected'));
+        }
       });
     }
     function emit(target, payload) {
-      ready.then(function () {
-        sendFrame({ type: 'emit', target: target, payload: payload });
-      });
+      // Fire-and-forget; drop on disconnect (no buffering of
+      // arbitrary emits — replay would re-deliver stale events).
+      sendFrame({ type: 'emit', target: target, payload: payload });
     }
     function watch(src) {
-      return ready.then(function () { sendFrame({ type: 'watch', src: src }); });
+      // Track + send. The set is replayed on reconnect so callers
+      // don't need to re-subscribe.
+      watching[src] = true;
+      sendFrame({ type: 'watch', src: src });
     }
     function unwatch(src) {
-      return ready.then(function () { sendFrame({ type: 'unwatch', src: src }); });
+      delete watching[src];
+      sendFrame({ type: 'unwatch', src: src });
     }
     function on(event_type, handler) {
       (listeners[event_type] = listeners[event_type] || []).push(handler);
@@ -173,6 +245,35 @@ TRANSPORT_JS = r"""
         if (i >= 0) anyListeners.splice(i, 1);
       };
     }
+    // Kernel state stream subscription. Receives `state_snapshot`
+    // (once per (re)connect) then `state_event` per traffic + lifecycle
+    // event. Refcounts: first call sends `state_subscribe` to the
+    // server; last unsubscribe sends `state_unsubscribe`. The
+    // subscribe frame is replayed on every reconnect so the new
+    // connection produces a fresh snapshot — observers resync
+    // without explicit reconnect handling.
+    function subscribeState(handler) {
+      stateHandlers.push(handler);
+      if (stateHandlers.length === 1) sendFrame({ type: 'state_subscribe' });
+      return function off() {
+        var i = stateHandlers.indexOf(handler);
+        if (i >= 0) stateHandlers.splice(i, 1);
+        if (stateHandlers.length === 0) sendFrame({ type: 'state_unsubscribe' });
+      };
+    }
+    // Lifecycle hook: fires 'connected' / 'disconnected' as the WS
+    // transitions. Use to clear stale UI state when the server
+    // restarts (e.g. an in-flight chat bubble that has no real
+    // generation behind it any more).
+    function onLifecycle(handler) {
+      lifecycleHandlers.push(handler);
+      return function off() {
+        var i = lifecycleHandlers.indexOf(handler);
+        if (i >= 0) lifecycleHandlers.splice(i, 1);
+      };
+    }
+
+    connect();
 
     var dispatcher = new Proxy({}, {
       get: function (_t, target) {
@@ -237,6 +338,8 @@ TRANSPORT_JS = r"""
       unwatch: unwatch,
       on: on,
       onAny: onAny,
+      subscribeState: subscribeState,
+      onLifecycle: onLifecycle,
       dispatcher: dispatcher,
       bus: bus,
     };

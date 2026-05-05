@@ -56,7 +56,7 @@ async def _create_agent(id, payload, kernel):
 
 
 async def _delete_agent(id, payload, kernel):
-    """args: id:str (req). Returns {deleted:bool, id}. Refuses singletons AND agents with delete_lock=true (clear it via update_agent first). Auto-emits agent_deleted."""
+    """args: id:str (req). Returns {deleted:bool, id}. Refuses singletons AND agents with delete_lock=true (clear it via update_agent first). Auto-sends `shutdown` to the agent for process-memory teardown (PTY, uvicorn, etc.) symmetric to create_agent's `boot`; ignores unknown-verb errors so bundles can opt in. Auto-emits agent_deleted."""
     target = payload.get("id")
     if not target:
         return {"error": "delete_agent: id required"}
@@ -71,6 +71,17 @@ async def _delete_agent(id, payload, kernel):
             "locked": True,
             "id": target,
         }
+    if rec:
+        # Symmetric to create_agent's `boot`: give the agent one chance
+        # to tear down process-memory state (PTY children, uvicorn
+        # servers, in-flight tasks) before its record disappears.
+        # Best-effort: bundles that don't implement `shutdown` return
+        # an unknown-verb error which we ignore. Real exceptions would
+        # log via the kernel's normal handler-error path.
+        try:
+            await kernel.send(target, {"type": "shutdown"})
+        except Exception:
+            pass
     ok = kernel.delete(target)
     if ok:
         await kernel.emit("core", {"type": "agent_deleted", "id": target})

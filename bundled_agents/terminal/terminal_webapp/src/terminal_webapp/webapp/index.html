@@ -4,7 +4,10 @@
 <meta charset="utf-8">
 <title>terminal</title>
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; background: #0a0a14; color: #ddd; font-family: monospace; overflow: hidden; }
+  /* Transparent body so the canvas host's Liquid Glass frame chrome
+     shows through behind the terminal. xterm itself already renders
+     on transparent (allowTransparency + viewport bg below). */
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; color: #ddd; font-family: monospace; overflow: hidden; }
   /* Asymmetric right padding (14px vs 8px left) gives the cell grid a few
      pixels of slack to absorb sub-pixel cell-width drift from font hinting.
      Without it, the rightmost cell paints into fractional pixels on every

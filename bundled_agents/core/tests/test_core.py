@@ -69,6 +69,49 @@ async def test_delete_agent_emits_event(seeded_kernel):
     assert any(e["type"] == "agent_deleted" for e in events)
 
 
+async def test_delete_agent_sends_shutdown_to_target(seeded_kernel):
+    """delete_agent must dispatch `shutdown` to the agent BEFORE
+    removing its record, symmetric to create_agent's `boot`. This is
+    how bundles tear down process-memory state (PTY children, uvicorn,
+    etc.) — without it, orphan subprocesses outlive their record and
+    keep emitting traffic to a dead inbox.
+
+    We verify by watching the agent's inbox: the shutdown payload
+    lands there before kernel.delete drops the inbox.
+    """
+    rec = await seeded_kernel.send(
+        "core",
+        {"type": "create_agent", "handler_module": "file.tools"},
+    )
+    aid = rec["id"]
+    seen: list[dict] = []
+    seeded_kernel._ensure_inbox("w")
+    seeded_kernel.watch(aid, "w")
+    await seeded_kernel.send("core", {"type": "delete_agent", "id": aid})
+    q = seeded_kernel._ensure_inbox("w")
+    while not q.empty():
+        seen.append(q.get_nowait())
+    types = [e.get("type") for e in seen]
+    assert "shutdown" in types, (
+        f"expected shutdown to be sent before delete; got {types}"
+    )
+
+
+async def test_delete_agent_ignores_unknown_shutdown_verb(seeded_kernel):
+    """Bundles that don't implement `shutdown` return an unknown-verb
+    error from their handler. delete_agent must not abort on that —
+    it's an opt-in lifecycle hook, not a contract."""
+    # file.tools doesn't implement `shutdown`. Delete should still
+    # succeed end-to-end without raising.
+    rec = await seeded_kernel.send(
+        "core",
+        {"type": "create_agent", "handler_module": "file.tools"},
+    )
+    r = await seeded_kernel.send("core", {"type": "delete_agent", "id": rec["id"]})
+    assert r == {"deleted": True, "id": rec["id"]}
+    assert seeded_kernel.get(rec["id"]) is None
+
+
 async def test_update_agent(seeded_kernel):
     rec = await seeded_kernel.send(
         "core",

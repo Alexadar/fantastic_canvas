@@ -20,6 +20,7 @@ dependencies = [
   "fantastic-ai-chat-webapp",
   "fantastic-canvas-backend",
   "fantastic-canvas-webapp",
+  "fantastic-telemetry-pane",
   "fantastic-html-agent",
   "fantastic-python-runtime",
 ]
@@ -55,6 +56,7 @@ testpaths = [
   "bundled_agents/ai/ai_chat_webapp/tests",
   "bundled_agents/canvas/canvas_backend/tests",
   "bundled_agents/canvas/canvas_webapp/tests",
+  "bundled_agents/canvas/telemetry_pane/tests",
   "bundled_agents/html_agent/tests",
   "bundled_agents/python_runtime/tests",
 ]
@@ -74,6 +76,7 @@ members = [
   "bundled_agents/ai/ai_chat_webapp",
   "bundled_agents/canvas/canvas_backend",
   "bundled_agents/canvas/canvas_webapp",
+  "bundled_agents/canvas/telemetry_pane",
   "bundled_agents/html_agent",
   "bundled_agents/python_runtime",
   "installed_agents/*",
@@ -92,5 +95,6 @@ fantastic-nvidia-nim-backend = { workspace = true }
 fantastic-ai-chat-webapp = { workspace = true }
 fantastic-canvas-backend = { workspace = true }
 fantastic-canvas-webapp = { workspace = true }
+fantastic-telemetry-pane = { workspace = true }
 fantastic-html-agent = { workspace = true }
 fantastic-python-runtime = { workspace = true }

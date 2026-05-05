@@ -166,13 +166,28 @@ async def test_add_agent_refuses_unknown_id(seeded_kernel):
     assert "error" in r and "no agent" in r["error"]
 
 
-async def test_add_agent_refuses_non_webapp_target(seeded_kernel, file_agent):
-    """file agent doesn't answer get_webapp → cannot be added to a canvas."""
+async def test_add_agent_refuses_non_renderable_target(seeded_kernel, file_agent):
+    """file agent answers neither get_webapp nor get_gl_view → cannot
+    be added to a canvas (nothing to render)."""
     cid = await _make_canvas_backend(seeded_kernel)
     r = await seeded_kernel.send(cid, {"type": "add_agent", "agent_id": file_agent})
     assert "error" in r
-    assert "does not answer get_webapp" in r["error"]
+    assert "neither get_webapp nor get_gl_view" in r["error"]
     assert seeded_kernel.get(cid).get("members") in (None, [])
+
+
+async def test_add_agent_accepts_get_gl_view_only(seeded_kernel):
+    """An agent answering only get_gl_view (not get_webapp) IS addable
+    — GL-only agents like telemetry_pane belong on canvases too."""
+    cid = await _make_canvas_backend(seeded_kernel)
+    rec = await seeded_kernel.send(
+        "core",
+        {"type": "create_agent", "handler_module": "telemetry_pane.tools"},
+    )
+    tid = rec["id"]
+    r = await seeded_kernel.send(cid, {"type": "add_agent", "agent_id": tid})
+    assert r.get("ok") is True, r
+    assert tid in r["members"]
 
 
 async def test_add_agent_requires_string_id(seeded_kernel):

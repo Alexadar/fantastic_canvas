@@ -16,6 +16,7 @@ members = [
     "fantastic-ollama-backend",
     "fantastic-python-runtime",
     "fantastic-scheduler",
+    "fantastic-telemetry-pane",
     "fantastic-terminal-backend",
     "fantastic-terminal-webapp",
     "fantastic-webapp",
@@ -246,6 +247,7 @@ dependencies = [
     { name = "fantastic-ollama-backend" },
     { name = "fantastic-python-runtime" },
     { name = "fantastic-scheduler" },
+    { name = "fantastic-telemetry-pane" },
     { name = "fantastic-terminal-backend" },
     { name = "fantastic-terminal-webapp" },
     { name = "fantastic-webapp" },
@@ -273,6 +275,7 @@ requires-dist = [
     { name = "fantastic-ollama-backend", editable = "bundled_agents/ai/ollama/ollama_backend" },
     { name = "fantastic-python-runtime", editable = "bundled_agents/python_runtime" },
     { name = "fantastic-scheduler", editable = "bundled_agents/scheduler" },
+    { name = "fantastic-telemetry-pane", editable = "bundled_agents/canvas/telemetry_pane" },
     { name = "fantastic-terminal-backend", editable = "bundled_agents/terminal/terminal_backend" },
     { name = "fantastic-terminal-webapp", editable = "bundled_agents/terminal/terminal_webapp" },
     { name = "fantastic-webapp", editable = "bundled_agents/webapp" },
@@ -318,6 +321,11 @@ source = { editable = "bundled_agents/python_runtime" }
 name = "fantastic-scheduler"
 version = "0.1.0"
 source = { editable = "bundled_agents/scheduler" }
+
+[[package]]
+name = "fantastic-telemetry-pane"
+version = "0.1.0"
+source = { editable = "bundled_agents/canvas/telemetry_pane" }
 
 [[package]]
 name = "fantastic-terminal-backend"

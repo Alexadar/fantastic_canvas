@@ -106,69 +106,29 @@ Regression signal: an agent appears in both tabs without being added to
 both → membership filter regressed. A canvas iframes itself or its
 sibling → the self/upstream skip regressed.
 
-### Test 6: bganim default loads via get_bganim
+### Test 6: bganim is GONE (negative drift guard)
+
+The bganim system was removed. Particle effects come back later as
+a peer GL agent.
 
 ```bash
+# Verbs no longer exist — every probe should error.
 curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/json' \
-  -d '{"type":"get_bganim"}' | python -m json.tool | grep -F '"origin": "default"'
+  -d '{"type":"get_bganim"}' | python -m json.tool | grep -F "unknown type"
 curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/json' \
-  -d '{"type":"get_bganim"}' | python -c "import json,sys; d=json.load(sys.stdin); print('chars:', len(d['source']))"
+  -d '{"type":"set_bganim","source":"x"}' | python -m json.tool | grep -F "unknown type"
+curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/json' \
+  -d '{"type":"reflect"}' | python -c "
+import json,sys
+d=json.load(sys.stdin)
+ok = ('bganim_origin' not in d and
+      'get_bganim' not in d.get('verbs',{}) and
+      'set_bganim' not in d.get('verbs',{}))
+print('PASS' if ok else f'FAIL — bganim residue: {d.get(\"verbs\")}')"
 ```
-Expected: origin matches; source ≥ 200 chars.
+Expected: both grep matches; final line PASS.
 
-### Test 7: set_bganim without file_agent_id → failfast
-
-```bash
-curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/json' \
-  -d '{"type":"set_bganim","source":"target.set(0,0,0); color.set(\"white\");"}' | python -m json.tool | grep -F "file_agent_id required"
-```
-Expected: matches.
-
-### Test 8: set_bganim with file_agent_id writes + emits event
-
-```bash
-FA=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
-  -d '{"type":"create_agent","handler_module":"file.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
-  -d "{\"type\":\"update_agent\",\"id\":\"$CW\",\"file_agent_id\":\"$FA\"}" >/dev/null
-curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/json' \
-  -d '{"type":"set_bganim","source":"target.set(0,0,0); color.set(\"white\");"}' | python -m json.tool | grep -F '"ok": true'
-# read it back through the file agent
-curl -s -X POST "http://localhost:$PORT/$FA/call" -H 'content-type: application/json' \
-  -d "{\"type\":\"read\",\"path\":\".fantastic/agents/$CW/bganim.js\"}" | python -m json.tool | grep -F 'target.set(0,0,0)'
-# get_bganim now reports origin:file
-curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/json' \
-  -d '{"type":"get_bganim"}' | python -m json.tool | grep -F '"origin": "file"'
-# reflect shows bganim_origin and file_agent_id
-curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/json' \
-  -d '{"type":"reflect"}' | python -m json.tool | grep -F '"bganim_origin": "file"'
-```
-Expected: every grep matches.
-
-### Test 9: get_bganim_guide returns the prompt spec
-
-```bash
-curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/json' \
-  -d '{"type":"get_bganim_guide"}' | python -c "import json,sys; d=json.load(sys.stdin); g=d['guide']; print('chars:',len(g),'has_api:','target' in g and 'count' in g)"
-```
-Expected: chars > 1000; has_api: True.
-
-### Test 10 (manual, browser): default bg + live refresh
-
-Open `http://localhost:$PORT/$CW/` in a browser.
-Expected: a magenta→cyan particle galaxy spiral drifting behind any
-iframes. **No sliders, no HUD, no labels** — just the animation.
-Then in another shell:
-```bash
-curl -s -X POST "http://localhost:$PORT/$CW/call" -H 'content-type: application/json' \
-  -d '{"type":"set_bganim","source":"const a=i*0.05+time*0.5; target.set(Math.cos(a)*40, Math.sin(a*2)*15, Math.sin(a)*40); color.setHSL((i/count+time*0.05)%1, 1, 0.6);"}'
-```
-Expected: the browser tab's particle motion changes within ~1s without
-a page reload.
-Regression signal: page reloads, white flash, or particles freeze →
-either the watch wiring broke or the rAF loop crashed on rebuild.
-
-### Test 11: terminal pair lifecycle + canvas membership add (programmatic — mirrors dblclick + close)
+### Test 7: terminal pair lifecycle + canvas membership add (programmatic — mirrors dblclick + close)
 
 Verifies the create-pair → add-to-canvas → cascade-delete flow that
 the canvas_webapp UI exercises on dblclick / "×":
@@ -216,7 +176,7 @@ Expected: every grep matches AND final line prints `PASS`.
 Regression signal: orphan agent in `list_agents` after delete → cascade
 ordering broken or `delete_agent` regressed.
 
-### Test 12 (manual, browser): dblclick spawns pair, "×" cascades, ⟳ reloads, pan/wheel hygiene
+### Test 8 (manual, browser): dblclick spawns pair, "×" cascades, ⟳ reloads, pan/wheel hygiene
 
 Open `http://localhost:$PORT/$CW/` in a browser.
 
@@ -255,7 +215,57 @@ Regression signals:
 - Wheel over a cell zooms canvas → `agent-frame` skip in wheel handler regressed.
 - Drag pan stops mid-cell → `.panning .agent-frame iframe { pointer-events: none }` regressed.
 
-### Test 13 (manual, browser BUS): direct iframe-to-iframe via BroadcastChannel
+### Test 9 (manual, browser): two-layer dispatch — DOM iframe + GL view
+
+The canvas hosts two presentation layers per agent. Live agent-vis
+lives in the `telemetry_pane` bundle now; add it to the canvas as
+a peer to populate the GL layer. See
+`bundled_agents/canvas/telemetry_pane/selftest.md` for the full
+walkthrough; the canvas-side checks below confirm the dispatch.
+
+```bash
+# Sanity: empty canvas opens with no particles, no sprites.
+echo "open http://localhost:$PORT/$CW/  -- expect: black scene, no foreground content"
+
+# Now provision a DOM agent (terminal_webapp + backend) and add it.
+TB=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d '{"type":"create_agent","handler_module":"terminal_backend.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+TW=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"create_agent\",\"handler_module\":\"terminal_webapp.tools\",\"upstream_id\":\"$TB\"}" | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+curl -s -X POST "http://localhost:$PORT/$CB/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"add_agent\",\"agent_id\":\"$TW\"}"
+
+# And a GL-only agent.
+TP=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d '{"type":"create_agent","handler_module":"telemetry_pane.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+curl -s -X POST "http://localhost:$PORT/$CB/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"add_agent\",\"agent_id\":\"$TP\"}"
+```
+
+In the browser:
+- The terminal frame appears as an iframe in the DOM layer.
+- Telemetry sprites appear as Three.js content in the GL layer
+  behind the iframe.
+- Status footer shows `N dom · M gl` member counts.
+
+Removal teardown:
+```bash
+curl -s -X POST "http://localhost:$PORT/$CB/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"remove_agent\",\"agent_id\":\"$TP\"}"
+```
+Expected: telemetry sprites disappear cleanly; the terminal iframe
+remains. Removing the terminal: its iframe disappears; sprites
+remain. Layers are independent.
+
+Regression signals:
+- Adding a GL-only agent triggers no scene change → `installGlView`
+  not wired or `get_gl_view` probe missing.
+- Removing a GL agent leaves orphan sprites → `removeGlView` not
+  running cleanup closures.
+- Particle field reappears → bganim machinery resurrected (the
+  `test_render_html_no_inline_bganim` drift-guard should have caught).
+
+### Test 10 (manual, browser BUS): direct iframe-to-iframe via BroadcastChannel
 
 Per `_kernel/reflect.browser_bus`, agents can bypass the kernel:
 - Open browser devtools console on tab A (the canvas page).
@@ -277,15 +287,12 @@ BroadcastChannel name changed.
 | # | Test | Pass |
 |---|------|------|
 | 1 | get_webapp descriptor | |
-| 2 | HTML has same-bundle guard | |
+| 2 | HTML uses explicit membership + dual-verb dispatch | |
 | 3 (manual) | filters to webapps only | |
 | 4 (manual) | drag persists x/y | |
-| 5 (manual) | two canvases don't recurse | |
-| 6 | get_bganim default origin | |
-| 7 | set_bganim failfast w/o file_agent_id | |
-| 8 | set_bganim writes + reflect/get switch to "file" | |
-| 9 | get_bganim_guide returns spec | |
-| 10 (manual) | browser bg + live refresh | |
-| 11 | terminal-pair lifecycle (create + cascade-delete) | |
-| 12 (manual) | browser dblclick spawns pair, × cascades | |
-| 13 (manual) | browser bus delivers across iframes | |
+| 5 (manual) | two canvases hold disjoint members | |
+| 6 | bganim is GONE (negative drift guard) | |
+| 7 | terminal-pair lifecycle (create + cascade-delete) | |
+| 8 (manual) | browser dblclick spawns pair, × cascades, pan/wheel | |
+| 9 (manual) | two-layer dispatch — DOM iframe + GL view (telemetry pane) | |
+| 10 (manual) | browser bus delivers across iframes | |

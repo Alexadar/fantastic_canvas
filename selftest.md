@@ -97,8 +97,9 @@ keep state on disk only and run fine via `python kernel.py call`.
 | `bundled_agents/ai/ollama/ollama_backend/selftest.md` | kernel, ai, persistence | reflect-driven assembly, native tool-calls, multi-step loop |
 | `bundled_agents/ai/nvidia/nvidia_nim_backend/selftest.md` | kernel, ai, persistence, http | NVIDIA NIM (OpenAI-compatible); api_key sidecar; rate-limit retry; live single-shot |
 | `bundled_agents/ai/ai_chat_webapp/selftest.md` | webapp, web | provider-agnostic chat UI (fronts ollama_backend, nvidia_nim_backend, etc.) |
-| `bundled_agents/canvas/canvas_backend/selftest.md` | kernel | discover (spatial intersection) |
-| `bundled_agents/canvas/canvas_webapp/selftest.md` | webapp, web, bus | UI filters via get_webapp probe; same-bundle exclusion; browser bus |
+| `bundled_agents/canvas/canvas_backend/selftest.md` | kernel | dual-verb add_agent (get_webapp / get_gl_view); explicit membership |
+| `bundled_agents/canvas/canvas_webapp/selftest.md` | webapp, web, bus | two-layer host (DOM iframe + GL view); per-agent dispatch on probe |
+| `bundled_agents/canvas/telemetry_pane/selftest.md` | webapp, web | live agent-vis GL view; subscribes to kernel state stream |
 | `bundled_agents/html_agent/selftest.md` | kernel, http, web | UI-as-record agent; render_html duck type; cross-agent calls from iframe |
 | `bundled_agents/python_runtime/selftest.md` | kernel | subprocess Python exec; timeout / interrupt / cwd |
 
@@ -108,7 +109,7 @@ keep state on disk only and run fine via `python kernel.py call`.
 |---|---|---|
 | "all tests" | (all) | every file |
 | "non-web tests" / "no browser" | EXCLUDE {http, ws, web, webapp, bus} | core, cli, scheduler, file, terminal_backend, ollama_backend, canvas_backend |
-| "in canvas, run webapp tests" | INCLUDE {web, webapp, bus} | webapp, terminal_webapp, ai_chat_webapp, canvas_webapp |
+| "in canvas, run webapp tests" | INCLUDE {web, webapp, bus} | webapp, terminal_webapp, ai_chat_webapp, canvas_webapp, telemetry_pane |
 | "kernel only" | INCLUDE {kernel}, EXCLUDE {pty, ai, web} | core, cli, scheduler, file, canvas_backend |
 | "I have ollama running" | + ai | adds ollama_backend AI tests |
 | "no PTY" | EXCLUDE {pty} | drops terminal_backend |

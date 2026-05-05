@@ -36,6 +36,8 @@ import secrets
 import struct
 from typing import Any
 
+from kernel import _current_sender
+
 logger = logging.getLogger(__name__)
 
 
@@ -115,7 +117,18 @@ def decode_inbound(data: bytes | str) -> dict:
 # ─── proxy loop ─────────────────────────────────────────────────
 
 
-async def run(ws, kernel, host_agent_id: str) -> None:
+async def run(ws, kernel, host_agent_id: str, web_agent_id: str) -> None:
+    """Pump WS frames between a browser and the kernel.
+
+    `host_agent_id` is the URL endpoint the browser connected to —
+    every connection auto-watches that id so the browser sees its
+    inbox events without an explicit `watch` frame.
+
+    `web_agent_id` is THIS webapp's own agent id — used as the
+    `_current_sender` for browser-driven calls/emits so telemetry
+    rays originate visually from the webapp sprite (browsers don't
+    have agent identity of their own).
+    """
     """Drive one WebSocket connection."""
     client_id = _make_client_id()
     kernel._ensure_inbox(client_id)
@@ -167,18 +180,30 @@ async def run(ws, kernel, host_agent_id: str) -> None:
                 raise
 
     # ─── inbound frame handlers ─────────────────────────────────
+    # Browser-originated traffic has no agent context — the WS handler
+    # runs outside any handler dispatch, so without help `_current_sender`
+    # would be None and telemetry rays would have nowhere to start. Tag
+    # the dispatch with `host_agent_id` (this webapp's own id) so every
+    # external call/emit visually originates from the webapp sprite.
     async def _on_call(frame):
         target = frame.get("target", "")
         payload = frame.get("payload", {})
         fid = frame.get("id", "")
+        token = _current_sender.set(web_agent_id)
         try:
             reply = await kernel.send(target, payload)
             await _send_envelope({"type": "reply", "id": fid, "data": reply})
         except Exception as e:
             await _send_envelope({"type": "error", "id": fid, "error": str(e)})
+        finally:
+            _current_sender.reset(token)
 
     async def _on_emit(frame):
-        await kernel.emit(frame.get("target", ""), frame.get("payload", {}))
+        token = _current_sender.set(web_agent_id)
+        try:
+            await kernel.emit(frame.get("target", ""), frame.get("payload", {}))
+        finally:
+            _current_sender.reset(token)
 
     async def _on_watch(frame):
         src = frame.get("src", "")
@@ -191,6 +216,44 @@ async def run(ws, kernel, host_agent_id: str) -> None:
         if src in watching:
             kernel.unwatch(src, client_id)
             watching.discard(src)
+
+    # ─── state stream bridge ───────────────────────────────────
+    # Mirror of the watch/unwatch lifecycle but for the kernel's
+    # direct-callback telemetry tap (kernel._state_subscribers).
+    # On `state_subscribe`, we send an immediate snapshot frame and
+    # register a callback that pumps `state_event` frames over WS.
+    # The callback uses asyncio.create_task because the kernel's
+    # _notify_state is sync (called from inside _fanout / lifecycle
+    # methods); we can't await directly from there.
+    state_unsubs: list = []
+
+    async def _on_state_subscribe(frame):
+        await _send_envelope(
+            {"type": "state_snapshot", "agents": kernel.state_snapshot()}
+        )
+
+        def cb(event: dict) -> None:
+            out = {"type": "state_event", **event}
+            # Lifecycle events carry `name`; traffic events carry
+            # `backlog` only — fill name lazily so the browser renders
+            # with a single shape.
+            if "name" not in out:
+                rec = kernel.get(event["agent_id"]) or {}
+                out["name"] = rec.get("display_name") or event["agent_id"]
+            try:
+                asyncio.get_running_loop().create_task(_send_envelope(out))
+            except RuntimeError:
+                # No running loop — this fanout fired during shutdown.
+                # Drop silently; the WS is going down anyway.
+                pass
+
+        unsub = kernel.add_state_subscriber(cb)
+        state_unsubs.append(unsub)
+
+    async def _on_state_unsubscribe(frame):
+        for fn in state_unsubs:
+            fn()
+        state_unsubs.clear()
 
     # `call` handlers may await for tens of seconds (LLM streams).
     # Awaiting them inline blocks the receive loop, so a peer-close
@@ -207,6 +270,8 @@ async def run(ws, kernel, host_agent_id: str) -> None:
         "emit": _on_emit,
         "watch": _on_watch,
         "unwatch": _on_unwatch,
+        "state_subscribe": _on_state_subscribe,
+        "state_unsubscribe": _on_state_unsubscribe,
     }
 
     try:
@@ -246,4 +311,8 @@ async def run(ws, kernel, host_agent_id: str) -> None:
             await asyncio.gather(*pending, return_exceptions=True)
         for src in watching:
             kernel.unwatch(src, client_id)
+        # Unregister any state-stream callbacks tied to this WS.
+        for fn in state_unsubs:
+            fn()
+        state_unsubs.clear()
         kernel._inboxes.pop(client_id, None)

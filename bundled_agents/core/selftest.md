@@ -92,6 +92,36 @@ Expected: `locked-refusal: PASS`, record still on disk, then
 Regression signal: `locked` flag missing from response → LLM callers
 can't programmatically detect the refusal reason.
 
+### Test 8: unknown verb / unknown agent rejected cleanly (substrate safety net)
+
+Every bundle's handler rejects unknown `type` values with a
+deterministic error shape. This is the substrate's defense against
+malformed tool_call output from LLMs (chat-template tokens leaking
+into `function.name`, model hallucinating verbs, etc.).
+
+```bash
+rm -rf .fantastic
+# Send a chat-template-fragment-shaped bogus verb.
+uv run python kernel.py call core '<|"|list_agents<|"|' 2>&1 | python -c "
+import sys
+ok = 'unknown type' in sys.stdin.read()
+print('unknown-verb-rejected: PASS' if ok else 'FAIL')"
+# Send to a non-existent agent id.
+uv run python kernel.py call file_does_not_exist garbage_verb 2>&1 | python -c "
+import sys
+print('unknown-agent-rejected: PASS' if 'no agent' in sys.stdin.read() else 'FAIL')"
+rm -rf .fantastic
+```
+Expected: both PASS lines. The kernel returns
+`{"error":"<bundle>: unknown type '...'"}` and
+`{"error":"no agent '...'"}`. LLM agentic loops feed the error back
+as a role:tool reply; well-trained models correct on the next turn.
+Models with weak tool-call discipline (some Gemma variants) may
+chase the same bad verb across many iterations — visible as `+N
+more` overflow on the agent's telemetry sprite. Not a substrate
+issue: kernel rejection is correct; switch to a stronger tool-
+trained model (Llama-3.1-Nemotron-Ultra, Qwen3-Coder).
+
 ## Summary
 
 | # | Test | Pass |
@@ -103,3 +133,4 @@ can't programmatically detect the refusal reason.
 | 5 | delete_agent + dir removed | |
 | 6 | REPL @-tag routes to handler | |
 | 7 | delete_lock refuses; unlocks via update_agent | |
+| 8 | unknown verb / unknown agent rejected cleanly | |

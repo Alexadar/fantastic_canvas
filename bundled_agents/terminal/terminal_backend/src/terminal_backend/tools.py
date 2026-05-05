@@ -269,6 +269,12 @@ async def _stop(id, payload, kernel):
     return {"stopped": True}
 
 
+async def _shutdown(id, payload, kernel):
+    """No args. Lifecycle hook called by core.delete_agent before record removal — closes the PTY fd and SIGKILLs the child so the subprocess doesn't outlive its agent record (orphan PTYs would keep emitting output to a dead inbox, leaking sprites in telemetry views). Returns {shutdown:true}."""
+    _cleanup(id)
+    return {"shutdown": True}
+
+
 async def _shell(id, payload, kernel):
     """args: cmd:str (req), timeout:float? (default 30s). Synchronous run via done-token; returns {cmd, output, completed:bool, error?}."""
     state = _procs.get(id)
@@ -355,6 +361,7 @@ VERBS = {
     "restart": _restart,
     "signal": _signal,
     "stop": _stop,
+    "shutdown": _shutdown,
 }
 
 
