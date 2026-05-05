@@ -92,7 +92,32 @@ Expected: `locked-refusal: PASS`, record still on disk, then
 Regression signal: `locked` flag missing from response → LLM callers
 can't programmatically detect the refusal reason.
 
-### Test 8: unknown verb / unknown agent rejected cleanly (substrate safety net)
+### Test 8: shutdown lifecycle hook fires before delete
+
+`core.delete_agent` sends `{type:"shutdown"}` to the agent before
+calling `kernel.delete`, symmetric to the `boot` it sends on create.
+This is the universal teardown hook bundles use to release process-
+memory state (PTY children, uvicorn servers, in-flight tasks). Opt-
+in: bundles that don't implement `shutdown` return unknown-verb
+which core silently ignores.
+
+```bash
+rm -rf .fantastic
+ID=$(uv run python kernel.py call core create_agent handler_module=file.tools | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+# file.tools doesn't implement shutdown — delete must still succeed.
+uv run python kernel.py call core delete_agent id=$ID | python -c "
+import json, sys
+d = json.load(sys.stdin)
+print('unknown-verb-ignored: PASS' if d.get('deleted') is True else f'FAIL d={d}')"
+test ! -d .fantastic/agents/$ID && echo "  record removed: OK"
+rm -rf .fantastic
+```
+Expected: `unknown-verb-ignored: PASS` and `record removed: OK`.
+Regression signal: delete fails when bundle has no `shutdown` →
+core stopped silently ignoring unknown-verb / didn't make `shutdown`
+optional.
+
+### Test 9: unknown verb / unknown agent rejected cleanly (substrate safety net)
 
 Every bundle's handler rejects unknown `type` values with a
 deterministic error shape. This is the substrate's defense against
@@ -133,4 +158,5 @@ trained model (Llama-3.1-Nemotron-Ultra, Qwen3-Coder).
 | 5 | delete_agent + dir removed | |
 | 6 | REPL @-tag routes to handler | |
 | 7 | delete_lock refuses; unlocks via update_agent | |
-| 8 | unknown verb / unknown agent rejected cleanly | |
+| 8 | shutdown lifecycle hook fires (unknown-verb tolerated) | |
+| 9 | unknown verb / unknown agent rejected cleanly | |

@@ -80,7 +80,7 @@ print('messages:', len(d), 'last:', d[-1]['content'][:50])
 ```
 Expected: messages ≥ 2; last message contains "ok" (case-insensitive).
 
-### Test 4: tool-call round-trip
+### Test 4: tool-call round-trip — and the chat sidecar keeps the round-trip on disk
 
 ```bash
 call $OB '{"type":"send","text":"how many agents are online? actually check using the send tool"}' | python -c "import json,sys; print(json.load(sys.stdin).get('final',''))"
@@ -89,6 +89,30 @@ Expected: model emits a tool_call to `core` with `list_agents`, reads
 the reply, summarizes. Final answer mentions a number.
 Regression signal: model just says "I cannot check" without emitting
 tool_calls → either model lacks tool support or SEND_TOOL definition broke.
+
+The persistence is **lossless** — the sidecar must contain the full
+`assistant`-with-`tool_calls` turn AND its `role:tool` reply, not just
+the user/final-assistant pair. This is the audit trail for malformed
+tool-calls (Gemma chat-template-token leaks like `<|"|verb<|"|`,
+hallucinated verbs, args-as-string vs dict).
+
+```bash
+python -c "
+import json
+d = json.load(open('.fantastic/agents/$OB/chat_cli.json'))
+roles = [m['role'] for m in d]
+has_tcs = any(m.get('tool_calls') for m in d if m['role']=='assistant')
+has_tool = 'tool' in roles
+print('PASS' if has_tcs and has_tool else f'FAIL roles={roles} tcs={has_tcs}')
+print('  recent tool_call name:',
+      next((tc['function']['name']
+            for m in reversed(d) if m.get('tool_calls')
+            for tc in m['tool_calls']), '(none)'))
+"
+```
+Expected: `PASS` and a non-`(none)` tool_call name (e.g. `send`).
+Regression signal: PASS missing → `_run` reverted to lossy persistence
+(saving only user + final assistant). Faulty tool calls evaporate.
 
 ### Test 5: history persists across calls
 
@@ -267,7 +291,7 @@ Expected: `PASS`. The terminal `status` carries `detail.reason='interrupted'`.
 | 1 | send fails without file_agent_id | |
 | 2 | reflect shows file_agent_id | |
 | 3 | send streams + persists chat_<client_id>.json | |
-| 4 | tool-call round-trip | |
+| 4 | tool-call round-trip + lossless tool history on disk | |
 | 5 | history persists across calls | |
 | 6 | history verb returns messages | |
 | 7 | status verb idle snapshot + reflect lists status | |

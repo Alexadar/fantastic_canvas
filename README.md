@@ -27,11 +27,18 @@ Plugin-discovered agents, one primitive (`send`), hermetic protocol.
   `{type:"get_webapp"}`) and a WebGL layer (Three.js content for
   agents answering `{type:"get_gl_view"}`). An agent answering BOTH
   gets BOTH presentations. Membership is explicit (`add_agent`).
-  THREE.js loads from esm.sh at runtime.
+  THREE.js loads from esm.sh at runtime. Iframe chrome is styled
+  Apple-style Liquid Glass (translucent + backdrop-blur + specular).
+  Lifecycle is purely streamed (no polling) — `agent_updated`,
+  `agent_deleted`, `members_updated` events drive refresh; stale
+  members self-heal on probe.
 - **telemetry_pane** — a GL agent. Subscribes to the kernel state
   stream and renders each agent as a Three.js sprite with name +
-  backlog dots + send/emit blip. Plug it into any canvas via
-  `add_agent` to get a live system pulse view.
+  backlog dots + Tron-neon traffic blip. Real agent-to-agent traffic
+  draws fading sender→recipient wires with traveling pulses. Sprites
+  drift on a slow water wobble. A right-side pane shows the last 10
+  messages with kind, sender→target, and a trimmed payload summary.
+  Plug into any canvas via `add_agent`.
 - **webapps** — UI bundles (`*_webapp`) that hold an `upstream_id`
   pointing at a backend they front. Pure browser code; no compute.
   Duck-typed via `get_webapp` — any agent that returns `{url, ...}` is
@@ -116,7 +123,7 @@ works for in-tree workspace members AND `pip install` third-party plugins.
 
 Two complementary layers:
 
-- **Unit/integration via `pytest`** — fast, parallel, in-process. 221 tests.
+- **Unit/integration via `pytest`** — fast, parallel, in-process. 373+ tests.
   ```bash
   uv run --active pytest -n auto         # ~3s parallel
   ```

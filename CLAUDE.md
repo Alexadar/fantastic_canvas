@@ -68,8 +68,8 @@ fantastic> @core list_agents
 | `ai/ollama/ollama_backend` | local LLM agent (ollama); per-client chat threads, FIFO lock, menu cache |
 | `ai/nvidia/nvidia_nim_backend` | NVIDIA NIM LLM agent (OpenAI-compatible); api_key sidecar via `file_agent_id`; rate-limit retry; same surface as ollama_backend |
 | `ai/ai_chat_webapp` | provider-agnostic chat UI; fronts any backend that answers `send`/`history`/`interrupt` |
-| `canvas/{canvas_backend, canvas_webapp}` | spatial UI host; two layers (DOM iframe for `get_webapp`, GL view for `get_gl_view`); explicit `add_agent` membership |
-| `canvas/telemetry_pane` | live agent-vis GL view — sprites with name/backlog/blip per agent; runs inside any canvas's WebGL scene |
+| `canvas/{canvas_backend, canvas_webapp}` | spatial UI host; Liquid-Glass-styled DOM iframes (`get_webapp`) layered with GL views (`get_gl_view`); explicit `add_agent` membership; pure-streaming lifecycle (no polling) |
+| `canvas/telemetry_pane` | live agent-vis GL view — water-floating sprites + sender→receiver neon wires + traveling pulses + last-10 messages pane; runs inside any canvas's WebGL scene |
 
 Each bundle is a real Python package with its own `pyproject.toml`,
 declaring `[project.entry-points."fantastic.bundles"]`. `kernel.py`
@@ -101,6 +101,20 @@ plugins (drop in `installed_agents/`).
 - **`delete_lock: true`** on a record refuses delete. core's
   `delete_agent` returns `{error, locked:true, id}` so LLM callers
   can detect it programmatically. Clear via `update_agent`.
+- **`shutdown` lifecycle hook** — symmetric to the `boot` core sends
+  on `create_agent`, core sends `{type:"shutdown"}` to the agent
+  before `kernel.delete` removes the record. Bundles use it to tear
+  down process-memory state (PTY children, uvicorn servers,
+  in-flight tasks). Opt-in: bundles that don't implement it return
+  unknown-verb error which core silently ignores. Currently
+  implemented by `terminal_backend` (kills the PTY child).
+- **State-event `sender` + `summary`** — every `send`/`emit` state
+  event carries `sender` (the dispatching agent's id, set via a
+  task-local contextvar around handler dispatch; webapp's HTTP/WS
+  proxy tags external traffic with the webapp's own id) and
+  `summary` (a JSON-stringified, bytes-stripped, max-160-char view
+  of the payload). The telemetry pane uses both to draw
+  sender→receiver wires + a last-N message log.
 - **Browser bus** — `fantastic_transport().bus` is a
   `BroadcastChannel("fantastic")` wrapper available on every served
   page. Same envelope as kernel send, but **bypasses the kernel

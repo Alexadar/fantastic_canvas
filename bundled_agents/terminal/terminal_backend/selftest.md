@@ -94,6 +94,24 @@ call $TB '{"type":"shell","cmd":"echo x"}' | python -m json.tool | grep -F "not 
 ```
 Expected: matches.
 
+### Test 8: shutdown lifecycle — core.delete_agent kills the PTY
+
+The kernel's universal teardown hook: `core.delete_agent` sends
+`{type:"shutdown"}` to the agent before removing the record. The
+backend's `shutdown` verb runs `_cleanup` → SIGKILLs the child.
+Without this, a deleted record would leak a live PTY emitting
+output to a dead inbox, ghost-spawning sprites in telemetry views.
+
+```bash
+TB2=$(call core '{"type":"create_agent","handler_module":"terminal_backend.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+PID=$(call $TB2 '{"type":"reflect"}' | python -c "import json,sys;print(json.load(sys.stdin).get('pid',''))")
+call core "{\"type\":\"delete_agent\",\"id\":\"$TB2\"}" >/dev/null
+sleep 0.5
+[ -n "$PID" ] && (kill -0 "$PID" 2>/dev/null && echo "FAIL pid $PID still alive" || echo "PASS pid $PID gone")
+```
+Expected: `PASS pid <N> gone`. Regression signal: pid alive → shutdown
+verb missing OR core.delete_agent stopped sending it.
+
 ## Summary
 
 | # | Test | Pass |
@@ -105,3 +123,4 @@ Expected: matches.
 | 5 | write + output round-trip | |
 | 6 | stop kills PTY | |
 | 7 | shell on stopped → error | |
+| 8 | shutdown lifecycle: core.delete_agent → PTY child reaped | |

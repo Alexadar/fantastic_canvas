@@ -185,13 +185,33 @@ In the browser:
    (shared world coordinates).
 7. **Refresh**: reload tab. Sprites re-bootstrap from a fresh
    `state_snapshot` after canvas_webapp re-installs the GL view.
-8. **Remove the pane**:
+8. **Water wobble**: every sprite drifts in a slow independent
+   sin/cos orbit (~0.5 wu × 0.4 wu, ~5.5s period, random phase per
+   sprite). Different sprites should never beat in unison.
+9. **Sender→receiver wires**: drive a real agent-to-agent call.
+   ```bash
+   call $TP '{"type":"reflect"}' >/dev/null
+   ```
+   When the kernel `_fanout` reports a `sender` (set via
+   `_current_sender` contextvar around handler dispatch), the GL
+   view draws a fat 4-layer translucent wire from sender's sprite
+   to recipient's sprite. The browser's external HTTP/WS calls are
+   tagged with the webapp's own id by the proxy, so even pure
+   browser-driven traffic produces wires.
+10. **Traveling pulse**: along each wire, a small bright glow box
+    sprints from sender → receiver in ~0.18s, fading near the end.
+11. **Messages pane (right)**: a tall vertical sprite to the right
+    of the agent grid shows the last 10 traffic events: `sender →
+    target [kind]` tinted cyan/mint, plus a trimmed payload summary.
+    Bytes show as `<bytes:N>`; long payloads truncate with `…`.
+12. **Remove the pane**:
    ```bash
    call $CB "{\"type\":\"remove_agent\",\"agent_id\":\"$TP\"}" >/dev/null
    ```
-   All telemetry sprites disappear (cleanup closures run, textures
-   disposed). The canvas's WebGL scene is empty again. Other DOM
-   iframes (e.g. terminal_webapp) are unaffected.
+   All telemetry sprites + wires + pulses + the messages pane
+   disappear (cleanup closures run, textures + materials disposed).
+   The canvas's WebGL scene is empty again. Other DOM iframes
+   (e.g. terminal_webapp) are unaffected.
 
 Regression signals:
 - New agent doesn't appear → state stream not flowing OR cleanup ran
@@ -199,6 +219,11 @@ Regression signals:
 - Sprite stays after delete → 'removed' kind handler regressed.
 - Removing telemetry pane leaves orphan sprites → cleanup closures
   regressed.
+- Sprites all sync into one wave → wobble random phase regressed.
+- Pure browser-driven calls produce no wires → webapp proxy stopped
+  tagging external traffic with its `web_agent_id`.
+- Messages pane stuck on a single payload / never updates → kernel
+  `summary` field on state events missing.
 
 ## Summary
 
@@ -210,3 +235,4 @@ Regression signals:
 | 4 | source does NOT call kernel verbs (no feedback loop) | |
 | 5 | canvas_backend.add_agent accepts GL-only pane | |
 | 6 (manual) | live add/remove/blip/drain/refresh/teardown via browser | |
+| 6.x (manual) | water wobble + sender→receiver wires + traveling pulses + messages pane | |

@@ -239,6 +239,47 @@ Expected: `SKIP …` (the round-trip is covered by pytest unit test
 `test_binary_protocol.py`; this slot is reserved for live binary if a
 binary-emitting agent is registered).
 
+### Test 14: external traffic carries `sender = web_agent_id` in state events
+
+Browser-originated calls have no agent context (the WS handler runs
+outside any handler dispatch), so without help `_current_sender`
+would be None and telemetry rays would have nowhere to start. The
+proxy + HTTP routes set the contextvar to the webapp's own
+`web_agent_id` so external traffic visually originates from the
+webapp sprite.
+
+```bash
+WEB=$(curl -s "http://localhost:$PORT/_agents" | python -c "
+import json,sys
+agents = json.load(sys.stdin)['agents']
+print(next((a['id'] for a in agents if a['handler_module']=='webapp.tools'), ''))
+")
+uv run --active python -c "
+import asyncio, json, websockets
+async def main():
+    async with websockets.connect(f'ws://localhost:$PORT/core/ws') as obs:
+        await obs.send(json.dumps({'type':'state_subscribe'}))
+        async with websockets.connect(f'ws://localhost:$PORT/core/ws') as caller:
+            await caller.send(json.dumps({'type':'call','target':'core','payload':{'type':'list_agents'},'id':'1'}))
+            sends = []
+            try:
+                async with asyncio.timeout(2):
+                    while True:
+                        msg = json.loads(await obs.recv())
+                        if msg.get('type') == 'state_event' and msg.get('kind') == 'send' and msg.get('agent_id') == 'core':
+                            sends.append(msg)
+            except TimeoutError:
+                pass
+            senders = {s.get('sender') for s in sends}
+            ok = '$WEB' in senders
+            print('PASS' if ok else f'FAIL senders={senders}')
+asyncio.run(main())
+"
+```
+Expected: `PASS`. Regression signal: senders empty / None → proxy
+stopped tagging external dispatches; telemetry rays will silently
+drop because addRay(null, …) finds no source sprite.
+
 ## Summary
 
 | # | Test | Pass |
@@ -256,3 +297,4 @@ binary-emitting agent is registered).
 | 11 | render_html → html_agent record served | |
 | 12 | /<file>/file/<path> blob proxy | |
 | 13 | WS binary (skip; pytest covers) | |
+| 14 | external WS/HTTP calls tag state events with web_agent_id | |

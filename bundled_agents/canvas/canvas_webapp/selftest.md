@@ -5,7 +5,8 @@
 > out-of-scope: deep iframe content (each child agent has its own selftest)
 
 Spatial UI host. Tests get_webapp, frame filtering, drag persistence,
-bganim default + override + live refresh, browser bus integration.
+two-layer DOM/GL dispatch, Liquid Glass chrome, pure-streaming lifecycle
+(no polling), and browser-bus integration.
 
 ## Pre-flight
 
@@ -166,15 +167,44 @@ ids = {a['id'] for a in d['agents']}
 print('PASS' if '$TB' not in ids and '$TW' not in ids else f'FAIL leftover={ids & {\"$TB\",\"$TW\"}}')
 "
 
-# 6. members list still has the now-stale TW id (no auto-cleanup) —
-#    that's documented behavior; iframe layer hides via record lookup.
-#    Operator can scrub:
+# 6. members list is auto-pruned: the canvas frontend's close button
+#    calls remove_agent BEFORE delete_agent, AND refresh() self-heals
+#    by calling remove_agent on any member id whose record vanished
+#    (covers any delete path — CLI, scheduler, programmatic). The CLI
+#    delete above bypasses the close button, but the next refresh in
+#    an open browser tab would scrub the membership; programmatic
+#    callers should call remove_agent themselves for symmetry.
 curl -s -X POST "http://localhost:$PORT/$CB/call" -H 'content-type: application/json' \
   -d "{\"type\":\"remove_agent\",\"agent_id\":\"$TW\"}" | python -m json.tool | grep -F '"removed":'
 ```
 Expected: every grep matches AND final line prints `PASS`.
 Regression signal: orphan agent in `list_agents` after delete → cascade
 ordering broken or `delete_agent` regressed.
+
+### Test 7b: shutdown lifecycle hook tears down PTY child
+
+`core.delete_agent` sends `{type:"shutdown"}` to the agent before
+removing the record (symmetric to the `boot` it sends on create).
+`terminal_backend.shutdown` runs `_cleanup` → SIGKILLs the PTY.
+Without this hook the subprocess outlives its agent record and keeps
+emitting output, leaking ghost sprites in telemetry views.
+
+```bash
+TB=$(curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d '{"type":"create_agent","handler_module":"terminal_backend.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+# capture the child pid before delete
+PID=$(curl -s -X POST "http://localhost:$PORT/$TB/call" -H 'content-type: application/json' \
+  -d '{"type":"reflect"}' | python -c "import json,sys;print(json.load(sys.stdin).get('pid',''))")
+curl -s -X POST "http://localhost:$PORT/core/call" -H 'content-type: application/json' \
+  -d "{\"type\":\"delete_agent\",\"id\":\"$TB\"}" > /dev/null
+sleep 0.5
+# kill -0 errors when the process is gone (zombie reaped or never existed).
+if [ -n "$PID" ]; then
+  kill -0 "$PID" 2>/dev/null && echo "FAIL pid $PID still alive" || echo "PASS pid $PID gone"
+fi
+```
+Expected: `PASS pid <N> gone`. Regression signal: pid still alive →
+shutdown verb missing / not invoked / `_cleanup` regressed.
 
 ### Test 8 (manual, browser): dblclick spawns pair, "×" cascades, ⟳ reloads, pan/wheel hygiene
 
@@ -265,7 +295,29 @@ Regression signals:
 - Particle field reappears → bganim machinery resurrected (the
   `test_render_html_no_inline_bganim` drift-guard should have caught).
 
-### Test 10 (manual, browser BUS): direct iframe-to-iframe via BroadcastChannel
+### Test 10: served HTML is Liquid Glass + streaming-only (drift guard)
+
+The canvas chrome must stay Liquid Glass and lifecycle must be purely
+event-driven (no polling). Flatten back to solid fills or sneak a
+`setInterval` in and the candy/perf-feel breaks.
+
+```bash
+HTML=$(curl -s "http://localhost:$PORT/$CW/")
+# Liquid Glass tokens.
+echo "$HTML" | grep -qF "backdrop-filter" && echo "  glass blur: OK"
+echo "$HTML" | grep -qF ".agent-frame::before" && echo "  specular layer: OK"
+echo "$HTML" | grep -qF "liquid-distort" && echo "  refraction filter: OK"
+# Streaming, no polling.
+echo "$HTML" | grep -q "setInterval" && echo "FAIL: polling regressed" || echo "  no setInterval: OK"
+echo "$HTML" | grep -qF "members_updated" && echo "  streamed members: OK"
+echo "$HTML" | grep -qF "agent_deleted" && echo "  streamed deletes: OK"
+# Drag-over-iframes lock.
+echo "$HTML" | grep -qF "body.dragging-frame .agent-frame iframe" && echo "  drag pointer-events lock: OK"
+```
+Expected: every line ends with `OK`. Regression signal: any FAIL or
+missing line → glass / streaming / drag fix regressed.
+
+### Test 11 (manual, browser BUS): direct iframe-to-iframe via BroadcastChannel
 
 Per `_kernel/reflect.browser_bus`, agents can bypass the kernel:
 - Open browser devtools console on tab A (the canvas page).
@@ -294,5 +346,7 @@ BroadcastChannel name changed.
 | 6 | bganim is GONE (negative drift guard) | |
 | 7 | terminal-pair lifecycle (create + cascade-delete) | |
 | 8 (manual) | browser dblclick spawns pair, × cascades, pan/wheel | |
+| 7b | shutdown lifecycle hook kills PTY child | |
 | 9 (manual) | two-layer dispatch — DOM iframe + GL view (telemetry pane) | |
-| 10 (manual) | browser bus delivers across iframes | |
+| 10 | served HTML is Liquid Glass + streaming-only (drift guard) | |
+| 11 (manual) | browser bus delivers across iframes | |
