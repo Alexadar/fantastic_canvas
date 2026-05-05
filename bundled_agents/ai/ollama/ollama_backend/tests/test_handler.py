@@ -158,6 +158,68 @@ async def test_run_persists_history_via_file_agent(seeded_kernel, file_agent, tm
         data = json.loads(path.read_text())
         assert data[-2] == {"role": "user", "content": "hi"}
         assert data[-1] == {"role": "assistant", "content": "reply"}
+        # System prompt must NOT be persisted — it's rebuilt fresh
+        # each turn from the live agent menu + howto.
+        assert all(m.get("role") != "system" for m in data)
+    finally:
+        ot._providers.pop(oid, None)
+
+
+async def test_run_persists_full_tool_call_round_trip(
+    seeded_kernel, file_agent, tmp_path
+):
+    """Lossless persistence of tool turns. The chat sidecar must keep:
+      1. The assistant turn that emitted tool_calls (with the tool_call
+         entries intact — `function.name` + `arguments`).
+      2. The role:tool reply linked by tool_call_id.
+      3. The final assistant turn that closed the loop.
+
+    This is the audit trail for malformed Gemma tool-calls
+    (chat-template-token leaks like `<|"|verb<|"|`, hallucinated verbs,
+    arguments-as-string vs dict). Without it, faulty calls evaporate
+    after the turn and we can't diagnose them after the fact.
+    """
+    oid = await _make_ollama(seeded_kernel, file_agent)
+    fp = _FakeProvider(
+        [
+            # Iter 1: tool_call to core.list_agents
+            [
+                {
+                    "tool_call": {
+                        "id": "call_X",
+                        "name": "send",
+                        "arguments": {
+                            "target_id": "core",
+                            "payload": {"type": "list_agents"},
+                        },
+                    }
+                }
+            ],
+            # Iter 2: final text, loop ends
+            ["Done."],
+        ]
+    )
+    ot._providers[oid] = fp
+    try:
+        await seeded_kernel.send(oid, {"type": "send", "text": "list em"})
+        path = tmp_path / ".fantastic" / "agents" / oid / "chat_cli.json"
+        data = json.loads(path.read_text())
+        roles = [m["role"] for m in data]
+        # Expected sequence: user → asst-w-tcs → tool → asst-final
+        assert roles == ["user", "assistant", "tool", "assistant"], (
+            f"roles malformed: {roles}\nfull: {data}"
+        )
+        # 1. assistant turn with tool_calls preserved
+        asst_tcs = data[1]
+        assert asst_tcs["tool_calls"], "tool_calls dropped from persistence"
+        tc = asst_tcs["tool_calls"][0]
+        assert tc["function"]["name"] == "send"
+        assert tc["function"]["arguments"]["target_id"] == "core"
+        # 2. tool reply linked by tool_call_id
+        assert data[2]["tool_call_id"] == "call_X"
+        assert data[2]["name"] == "send"
+        # 3. final assistant turn captured
+        assert data[3] == {"role": "assistant", "content": "Done."}
     finally:
         ot._providers.pop(oid, None)
 
