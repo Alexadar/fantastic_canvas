@@ -12,6 +12,7 @@ import asyncio
 
 import pytest
 
+from core import Core
 from kernel import Kernel
 from kernel_bridge import tools as kb
 from kernel_bridge._transport import (
@@ -22,10 +23,10 @@ from kernel_bridge._transport import (
 # ─── fixtures ────────────────────────────────────────────────────
 
 
-def _seed(k: Kernel) -> None:
-    """Seed core + cli singletons (cheap; no boot fanout)."""
-    k.ensure("core", "core.tools", singleton=True, display_name="core")
-    k.ensure("cli", "cli.tools", singleton=True, display_name="cli")
+def _seed(k) -> None:
+    """Seed cli singleton (root IS what `core` was; admin verbs are
+    baked into Agent class)."""
+    k.ensure("cli", "cli.tools", display_name="cli")
 
 
 @pytest.fixture
@@ -41,10 +42,10 @@ def two_kernels(tmp_path, monkeypatch):
     b_dir.mkdir()
 
     monkeypatch.chdir(a_dir)
-    ka = Kernel()
+    ka = Core(Kernel(), argv=[])
     _seed(ka)
     monkeypatch.chdir(b_dir)
-    kb_kern = Kernel()
+    kb_kern = Core(Kernel(), argv=[])
     _seed(kb_kern)
     monkeypatch.chdir(tmp_path)
     yield ka, kb_kern
@@ -54,7 +55,7 @@ def two_kernels(tmp_path, monkeypatch):
     kb._test_transport_inject.clear()
 
 
-async def _make_bridge(kernel: Kernel, peer_id: str, transport: str = "memory") -> str:
+async def _make_bridge(kernel, peer_id: str, transport: str = "memory") -> str:
     rec = await kernel.send(
         "core",
         {
@@ -112,7 +113,7 @@ async def test_reflect_lists_verbs(two_kernels):
     ka, _ = two_kernels
     bid = await _make_bridge(ka, peer_id="ignored", transport="memory")
     r = await ka.send(bid, {"type": "reflect"})
-    for v in ("reflect", "boot", "shutdown", "reconnect", "forward"):
+    for v in ("reflect", "boot", "reconnect", "forward"):
         assert v in r["verbs"], f"missing verb {v}"
     assert r["transport"] == "memory"
     assert r["connected"] is False  # not booted yet
@@ -133,10 +134,12 @@ async def test_memory_transport_pair_round_trip(two_kernels):
             "payload": {"type": "reflect"},
         },
     )
-    # The reply is whatever kernel B's core returned for reflect.
+    # The reply is what kernel B's root returns for reflect — the
+    # substrate primer.
     assert isinstance(r, dict), f"non-dict reply: {r!r}"
-    assert r.get("id") == "core", f"reply not from kernel B core: {r}"
-    assert "verbs" in r and "list_agents" in r["verbs"]
+    assert "transports" in r, f"reply not the primer: {r}"
+    assert "tree" in r
+    assert "available_bundles" in r
 
 
 async def test_forward_before_boot_errors(two_kernels):
@@ -165,8 +168,8 @@ async def test_corr_id_namespacing_no_collision(two_kernels):
     assert c2 == f"{b_id}:42"
 
 
-async def test_shutdown_cancels_read_task_and_rejects_pending(two_kernels):
-    """Shutdown must (1) cancel the read_loop task, (2) close the
+async def test_on_delete_cancels_read_task_and_rejects_pending(two_kernels):
+    """on_delete must (1) cancel the read_loop task, (2) close the
     transport, (3) reject any in-flight forward Futures with
     ConnectionError so callers don't hang forever."""
     ka, kb_kern = two_kernels
@@ -178,17 +181,16 @@ async def test_shutdown_cancels_read_task_and_rejects_pending(two_kernels):
     st.pending["dangling"] = fake_fut
     assert st.read_task is not None and not st.read_task.done()
 
-    r = await ka.send(a_id, {"type": "shutdown"})
-    assert r["shutdown"] is True
+    await kb.on_delete(ka.ctx.agents[a_id])
     assert fake_fut.done()
     assert isinstance(fake_fut.exception(), ConnectionError)
     assert st.transport is None
     assert st.read_task is None
 
 
-async def test_shutdown_via_delete_agent_lifecycle(two_kernels):
-    """core.delete_agent fires `shutdown` before removing the record
-    (universal lifecycle hook). The bridge must clean up cleanly."""
+async def test_on_delete_via_cascade(two_kernels):
+    """core.delete_agent calls the bundle's on_delete hook depth-first
+    before removing the record. The bridge must clean up cleanly."""
     ka, kb_kern = two_kernels
     a_id, b_id = await _wire_memory_pair(ka, kb_kern)
     assert kb._state(a_id).transport is not None

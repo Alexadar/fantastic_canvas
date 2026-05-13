@@ -1,25 +1,62 @@
-"""terminal_webapp — xterm UI agent."""
+"""terminal_webapp — xterm UI agent.
+
+In the recursive Agent model, terminal_webapp owns its terminal_backend
+as a structural child. `_boot` (fired automatically on create_agent)
+spawns the backend idempotently and writes its id into the webapp's
+`upstream_id` field. Subsequent reboots find the existing child via
+`_load_children` and skip the creation.
+"""
 
 from __future__ import annotations
 
 
-async def _make(kernel, upstream_id="some_backend"):
+async def _make(kernel):
     rec = await kernel.send(
         "core",
-        {
-            "type": "create_agent",
-            "handler_module": "terminal_webapp.tools",
-            "upstream_id": upstream_id,
-        },
+        {"type": "create_agent", "handler_module": "terminal_webapp.tools"},
     )
     return rec["id"]
 
 
 async def test_reflect_returns_upstream_id(seeded_kernel):
-    aid = await _make(seeded_kernel, upstream_id="terminal_backend_x")
+    """After create_agent → _boot fires → backend child spawned → its
+    id stored on upstream_id. Reflect surfaces it for domain code
+    (canvas frame chrome, etc.) that needs to know the pair."""
+    aid = await _make(seeded_kernel)
     r = await seeded_kernel.send(aid, {"type": "reflect"})
-    assert r["upstream_id"] == "terminal_backend_x"
+    assert r["upstream_id"] is not None
+    assert r["upstream_id"].startswith("terminal_backend_")
     assert "get_webapp" in r["verbs"]
+    # The backend exists in the substrate, parented under us.
+    webapp_agent = seeded_kernel.ctx.agents[aid]
+    assert r["upstream_id"] in webapp_agent._children
+
+
+async def test_first_boot_spawns_backend_idempotent(seeded_kernel):
+    """Boot is idempotent — second boot finds the existing child and
+    does NOT create a duplicate."""
+    aid = await _make(seeded_kernel)
+    webapp_agent = seeded_kernel.ctx.agents[aid]
+    children_before = list(webapp_agent._children.keys())
+    assert len(children_before) == 1
+    # Re-fire boot; should be a no-op.
+    await seeded_kernel.send(aid, {"type": "boot"})
+    children_after = list(webapp_agent._children.keys())
+    assert children_after == children_before
+
+
+async def test_cascade_kills_backend(seeded_kernel):
+    """Deleting the webapp cascades through the backend (PTY would die
+    if the backend's _shutdown ran for real; we just check structural
+    removal here since spawning a real PTY in tests is heavy)."""
+    aid = await _make(seeded_kernel)
+    webapp_agent = seeded_kernel.ctx.agents[aid]
+    backend_id = list(webapp_agent._children.keys())[0]
+    assert backend_id in seeded_kernel.ctx.agents
+    r = await seeded_kernel.send(seeded_kernel.id, {"type": "delete_agent", "id": aid})
+    assert r["deleted"] is True
+    assert aid not in seeded_kernel.ctx.agents
+    assert backend_id not in seeded_kernel.ctx.agents
 
 
 async def test_get_webapp_returns_descriptor(seeded_kernel):

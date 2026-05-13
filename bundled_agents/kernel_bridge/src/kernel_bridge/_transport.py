@@ -16,10 +16,10 @@ Both expose:
     @property
     closed: bool
 
-The shape of `frame` matches the existing webapp/_proxy.py wire
+The shape of `frame` matches the existing web/_proxy.py wire
 protocol — `{type:'call', target, payload, id}` and
 `{type:'reply', id, data}` — so a WSTransport against a real
-fantastic webapp's `/<id>/ws` endpoint just works.
+fantastic web's `/<id>/ws` endpoint just works.
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ class MemoryTransport(_BaseTransport):
 
 class WSTransport(_BaseTransport):
     """websockets client connection wrapper. Frames serialize as
-    JSON text (matches webapp/_proxy.py default mode — binary path
+    JSON text (matches web/_proxy.py default mode — binary path
     is reserved for byte-heavy payloads via the kernel's
     binary_protocol; bridges don't currently mint binary)."""
 

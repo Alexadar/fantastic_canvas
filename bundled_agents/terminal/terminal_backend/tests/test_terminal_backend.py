@@ -70,7 +70,7 @@ async def test_shell_recovers_after_timeout(terminal):
 
 async def test_shell_silently_ignores_unknown_args(terminal):
     """Failfast on parameters we explicitly reject is overkill — kwargs
-    we don't read are just ignored. `wait` (legacy) goes through cleanly."""
+    we don't read are just ignored."""
     k, tid = terminal
     r = await k.send(tid, {"type": "shell", "cmd": "echo silently_ok", "wait": 999})
     assert r["completed"] is True

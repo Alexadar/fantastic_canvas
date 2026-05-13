@@ -337,11 +337,12 @@ async def _boot(id, payload, kernel):
     return {"booted": True, "transport": kind, "tunnel_pid": st.tunnel_pid}
 
 
-async def _shutdown(id, payload, kernel):
-    """No args. Cancels the read loop, closes the transport, kills the SSH tunnel (if any), rejects pending Futures. Called automatically by core.delete_agent's universal lifecycle hook."""
-    st = _bridges.get(id)
+async def on_delete(agent):
+    """Cascade hook — cancels the read loop, closes the transport,
+    kills the SSH tunnel (if any), rejects pending Futures."""
+    st = _bridges.get(agent.id)
     if st is None:
-        return {"shutdown": True, "noop": True}
+        return
     if st.read_task is not None and not st.read_task.done():
         st.read_task.cancel()
         try:
@@ -362,12 +363,11 @@ async def _shutdown(id, payload, kernel):
     st.read_task = None
     st.tunnel_proc = None
     st.tunnel_pid = None
-    return {"shutdown": True}
 
 
 async def _reconnect(id, payload, kernel):
-    """No args. Equivalent to shutdown + boot — explicit because we don't auto-reconnect on transport failure (keeps real network problems visible to operators / telemetry)."""
-    await _shutdown(id, payload, kernel)
+    """No args. Teardown + boot — explicit because we don't auto-reconnect on transport failure (keeps real network problems visible to operators / telemetry)."""
+    await on_delete(kernel)
     return await _boot(id, payload, kernel)
 
 
@@ -424,7 +424,6 @@ async def _forward(id, payload, kernel):
 VERBS = {
     "reflect": _reflect,
     "boot": _boot,
-    "shutdown": _shutdown,
     "reconnect": _reconnect,
     "forward": _forward,
 }

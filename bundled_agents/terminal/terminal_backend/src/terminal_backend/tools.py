@@ -169,6 +169,12 @@ def _cleanup(agent_id: str) -> None:
         os.kill(state["pid"], signal_mod.SIGKILL)
     except OSError:
         pass
+    # Reap so the child isn't left as a zombie (`kill -0 <pid>` keeps
+    # reporting zombies as alive otherwise). Best-effort.
+    try:
+        os.waitpid(state["pid"], 0)
+    except (OSError, ChildProcessError):
+        pass
 
 
 def _scrollback_text(agent_id: str) -> str:
@@ -190,6 +196,7 @@ async def _reflect(id, payload, kernel):
         "sentence": "PTY shell session.",
         "command": (state or {}).get("cmd") or rec.get("command") or _detect_shell(),
         "running": id in _procs,
+        "pid": (state or {}).get("pid"),
         "cols": (state or {}).get("cols", rec.get("cols", DEFAULT_COLS)),
         "rows": (state or {}).get("rows", rec.get("rows", DEFAULT_ROWS)),
         "scrollback_bytes": (state or {}).get("scrollback_bytes", 0),
@@ -269,10 +276,13 @@ async def _stop(id, payload, kernel):
     return {"stopped": True}
 
 
-async def _shutdown(id, payload, kernel):
-    """No args. Lifecycle hook called by core.delete_agent before record removal — closes the PTY fd and SIGKILLs the child so the subprocess doesn't outlive its agent record (orphan PTYs would keep emitting output to a dead inbox, leaking sprites in telemetry views). Returns {shutdown:true}."""
-    _cleanup(id)
-    return {"shutdown": True}
+async def on_delete(agent):
+    """Cascade hook — invoked by the substrate during cascade-delete
+    BEFORE the agent's disk artifact is removed. Closes the PTY fd
+    and SIGKILLs the child so the subprocess doesn't outlive its
+    agent record (orphan PTYs would keep emitting output to a dead
+    inbox, leaking sprites in telemetry views)."""
+    _cleanup(agent.id)
 
 
 async def _shell(id, payload, kernel):
@@ -361,7 +371,6 @@ VERBS = {
     "restart": _restart,
     "signal": _signal,
     "stop": _stop,
-    "shutdown": _shutdown,
 }
 
 
