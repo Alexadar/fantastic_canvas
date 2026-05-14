@@ -92,6 +92,30 @@ async def test_render_html_has_flow_control_ack(seeded_kernel):
     )
 
 
+async def test_render_html_resize_not_gated_by_autoscroll(seeded_kernel):
+    """Drift guard: the ResizeObserver debounce must NOT be a
+    reset-on-every-event debounce. The autoscroll tick scrolls every
+    100ms, nudging the observed container — a clearTimeout-on-every-RO
+    debounce gets perpetually starved and tightFit never fires, so
+    autoscroll-on silently kills resize. The fix is a coalescing
+    debounce: the first RO callback arms a fixed-deadline timer, later
+    ones are absorbed. Guard the shape so it can't regress."""
+    aid = await _make(seeded_kernel)
+    html = (await seeded_kernel.send(aid, {"type": "render_html"}))["html"]
+    # Coalescing guard: arm only when no fit is already scheduled.
+    assert "if (ro._t) return" in html, (
+        "ResizeObserver debounce must coalesce, not reset — a "
+        "reset-style debounce is starved by the autoscroll tick"
+    )
+    # tightFit itself must never branch on autoscroll BEFORE refitting.
+    fit_body = html.split("function tightFit()", 1)[1].split("}", 1)[0]
+    assert "fit.fit()" in fit_body, "tightFit must always call fit.fit()"
+    assert fit_body.index("fit.fit()") < fit_body.find("autoscroll"), (
+        "fit.fit() must run before any autoscroll handling — resize "
+        "is never gated by autoscroll"
+    )
+
+
 async def test_render_html_has_image_paste_bridge(seeded_kernel):
     """Drift guard: the served xterm UI must bridge image paste.
     xterm only pastes text/plain, so a browser-clipboard image would

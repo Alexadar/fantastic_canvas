@@ -172,15 +172,34 @@
     try {
       fit.fit();
       term.refresh(0, term.rows - 1);
+      // Autoscroll must keep working AFTER a resize: fit() may have
+      // shifted the bottom row (reflowOnResize is off, so the buffer
+      // doesn't re-pin itself), so re-anchor to the new bottom here.
+      // This is the ONLY autoscroll/resize coupling — and it runs
+      // resize-first, so resize is never gated by autoscroll.
+      if (autoscroll) {
+        term.scrollToBottom();
+        pendingOutput = false;
+      }
     } catch (e) { /* layout still settling */ }
   }
 
+  // Coalescing debounce — NOT a reset-on-every-event debounce. The
+  // autoscroll tick calls term.scrollToBottom() every 100ms, and the
+  // resulting renderer churn nudges the observed container, so a
+  // reset-style debounce (clearTimeout on every RO callback) would be
+  // perpetually starved by the autoscroll tick and tightFit would
+  // never fire — autoscroll-on silently killing resize. Instead, the
+  // FIRST RO callback after a quiet period arms a fixed-deadline
+  // timer that always elapses; later callbacks during that window
+  // are absorbed. Two-stage: 80ms to let the RO burst settle, then a
+  // rAF so layout has committed before we measure.
   const ro = new ResizeObserver(() => {
-    clearTimeout(ro._t);
-    // Two-stage debounce: wait for ResizeObserver burst to quiet (80ms),
-    // then defer to next animation frame so layout has fully committed
-    // before we measure. Cuts the half-char flake on rapid resize.
-    ro._t = setTimeout(() => requestAnimationFrame(tightFit), 80);
+    if (ro._t) return;  // a fit is already scheduled — coalesce
+    ro._t = setTimeout(() => {
+      ro._t = null;
+      requestAnimationFrame(tightFit);
+    }, 80);
   });
   ro.observe(container);
 
