@@ -92,6 +92,71 @@ async def test_write_delivers_bytes(terminal):
     assert "hi-via-write" in out["output"]
 
 
+async def test_write_large_paste_not_truncated(terminal):
+    """Drift guard for the terminal-dead-after-paste bug: the PTY fd is
+    non-blocking, so a single os.write() short-writes anything bigger
+    than the PTY input buffer and silently drops the tail. `_write`
+    must loop until every byte lands. Write a payload far larger than
+    any PTY buffer and assert the whole thing arrives intact (`written`
+    == full length, and the head AND tail both echo back)."""
+    k, tid = terminal
+    # 64 KB — well past a typical PTY input buffer (a few KB).
+    body = "".join(f"L{i:05d}" for i in range(8000))  # ~64000 chars
+    payload = "echo START_" + body + "_END\n"
+    r = await k.send(tid, {"type": "write", "data": payload})
+    assert r["written"] == len(payload.encode("utf-8")), (
+        f"short write: {r['written']} of {len(payload.encode('utf-8'))}"
+    )
+    await asyncio.sleep(1.0)
+    out = await k.send(tid, {"type": "output"})
+    # Both ends echo → nothing was dropped mid-stream.
+    assert "START_L00000" in out["output"]
+    assert "L07999_END" in out["output"]
+
+
+async def test_flow_control_pauses_and_resumes(terminal):
+    """VSCode-style backpressure (FlowControlConstants, ported): once
+    emitted output outruns the streaming consumer's acks past
+    HIGH_WATERMARK, the PTY reader detaches ('paused'); the `ack` verb
+    re-attaches it once the backlog drains below LOW_WATERMARK.
+    Without it a flood of output piles unbounded emit tasks onto the
+    loop and the tab locks up — the 'terminal dead after paste'
+    failure mode for any paste that runs a noisy command."""
+    k, tid = terminal
+    # Flood the PTY with well over HIGH_WATERMARK (100K) chars of
+    # output. `head -c` caps it so the child exits cleanly even if we
+    # never resumed; the pipe stalls behind backpressure meanwhile.
+    await k.send(
+        tid,
+        {"type": "write", "data": "yes FANTASTIC_FLOW_CONTROL | head -c 400000\n"},
+    )
+    refl = None
+    for _ in range(60):
+        await asyncio.sleep(0.05)
+        refl = await k.send(tid, {"type": "reflect"})
+        if refl["paused"]:
+            break
+    assert refl["paused"] is True, "reader must pause once unacked > HIGH_WATERMARK"
+    assert refl["unacked"] > 100_000
+    # Ack the backlog down — the reader must re-attach and keep draining.
+    r = None
+    for _ in range(200):
+        r = await k.send(tid, {"type": "ack", "chars": 5000})
+        if not r["paused"]:
+            break
+    assert r["paused"] is False, "reader must re-attach once unacked < LOW_WATERMARK"
+    assert r["unacked"] < 5_000
+
+
+async def test_ack_on_unpaused_terminal_is_harmless(terminal):
+    """An ack from a streamer that never hit the watermark just floors
+    the counter at zero — no negative drift, stays unpaused."""
+    k, tid = terminal
+    r = await k.send(tid, {"type": "ack", "chars": 999999})
+    assert r["unacked"] == 0
+    assert r["paused"] is False
+
+
 async def test_resize(terminal):
     k, tid = terminal
     r = await k.send(tid, {"type": "resize", "cols": 100, "rows": 30})

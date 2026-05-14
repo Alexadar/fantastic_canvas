@@ -72,3 +72,21 @@ async def test_unknown_verb_errors(seeded_kernel):
     aid = await _make(seeded_kernel)
     r = await seeded_kernel.send(aid, {"type": "garbage"})
     assert "error" in r
+
+
+async def test_render_html_has_flow_control_ack(seeded_kernel):
+    """Drift guard: the served xterm UI must ack each output chunk
+    AFTER xterm parses it (the term.write callback), buffered to one
+    ack per CHAR_COUNT_ACK_SIZE chars. This is the consumer half of
+    the VSCode-style backpressure — without it the backend's paused
+    PTY reader never resumes and the terminal goes dead under a
+    flood (e.g. a pasted script that runs)."""
+    aid = await _make(seeded_kernel)
+    html = (await seeded_kernel.send(aid, {"type": "render_html"}))["html"]
+    assert "CHAR_COUNT_ACK_SIZE" in html, "lost the ack-buffer threshold"
+    assert "type: 'ack'" in html, "must send the ack verb to the backend"
+    # The ack must be wired through term.write's parse callback, not
+    # fired blindly on receipt — that's what makes it true backpressure.
+    assert "term.write(d, () => ackChars" in html, (
+        "ack must fire from xterm's write/parse callback"
+    )

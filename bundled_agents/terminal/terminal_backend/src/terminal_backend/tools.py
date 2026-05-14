@@ -5,15 +5,30 @@ State is in-memory only (one PTY per agent). Output is emitted as
 browser tab watching the agent receives the stream live.
 
 Verbs:
-  reflect   -> {sentence, command, running, scrollback_bytes, cols, rows}
+  reflect   -> {sentence, command, running, scrollback_bytes, cols, rows,
+                paused, unacked}
   boot      -> spawn the PTY if not running (called by kernel boot fanout)
   write     args: data                  -> write bytes to PTY stdin
   shell     args: cmd, timeout?         -> run via done-token, return output
   resize    args: cols, rows            -> SIGWINCH
   output    args: max_bytes?            -> {output: <scrollback>}
+  ack       args: chars                 -> flow-control ack from a streamer
   restart                                -> kill + respawn with same params
   signal    args: signal? (default 2)   -> os.kill(pid, signal)
   stop                                   -> kill the PTY
+
+Flow control (mirrors VSCode's integrated terminal): the streaming
+output path is backpressured. `_on_readable` counts every char it
+emits; once more than HIGH_WATERMARK chars sit unacknowledged the PTY
+reader is detached ("paused") so the kernel PTY buffer fills and the
+shell naturally throttles. A streaming consumer (terminal_webapp) acks
+each chunk AFTER xterm has parsed it via the `ack` verb; once the
+backlog drains below LOW_WATERMARK the reader re-attaches. Without it
+a flood of output (a pasted script that runs, `cat bigfile`) piles
+unbounded emit tasks onto the loop and the tab locks up. The
+synchronous `shell` verb drains via scrollback, not the emit stream —
+it is exempt (no pause while a done-token is pending; flow state is
+cleared around each call).
 """
 
 from __future__ import annotations
@@ -34,6 +49,13 @@ logger = logging.getLogger(__name__)
 MAX_SCROLLBACK = 256 * 1024
 DEFAULT_COLS = 200
 DEFAULT_ROWS = 50
+
+# Flow control — VSCode's FlowControlConstants, ported. Pause the PTY
+# reader once this many emitted chars sit unacknowledged by the
+# streaming consumer; resume once the consumer's acks drain the
+# backlog below the low-water mark.
+HIGH_WATERMARK = 100_000
+LOW_WATERMARK = 5_000
 
 # Per-agent runtime state (NOT persisted)
 _procs: dict[str, dict] = {}
@@ -94,6 +116,44 @@ def _on_readable(agent_id: str, kernel) -> None:
             if (tok + "\r\n") in full or (tok + "\n") in full:
                 ev.set()
     asyncio.create_task(kernel.emit(agent_id, {"type": "output", "data": text}))
+    # Flow control: account the emitted chars and pause the reader if
+    # the streaming consumer is falling behind. A `shell` call in
+    # flight drains via scrollback (not the emit stream) and never
+    # acks — don't pause under it.
+    state["unacked"] += len(text)
+    if (
+        not _pending_tokens.get(agent_id)
+        and not state["paused"]
+        and state["unacked"] > HIGH_WATERMARK
+    ):
+        state["paused"] = True
+        _detach_reader(agent_id)
+
+
+async def _write_all(fd: int, buf: bytes) -> int:
+    """Write the FULL buffer to the non-blocking PTY fd. `os.write` on
+    a non-blocking fd short-writes — it returns however many bytes the
+    PTY input buffer could take and the caller is responsible for the
+    rest — and raises `BlockingIOError` when the buffer is full. A
+    single `os.write()` that ignores the count silently drops the tail
+    of anything bigger than the buffer: that's exactly how a paste
+    ends up truncated mid-escape-sequence (the bracketed-paste `\\e[201~`
+    end marker dropped), leaving the shell stuck in paste mode and the
+    terminal apparently dead. Loop until every byte lands; await
+    fd-writable when the buffer is full."""
+    loop = asyncio.get_event_loop()
+    written = 0
+    while written < len(buf):
+        try:
+            written += os.write(fd, buf[written:])
+        except BlockingIOError:
+            ev = asyncio.Event()
+            loop.add_writer(fd, ev.set)
+            try:
+                await ev.wait()
+            finally:
+                loop.remove_writer(fd)
+    return written
 
 
 def _attach_reader(agent_id: str, kernel) -> None:
@@ -117,6 +177,22 @@ def _detach_reader(agent_id: str) -> None:
     except (RuntimeError, OSError, ValueError):
         pass
     state["reader_attached"] = False
+
+
+def _clear_flow_control(agent_id: str, kernel) -> None:
+    """Reset flow-control accounting and force-resume the reader. A
+    fresh streaming consumer (terminal_webapp mounting → `boot`) or a
+    synchronous `shell` call has no relationship to a previous
+    consumer's unacked backlog — stale counts would otherwise leave
+    the reader paused with nobody left to ack it. VSCode's
+    `clearUnacknowledgedChars`, ported."""
+    state = _procs.get(agent_id)
+    if not state:
+        return
+    state["unacked"] = 0
+    if state["paused"]:
+        state["paused"] = False
+        _attach_reader(agent_id, kernel)
 
 
 def _spawn(agent_id: str, kernel) -> None:
@@ -151,6 +227,13 @@ def _spawn(agent_id: str, kernel) -> None:
         "rows": rows,
         "scrollback": collections.deque(),
         "scrollback_bytes": 0,
+        # Flow control
+        "unacked": 0,
+        "paused": False,
+        # Serializes writes to the PTY fd. Two concurrent `_write_all`
+        # loops on one non-blocking fd would race on `add_writer` AND
+        # interleave bytes — fatal for a bracketed-paste sequence.
+        "write_lock": asyncio.Lock(),
     }
     _procs[agent_id] = state
     _attach_reader(agent_id, kernel)
@@ -188,7 +271,7 @@ def _scrollback_text(agent_id: str) -> str:
 
 
 async def _reflect(id, payload, kernel):
-    """Identity + PTY state. No args. `running`/`scrollback_bytes` are process-local — read via the live serve to get truth."""
+    """Identity + PTY state. No args. `running`/`scrollback_bytes`/`paused`/`unacked` are process-local — read via the live serve to get truth."""
     state = _procs.get(id)
     rec = kernel.get(id) or {}
     return {
@@ -200,6 +283,8 @@ async def _reflect(id, payload, kernel):
         "cols": (state or {}).get("cols", rec.get("cols", DEFAULT_COLS)),
         "rows": (state or {}).get("rows", rec.get("rows", DEFAULT_ROWS)),
         "scrollback_bytes": (state or {}).get("scrollback_bytes", 0),
+        "paused": (state or {}).get("paused", False),
+        "unacked": (state or {}).get("unacked", 0),
         "verbs": {
             n: (f.__doc__ or "").strip().splitlines()[0] for n, f in VERBS.items()
         },
@@ -211,22 +296,37 @@ async def _reflect(id, payload, kernel):
 
 
 async def _boot(id, payload, kernel):
-    """Idempotent. Spawns the PTY child if not already running. Returns {running:true}."""
+    """Idempotent. Spawns the PTY child if not already running; clears stale flow-control state so a freshly-mounted streamer starts clean. Returns {running:true}."""
     _spawn(id, kernel)
+    _clear_flow_control(id, kernel)
     return {"running": True}
 
 
 async def _write(id, payload, kernel):
-    """args: data:str (req). Writes UTF-8 bytes to PTY stdin (no synchronous wait). Returns {written:int}."""
+    """args: data:str (req). Writes UTF-8 bytes to PTY stdin IN FULL — loops over the non-blocking fd so large pastes aren't truncated; serialized per-agent so concurrent writes can't interleave a bracketed-paste sequence. Returns {written:int}."""
     state = _procs.get(id)
     if not state:
         return {"error": "not running"}
     data = payload.get("data", "")
     try:
-        os.write(state["fd"], data.encode("utf-8"))
+        async with state["write_lock"]:
+            written = await _write_all(state["fd"], data.encode("utf-8"))
     except OSError as e:
         return {"error": str(e)}
-    return {"written": len(data)}
+    return {"written": written}
+
+
+async def _ack(id, payload, kernel):
+    """args: chars:int. Flow-control ack from a streaming consumer (terminal_webapp acks each chunk after xterm parses it). Decrements the unacked-char count; re-attaches the PTY reader once it drops below LOW_WATERMARK. Returns {unacked:int, paused:bool}."""
+    state = _procs.get(id)
+    if not state:
+        return {"error": "not running"}
+    chars = int(payload.get("chars", 0))
+    state["unacked"] = max(0, state["unacked"] - chars)
+    if state["paused"] and state["unacked"] < LOW_WATERMARK:
+        state["paused"] = False
+        _attach_reader(id, kernel)
+    return {"unacked": state["unacked"], "paused": state["paused"]}
 
 
 async def _resize(id, payload, kernel):
@@ -295,6 +395,12 @@ async def _shell(id, payload, kernel):
         return {"error": "shell: cmd required"}
     timeout = float(payload.get("timeout", 30.0))
 
+    # `shell` drains via scrollback, not the emit stream — it can't be
+    # left at the mercy of a streamer's stale flow-control pause (a
+    # detached reader means the done-token never lands → timeout).
+    # Clear it on the way in, and again on the way out so this call's
+    # own output doesn't strand the reader paused for the next streamer.
+    _clear_flow_control(id, kernel)
     token = f"__DONE_{secrets.token_hex(8)}__"
     pending = _pending_tokens.setdefault(id, {})
     event = asyncio.Event()
@@ -303,7 +409,8 @@ async def _shell(id, payload, kernel):
         before_text = _scrollback_text(id)
         line = f"{cmd}; printf '\\n%s\\n' '{token}'\n"
         try:
-            os.write(state["fd"], line.encode("utf-8"))
+            async with state["write_lock"]:
+                await _write_all(state["fd"], line.encode("utf-8"))
         except OSError as e:
             return {"error": str(e)}
         try:
@@ -356,6 +463,9 @@ async def _shell(id, payload, kernel):
         pending.pop(token, None)
         if not pending:
             _pending_tokens.pop(id, None)
+        # This call's output never went through the ack stream — drop
+        # the backlog so it can't pause the reader for the next streamer.
+        _clear_flow_control(id, kernel)
 
 
 # ─── dispatch ───────────────────────────────────────────────────
@@ -365,6 +475,7 @@ VERBS = {
     "reflect": _reflect,
     "boot": _boot,
     "write": _write,
+    "ack": _ack,
     "shell": _shell,
     "resize": _resize,
     "output": _output,
