@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 
 import pytest
@@ -155,6 +156,59 @@ async def test_ack_on_unpaused_terminal_is_harmless(terminal):
     r = await k.send(tid, {"type": "ack", "chars": 999999})
     assert r["unacked"] == 0
     assert r["paused"] is False
+
+
+# A real 1x1 transparent PNG — content validity doesn't matter to the
+# backend (it just writes the bytes), but a genuine image keeps the
+# test honest about what's flowing through.
+_TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAA"
+    "AAYAAjCB0C8AAAAASUVORK5CYII="
+)
+
+
+async def test_paste_image_writes_file_and_injects_path(terminal):
+    """Image-paste bridge: a browser xterm can't hand a server-side
+    `claude` an image from the browser clipboard, so `paste_image`
+    saves the bytes to a per-agent scratch file and types the path
+    into the PTY — mimics a file drag-drop, the path-injection
+    pattern Claude Code recognizes."""
+    k, tid = terminal
+    r = await k.send(
+        tid, {"type": "paste_image", "data": _TINY_PNG, "mime": "image/png"}
+    )
+    assert "error" not in r, r
+    assert r["bytes"] == len(_TINY_PNG)
+    assert r["path"].endswith(".png")
+    # The bytes actually landed on disk, intact.
+    with open(r["path"], "rb") as f:
+        assert f.read() == _TINY_PNG
+    # And the path was typed into the PTY (the shell echoes stdin).
+    await asyncio.sleep(0.4)
+    out = await k.send(tid, {"type": "output"})
+    assert r["path"] in out["output"]
+
+
+async def test_paste_image_rejects_unsupported_type(terminal):
+    """Only the formats Claude Code accepts (png/jpeg/gif/webp)."""
+    k, tid = terminal
+    r = await k.send(tid, {"type": "paste_image", "data": b"BM..", "mime": "image/bmp"})
+    assert "error" in r
+
+
+async def test_paste_image_rejects_oversize(terminal):
+    """Claude Code's 5 MB per-image cap is enforced backend-side."""
+    k, tid = terminal
+    big = b"\x00" * (5 * 1024 * 1024 + 1)
+    r = await k.send(tid, {"type": "paste_image", "data": big, "mime": "image/png"})
+    assert "error" in r
+    assert "5 MB" in r["error"]
+
+
+async def test_paste_image_requires_bytes(terminal):
+    k, tid = terminal
+    r = await k.send(tid, {"type": "paste_image", "data": "not-bytes"})
+    assert "error" in r
 
 
 async def test_resize(terminal):

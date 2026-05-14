@@ -9,6 +9,7 @@ Verbs:
                 paused, unacked}
   boot      -> spawn the PTY if not running (called by kernel boot fanout)
   write     args: data                  -> write bytes to PTY stdin
+  paste_image args: data:bytes, mime?   -> save image, type its path into PTY
   shell     args: cmd, timeout?         -> run via done-token, return output
   resize    args: cols, rows            -> SIGWINCH
   output    args: max_bytes?            -> {output: <scrollback>}
@@ -40,8 +41,10 @@ import logging
 import os
 import pty
 import secrets
+import shutil
 import signal as signal_mod
 import struct
+import tempfile
 import termios
 
 logger = logging.getLogger(__name__)
@@ -56,6 +59,18 @@ DEFAULT_ROWS = 50
 # backlog below the low-water mark.
 HIGH_WATERMARK = 100_000
 LOW_WATERMARK = 5_000
+
+# Image paste — the formats Claude Code accepts, keyed by MIME, and
+# its per-image size cap. A browser xterm can't hand a server-side
+# CLI an image from the browser clipboard, so `paste_image` bridges
+# it: save the bytes, type the path (mimics a file drag-drop).
+_IMAGE_EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+}
+MAX_PASTE_IMAGE = 5 * 1024 * 1024
 
 # Per-agent runtime state (NOT persisted)
 _procs: dict[str, dict] = {}
@@ -258,6 +273,10 @@ def _cleanup(agent_id: str) -> None:
         os.waitpid(state["pid"], 0)
     except (OSError, ChildProcessError):
         pass
+    # Drop the per-agent pasted-image scratch dir, if one was created.
+    paste_dir = state.get("paste_dir")
+    if paste_dir:
+        shutil.rmtree(paste_dir, ignore_errors=True)
 
 
 def _scrollback_text(agent_id: str) -> str:
@@ -327,6 +346,43 @@ async def _ack(id, payload, kernel):
         state["paused"] = False
         _attach_reader(id, kernel)
     return {"unacked": state["unacked"], "paused": state["paused"]}
+
+
+async def _paste_image(id, payload, kernel):
+    """args: data:bytes (req), mime:str? (default image/png). Saves a pasted image to a per-agent scratch file and types its absolute path into the PTY. Bridges image paste for a CLI (e.g. claude) running in a browser xterm — the server can't reach the browser clipboard, so path injection mimics a file drag-drop. Returns {path:str, bytes:int}."""
+    state = _procs.get(id)
+    if not state:
+        return {"error": "not running"}
+    data = payload.get("data")
+    if not isinstance(data, (bytes, bytearray)):
+        return {"error": "paste_image: data must be bytes"}
+    if len(data) > MAX_PASTE_IMAGE:
+        return {"error": f"paste_image: {len(data)} bytes exceeds the 5 MB cap"}
+    mime = (payload.get("mime") or "image/png").lower()
+    ext = _IMAGE_EXT.get(mime)
+    if ext is None:
+        return {"error": f"paste_image: unsupported image type {mime!r}"}
+    # Per-agent scratch dir, created lazily — most terminals never
+    # paste an image, so don't mint a temp dir for every spawn.
+    paste_dir = state.get("paste_dir")
+    if not paste_dir:
+        paste_dir = tempfile.mkdtemp(prefix=f"fantastic_paste_{id}_")
+        state["paste_dir"] = paste_dir
+    path = os.path.join(paste_dir, f"paste_{secrets.token_hex(4)}.{ext}")
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+    except OSError as e:
+        return {"error": str(e)}
+    # Type the path at the PTY cursor with a trailing space (no
+    # newline — pasting an image must not submit; it mirrors a
+    # drag-drop, leaving the user to type their prompt and hit enter).
+    try:
+        async with state["write_lock"]:
+            await _write_all(state["fd"], (path + " ").encode("utf-8"))
+    except OSError as e:
+        return {"error": str(e)}
+    return {"path": path, "bytes": len(data)}
 
 
 async def _resize(id, payload, kernel):
@@ -476,6 +532,7 @@ VERBS = {
     "boot": _boot,
     "write": _write,
     "ack": _ack,
+    "paste_image": _paste_image,
     "shell": _shell,
     "resize": _resize,
     "output": _output,

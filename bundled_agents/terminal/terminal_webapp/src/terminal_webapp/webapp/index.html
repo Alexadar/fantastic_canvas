@@ -71,6 +71,35 @@
   term.onData(async (data) => {
     await t.call(upstream, { type: 'write', data });
   });
+
+  // Image paste bridge. xterm only pastes text/plain — an image from
+  // the browser clipboard would be silently dropped, and `claude`
+  // running server-side can't reach the browser's clipboard. So grab
+  // the image bytes here and ship them to the backend, which saves a
+  // file and types its path into the PTY (mimics a file drag-drop —
+  // the path-injection pattern Claude Code recognizes). Text paste is
+  // untouched: no image item → xterm handles it as before.
+  document.addEventListener('paste', async (ev) => {
+    const items = (ev.clipboardData && ev.clipboardData.items) || [];
+    for (const it of items) {
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        ev.preventDefault();  // don't let xterm process an empty text paste
+        const file = it.getAsFile();
+        if (!file) continue;
+        try {
+          const buf = await file.arrayBuffer();
+          await t.call(upstream, {
+            type: 'paste_image',
+            data: new Uint8Array(buf),
+            mime: it.type,
+          });
+        } catch (e) {
+          term.write('\r\n[image paste failed: ' + (e && e.message) + ']\r\n');
+        }
+        return;
+      }
+    }
+  });
   term.onResize(async ({ cols, rows }) => {
     await t.call(upstream, { type: 'resize', cols, rows });
   });

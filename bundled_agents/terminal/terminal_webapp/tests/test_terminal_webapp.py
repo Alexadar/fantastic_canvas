@@ -90,3 +90,18 @@ async def test_render_html_has_flow_control_ack(seeded_kernel):
     assert "term.write(d, () => ackChars" in html, (
         "ack must fire from xterm's write/parse callback"
     )
+
+
+async def test_render_html_has_image_paste_bridge(seeded_kernel):
+    """Drift guard: the served xterm UI must bridge image paste.
+    xterm only pastes text/plain, so a browser-clipboard image would
+    be silently dropped — and the server-side `claude` can't reach
+    the browser clipboard. The webapp catches the image item and
+    ships the bytes to the backend's paste_image verb."""
+    aid = await _make(seeded_kernel)
+    html = (await seeded_kernel.send(aid, {"type": "render_html"}))["html"]
+    assert "clipboardData" in html, "must inspect the paste event's clipboardData"
+    assert "type: 'paste_image'" in html, "must call the backend paste_image verb"
+    assert "it.type.startsWith('image/')" in html, (
+        "must filter to image clipboard items"
+    )
