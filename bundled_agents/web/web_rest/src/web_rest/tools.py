@@ -44,8 +44,13 @@ def _make_post_endpoint(self_id: str, kernel):
         body = await request.body()
         try:
             payload = json.loads(body) if body else {}
-        except json.JSONDecodeError as e:
-            return JSONResponse({"error": f"web_rest: bad JSON: {e}"}, status_code=400)
+        except json.JSONDecodeError:
+            # Don't echo the parser exception back — generic message
+            # only (CodeQL: information exposure through an exception).
+            return JSONResponse(
+                {"error": "web_rest: request body is not valid JSON"},
+                status_code=400,
+            )
         if not isinstance(payload, dict):
             return JSONResponse(
                 {"error": "web_rest: body must be a JSON object"}, status_code=400

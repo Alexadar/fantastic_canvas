@@ -166,12 +166,16 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
     async def agent_index(agent_id: str):
         """Every UI agent answers `render_html` with `{html:str}`. We
         inject transport.js and serve. Backends without a UI don't
-        implement the verb → 404."""
+        implement the verb → 404.
+
+        Error bodies are PlainTextResponse, never HTMLResponse: they
+        echo back the request-path `agent_id`, and serving that as
+        text/html would be a reflected-XSS sink. Plain text is inert."""
         if not kernel.get(agent_id):
-            return HTMLResponse(f"no agent {agent_id!r}", status_code=404)
+            return PlainTextResponse(f"no agent {agent_id!r}", status_code=404)
         r = await kernel.send(agent_id, {"type": "render_html"})
         if not isinstance(r, dict) or not isinstance(r.get("html"), str):
-            return HTMLResponse(
+            return PlainTextResponse(
                 f"agent {agent_id!r} does not implement render_html",
                 status_code=404,
             )
