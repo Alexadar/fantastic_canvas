@@ -168,15 +168,16 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
         inject transport.js and serve. Backends without a UI don't
         implement the verb → 404.
 
-        Error bodies are PlainTextResponse, never HTMLResponse: they
-        echo back the request-path `agent_id`, and serving that as
-        text/html would be a reflected-XSS sink. Plain text is inert."""
+        Error bodies are static text and never echo the request-path
+        `agent_id` — reflecting untrusted path input into a response
+        body is a reflected-XSS sink. The 404 status is the signal;
+        the caller already knows the id it requested."""
         if not kernel.get(agent_id):
-            return PlainTextResponse(f"no agent {agent_id!r}", status_code=404)
+            return PlainTextResponse("no such agent", status_code=404)
         r = await kernel.send(agent_id, {"type": "render_html"})
         if not isinstance(r, dict) or not isinstance(r.get("html"), str):
             return PlainTextResponse(
-                f"agent {agent_id!r} does not implement render_html",
+                "agent does not implement render_html",
                 status_code=404,
             )
         return HTMLResponse(_inject(r["html"]))
