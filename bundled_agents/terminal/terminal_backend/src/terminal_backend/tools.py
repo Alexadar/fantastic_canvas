@@ -35,6 +35,7 @@ cleared around each call).
 from __future__ import annotations
 
 import asyncio
+import codecs
 import collections
 import fcntl
 import logging
@@ -120,7 +121,15 @@ def _on_readable(agent_id: str, kernel) -> None:
         asyncio.create_task(kernel.emit(agent_id, {"type": "closed"}))
         _cleanup(agent_id)
         return
-    text = data.decode("utf-8", errors="replace")
+    # Incremental UTF-8 decode — `os.read` slices the stream at fixed
+    # byte boundaries, so a multi-byte char (box-drawing glyphs in any
+    # TUI redraw are 3 bytes) routinely straddles two reads. A naive
+    # per-chunk `decode` turns the split char into 2-3 replacement
+    # chars: that's the `<?>` litter AND, because one cell becomes
+    # three, the column-shift "line breaks" on resize. The incremental
+    # decoder buffers the partial tail until the next read completes
+    # it — exactly what node-pty does for VSCode's terminal.
+    text = state["decoder"].decode(data)
     _append_scrollback(state, text)
     # Signal any pending done-tokens. We look for `<token>\r\n` —
     # which the printf produces, but the command echo line does NOT
@@ -242,6 +251,11 @@ def _spawn(agent_id: str, kernel) -> None:
         "rows": rows,
         "scrollback": collections.deque(),
         "scrollback_bytes": 0,
+        # Incremental UTF-8 decoder — buffers a partial multi-byte
+        # char across `os.read` boundaries (see _on_readable). One
+        # per PTY lifetime; the byte stream is continuous within a
+        # session.
+        "decoder": codecs.getincrementaldecoder("utf-8")(errors="replace"),
         # Flow control
         "unacked": 0,
         "paused": False,

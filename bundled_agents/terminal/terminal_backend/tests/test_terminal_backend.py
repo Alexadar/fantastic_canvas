@@ -211,6 +211,30 @@ async def test_paste_image_requires_bytes(terminal):
     assert "error" in r
 
 
+async def test_multibyte_not_corrupted_across_read_chunks(terminal):
+    """Drift guard for the resize-artifacts bug: PTY output is read in
+    fixed 4 KB chunks (os.read), so a multi-byte UTF-8 char — every
+    box-drawing glyph in a TUI redraw is 3 bytes — routinely straddles
+    a chunk boundary. A naive per-chunk decode shatters the split char
+    into 2-3 U+FFFD replacement chars: that's the `<?>` litter, and
+    since one cell becomes three it shifts columns and breaks lines on
+    resize. The backend must decode incrementally (buffer the partial
+    tail across reads), exactly like node-pty does for VSCode. Stream
+    well over one 4 KB chunk of pure 3-byte chars and assert not one
+    was mangled."""
+    k, tid = terminal
+    line = "─" * 16  # 16 box-drawing horizontals — 48 bytes + \n = 49/line
+    # `yes` repeats the line; `head -n 250` keeps 250 WHOLE lines
+    # (~12 KB — spans 3+ os.read chunks) so nothing is truncated
+    # mid-char by the test itself. 4096 % 3 != 0, so a chunk boundary
+    # is still guaranteed to land mid-char inside the stream.
+    await k.send(tid, {"type": "write", "data": f"yes '{line}' | head -n 250\n"})
+    await asyncio.sleep(0.8)
+    out = (await k.send(tid, {"type": "output"}))["output"]
+    assert "�" not in out, "a multibyte char split across a read chunk → U+FFFD"
+    assert out.count(line) > 200, "box-drawing lines must survive the chunk reads intact"
+
+
 async def test_resize(terminal):
     k, tid = terminal
     r = await k.send(tid, {"type": "resize", "cols": 100, "rows": 30})
