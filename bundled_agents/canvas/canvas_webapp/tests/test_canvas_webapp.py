@@ -117,6 +117,21 @@ async def test_render_html_has_gl_host_scaffolding(seeded_kernel):
     )
 
 
+async def test_render_html_zoom_is_smoothed(seeded_kernel):
+    """Drift guard: wheel zoom is lerped, not stepped. The wheel must
+    only nudge `targetZ`; the rAF loop glides `view.z` toward it. If
+    the wheel handler goes back to setting `view.z` directly the
+    smoothing is silently gone."""
+    aid = await _make(seeded_kernel)
+    html = (await seeded_kernel.send(aid, {"type": "render_html"}))["html"]
+    assert "targetZ" in html, "lost the smoothed-zoom target"
+    assert "ZOOM_LERP" in html, "lost the per-frame lerp factor"
+    # The wheel handler must drive targetZ, not view.z, or it's a jump.
+    assert "targetZ = Math.max(ZOOM_MIN" in html, (
+        "wheel must set targetZ (clamped), not mutate view.z directly"
+    )
+
+
 async def test_render_html_gl_views_are_containerized_and_live(seeded_kernel):
     """Each GL view runs in its own THREE.Group container (iframe
     analogue) and reloads in place: gl_agent.set_gl_source emits

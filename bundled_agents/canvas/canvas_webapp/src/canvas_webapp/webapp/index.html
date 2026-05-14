@@ -333,6 +333,20 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
         try { cb(time); } catch (e) { console.error('[gl] onFrame raised:', e); }
       }
     }
+    // Smoothed zoom — glide view.z toward targetZ, re-anchoring each
+    // step on the screen-center horizon so the focal point holds. The
+    // per-step offset math mirrors an instant horizon zoom; running it
+    // once per frame just spreads the same transform over the glide.
+    if (view.z !== targetZ) {
+      const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+      let nextZ = view.z + (targetZ - view.z) * ZOOM_LERP;
+      if (Math.abs(targetZ - nextZ) < 0.0005) nextZ = targetZ;  // snap to rest
+      const ratio = nextZ / view.z;
+      view.ox = cx - (cx - view.ox) * ratio;
+      view.oy = cy - (cy - view.oy) * ratio;
+      view.z = nextZ;
+      applyView();
+    }
     renderer.render(scene, camera);
     requestAnimationFrame(frame);
   }
@@ -352,6 +366,13 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
 
   const view = { z: 1, ox: 0, oy: 0 };
   const ZOOM_MIN = 0.1, ZOOM_MAX = 5;
+  // Wheel zoom is smoothed: the wheel only nudges `targetZ`, and the
+  // rAF loop lerps `view.z` toward it (ZOOM_LERP of the gap per frame)
+  // — a soft glide instead of a stepped jump. Each lerp step is
+  // re-anchored on the screen-center horizon so the focal point holds
+  // steady through the whole glide.
+  let targetZ = view.z;
+  const ZOOM_LERP = 0.18;
   function applyView() {
     world.style.transform = `translate(${view.ox}px, ${view.oy}px) scale(${view.z})`;
     applyCamera();
@@ -391,20 +412,15 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
   // zoom would move the 2D focal point per-wheel-event while the GL
   // camera tracks something else, drifting the layers apart. It's pure
   // proportional scale (camera.zoom follows view.z) — no dolly/slide.
-  // Wheel over a cell stays inside that cell (xterm/chat scroll); only
-  // wheel on empty canvas triggers zoom.
+  // The wheel only moves `targetZ`; the rAF loop lerps `view.z` toward
+  // it for a smooth glide (see frame()). Wheel over a cell stays
+  // inside that cell (xterm/chat scroll); only wheel on empty canvas
+  // triggers zoom.
   canvas.addEventListener('wheel', (e) => {
     if (e.target.closest('.agent-frame')) return;
     e.preventDefault();
-    const cx = window.innerWidth / 2;
-    const cy = window.innerHeight / 2;
     const factor = e.deltaY > 0 ? 0.95 : 1.05;
-    const newZ = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, view.z * factor));
-    const ratio = newZ / view.z;
-    view.ox = cx - (cx - view.ox) * ratio;
-    view.oy = cy - (cy - view.oy) * ratio;
-    view.z = newZ;
-    applyView();
+    targetZ = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, targetZ * factor));
   }, { passive: false });
 
   // Pan with click-and-hold on empty canvas. Pan only engages after the
