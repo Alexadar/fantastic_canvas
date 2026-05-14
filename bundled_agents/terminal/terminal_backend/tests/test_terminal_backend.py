@@ -232,7 +232,9 @@ async def test_multibyte_not_corrupted_across_read_chunks(terminal):
     await asyncio.sleep(0.8)
     out = (await k.send(tid, {"type": "output"}))["output"]
     assert "�" not in out, "a multibyte char split across a read chunk → U+FFFD"
-    assert out.count(line) > 200, "box-drawing lines must survive the chunk reads intact"
+    assert out.count(line) > 200, (
+        "box-drawing lines must survive the chunk reads intact"
+    )
 
 
 async def test_resize(terminal):
