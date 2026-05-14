@@ -1,47 +1,67 @@
 """html_agent — UI-as-a-record.
 
-The agent's `html_content` field IS the page; webapp serves it at
-`/<id>/` (transport.js auto-injected). Inside the served page,
-`fantastic_transport()` lets the JS call any verb on any agent.
+The agent's body lives at `<agent_dir>/index.html` — a plain file
+next to `agent.json`. `agent.json` stays lean (identity + display
+fields); the HTML is editable in a text editor / shell without JSON
+escaping. Webapp serves it at `/<id>/` with transport.js injected.
 
-Spawn (WS ws://host/core/ws — send a `call` frame):
+Spawn (WS — body via `html` field on the create payload):
     {"type":"call","target":"core","payload":{
         "type":"create_agent",
         "handler_module":"html_agent.tools",
-        "html_content":"<h1>hi</h1>",
+        "html":"<h1>hi</h1>",
         "display_name":"Panel"},"id":"1"}
 
 Edit live (WS):
     {"type":"call","target":"<id>","payload":{
         "type":"set_html","html":"…"},"id":"1"}   # emits reload_html
 
-`reload_html` is the universal "this agent wants its open pages to
-reload" event — transport.js subscribes to it on every served page,
-so set_html (or anyone calling `t.emit(<id>, {type:'reload_html'})`)
-closes the loop without any per-bundle script injection.
-
-The webapp duck-types `render_html` — any agent that returns
-`{html:str}` from that verb gets its page served (with transport
-injected). html_agent is just the canonical implementer.
+Legacy compat: if a record on disk still carries inline `html_content`
+(pre-rewrite), `_boot` migrates it out to `index.html` and strips
+the field on first run. Idempotent.
 """
 
 from __future__ import annotations
 
+import json
 from importlib import resources
+from pathlib import Path
+
+
+# ─── file storage ───────────────────────────────────────────────
+
+
+def _html_path(agent) -> Path:
+    return agent._root_path / "index.html"
+
+
+def _read_html(agent) -> str | None:
+    p = _html_path(agent)
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return None
+
+
+def _write_html(agent, html: str) -> int:
+    p = _html_path(agent)
+    p.write_text(html, encoding="utf-8")
+    return len(html.encode("utf-8"))
 
 
 # ─── verbs ──────────────────────────────────────────────────────
 
 
-async def _reflect(id, payload, kernel):
-    """Identity + html size + display name. No args."""
-    rec = kernel.get(id) or {}
-    html = rec.get("html_content") or ""
+async def _reflect(id, payload, agent):
+    """Identity + html byte size + display name. No args."""
+    rec = agent.get(id) or {}
+    p = _html_path(agent)
+    html_bytes = p.stat().st_size if p.exists() else 0
     return {
         "id": id,
-        "sentence": "UI-as-record. html_content stored on agent.json; served at /<id>/.",
+        "sentence": "UI-as-record. Body stored at <agent_dir>/index.html; served at /<id>/.",
         "display_name": rec.get("display_name", id),
-        "html_bytes": len(html.encode("utf-8")),
+        "html_bytes": html_bytes,
+        "html_path": str(p),
         "verbs": {
             n: (f.__doc__ or "").strip().splitlines()[0] for n, f in VERBS.items()
         },
@@ -51,28 +71,25 @@ async def _reflect(id, payload, kernel):
     }
 
 
-async def _get_html(id, payload, kernel):
-    """No args. Returns {html:str} — the current page (transport NOT injected; that's webapp's job at /<id>/)."""
-    rec = kernel.get(id) or {}
-    return {"html": rec.get("html_content", "")}
+async def _get_html(id, payload, agent):
+    """No args. Returns {html:str} — current body, or empty string if unset (transport NOT injected; that's webapp's job at /<id>/)."""
+    return {"html": _read_html(agent) or ""}
 
 
-async def _set_html(id, payload, kernel):
-    """args: html:str (req). Replaces html_content on the agent record; emits reload_html so open browser tabs refresh."""
+async def _set_html(id, payload, agent):
+    """args: html:str (req). Writes `<agent_dir>/index.html`; emits reload_html so open browser tabs refresh."""
     html = payload.get("html", "")
     if not isinstance(html, str):
         return {"error": "html_agent: html must be a string"}
-    rec = kernel.update(id, html_content=html)
-    if rec is None:
-        return {"error": f"no agent {id!r}"}
-    await kernel.emit(id, {"type": "reload_html"})
-    return {"ok": True, "bytes": len(html.encode("utf-8"))}
+    bytes_written = _write_html(agent, html)
+    await agent.emit(id, {"type": "reload_html"})
+    return {"ok": True, "bytes": bytes_written}
 
 
-async def _render_html(id, payload, kernel):
-    """No args. Returns {html:str} — what the webapp serves at /<id>/. The reload-on-update loop is closed by transport.js's universal `reload_html` listener; nothing to inject here."""
-    rec = kernel.get(id) or {}
-    html = rec.get("html_content")
+async def _render_html(id, payload, agent):
+    """No args. Returns {html:str} — body served at /<id>/. Empty
+    record → placeholder template with a WS set_html instruction."""
+    html = _read_html(agent)
     if not html:
         tpl = (
             resources.files("html_agent") / "templates" / "placeholder.html"
@@ -81,9 +98,9 @@ async def _render_html(id, payload, kernel):
     return {"html": html}
 
 
-async def _get_webapp(id, payload, kernel):
+async def _get_webapp(id, payload, agent):
     """No args. Returns canvas-facing UI descriptor: {url, default_width, default_height, title}."""
-    rec = kernel.get(id) or {}
+    rec = agent.get(id) or {}
     return {
         "url": f"/{id}/",
         "default_width": int(rec.get("width") or 480),
@@ -92,8 +109,21 @@ async def _get_webapp(id, payload, kernel):
     }
 
 
-async def _boot(id, payload, kernel):
-    """No-op. html_agent is fully browser-driven."""
+async def _boot(id, payload, agent):
+    """Idempotent. If `create_agent` was called with an `html` (or
+    legacy `html_content`) field in the payload, the substrate stored
+    it on the agent's `_meta` dict. Migrate the body out to
+    `<agent_dir>/index.html` and strip the field. Re-persists agent.json
+    after — no `html`/`html_content` should ever appear in a record."""
+    migrated = False
+    for key in ("html", "html_content"):
+        if key in agent._meta:
+            html = agent._meta.pop(key)
+            if isinstance(html, str) and html:
+                _write_html(agent, html)
+            migrated = True
+    if migrated:
+        agent._persist()
     return None
 
 
@@ -110,9 +140,9 @@ VERBS = {
 }
 
 
-async def handler(id: str, payload: dict, kernel) -> dict | None:
+async def handler(id: str, payload: dict, agent) -> dict | None:
     t = payload.get("type")
     fn = VERBS.get(t)
     if fn is None:
         return {"error": f"html_agent: unknown type {t!r}"}
-    return await fn(id, payload, kernel)
+    return await fn(id, payload, agent)

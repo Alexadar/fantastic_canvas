@@ -24,6 +24,8 @@ members = [
     "fantastic-terminal-backend",
     "fantastic-terminal-webapp",
     "fantastic-web",
+    "fantastic-web-rest",
+    "fantastic-web-ws",
 ]
 
 [[package]]
@@ -264,6 +266,8 @@ dependencies = [
     { name = "fantastic-terminal-backend" },
     { name = "fantastic-terminal-webapp" },
     { name = "fantastic-web" },
+    { name = "fantastic-web-rest" },
+    { name = "fantastic-web-ws" },
 ]
 
 [package.dev-dependencies]
@@ -295,7 +299,9 @@ requires-dist = [
     { name = "fantastic-telemetry-pane", editable = "bundled_agents/canvas/telemetry_pane" },
     { name = "fantastic-terminal-backend", editable = "bundled_agents/terminal/terminal_backend" },
     { name = "fantastic-terminal-webapp", editable = "bundled_agents/terminal/terminal_webapp" },
-    { name = "fantastic-web", editable = "bundled_agents/web" },
+    { name = "fantastic-web", editable = "bundled_agents/web/host" },
+    { name = "fantastic-web-rest", editable = "bundled_agents/web/web_rest" },
+    { name = "fantastic-web-ws", editable = "bundled_agents/web/web_ws" },
 ]
 
 [package.metadata.requires-dev]
@@ -378,7 +384,7 @@ source = { editable = "bundled_agents/terminal/terminal_webapp" }
 [[package]]
 name = "fantastic-web"
 version = "0.1.0"
-source = { editable = "bundled_agents/web" }
+source = { editable = "bundled_agents/web/host" }
 dependencies = [
     { name = "fastapi" },
     { name = "uvicorn" },
@@ -389,6 +395,34 @@ dependencies = [
 requires-dist = [
     { name = "fastapi" },
     { name = "uvicorn" },
+    { name = "websockets", specifier = ">=12,<17" },
+]
+
+[[package]]
+name = "fantastic-web-rest"
+version = "0.1.0"
+source = { editable = "bundled_agents/web/web_rest" }
+dependencies = [
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "fastapi" }]
+
+[[package]]
+name = "fantastic-web-ws"
+version = "0.1.0"
+source = { editable = "bundled_agents/web/web_ws" }
+dependencies = [
+    { name = "fantastic-web" },
+    { name = "fastapi" },
+    { name = "websockets" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fantastic-web", editable = "bundled_agents/web/host" },
+    { name = "fastapi" },
     { name = "websockets", specifier = ">=12,<17" },
 ]
 

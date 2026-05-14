@@ -266,3 +266,101 @@ async def test_boot_memory_without_injection_errors(two_kernels):
 # collisions). MemoryTransport coverage above proves the framing +
 # correlation + lifecycle paths are correct; the WS path on top is
 # just `WSTransport` swapping in for `MemoryTransport`.
+
+
+# ─── HTTPTransport (request/reply against a remote web_rest) ────
+
+
+class _FakeResp:
+    def __init__(self, status_code: int, body: dict | None):
+        self.status_code = status_code
+        self._body = body
+        # httpx response surface used by HTTPTransport.send.
+        import json as _json
+
+        self.content = b"" if body is None else _json.dumps(body).encode()
+        self.text = "" if body is None else _json.dumps(body)
+
+    def json(self) -> dict | None:
+        return self._body
+
+
+class _FakeHTTPClient:
+    """Minimal in-memory stand-in for httpx.AsyncClient — records POSTs
+    and returns canned replies. Avoids network in the unit suite."""
+
+    def __init__(self, reply: dict | None = None, status: int = 200):
+        self.posted: list[tuple[str, dict]] = []
+        self._reply = reply or {"ok": True}
+        self._status = status
+        self.closed = False
+
+    async def post(self, url: str, json=None, headers=None):
+        self.posted.append((url, json))
+        return _FakeResp(self._status, self._reply)
+
+    async def aclose(self):
+        self.closed = True
+
+
+async def test_http_transport_unwraps_forward_envelope():
+    """Bridge wraps every outbound call in a `forward` envelope. The
+    HTTP transport unwraps to a direct POST against the remote
+    web_rest's `/<rest_id>/<target>` endpoint."""
+    from kernel_bridge._transport import HTTPTransport
+
+    fake = _FakeHTTPClient(reply={"sentence": "remote primer"})
+    t = HTTPTransport("http://h/rest_xyz/", fake)
+    await t.send(
+        {
+            "type": "call",
+            "target": "peer_bridge_b",
+            "payload": {
+                "type": "forward",
+                "target": "core",
+                "payload": {"type": "reflect"},
+                "corr_id": "c1",
+            },
+            "id": "c1",
+        }
+    )
+    # POST landed at <base>/<inner_target>, body == inner payload.
+    assert fake.posted == [("http://h/rest_xyz/core", {"type": "reflect"})]
+    # Reply frame is enqueued with id == corr_id and data == response JSON.
+    reply = await t.recv()
+    assert reply == {"type": "reply", "id": "c1", "data": {"sentence": "remote primer"}}
+
+
+async def test_http_transport_translates_4xx_into_reply_error():
+    from kernel_bridge._transport import HTTPTransport
+
+    fake = _FakeHTTPClient(reply={"error": "boom"}, status=500)
+    t = HTTPTransport("http://h/rest/", fake)
+    await t.send({"type": "call", "target": "core", "payload": {}, "id": "c2"})
+    reply = await t.recv()
+    assert reply["type"] == "reply"
+    assert reply["id"] == "c2"
+    assert "HTTP 500" in reply["data"]["error"]
+
+
+async def test_http_transport_rejects_non_call_frames():
+    from kernel_bridge._transport import HTTPTransport
+
+    fake = _FakeHTTPClient()
+    t = HTTPTransport("http://h/rest/", fake)
+    import pytest
+
+    with pytest.raises(NotImplementedError):
+        await t.send({"type": "emit", "target": "core", "payload": {}})
+
+
+async def test_http_transport_close_idempotent():
+    from kernel_bridge._transport import HTTPTransport
+
+    fake = _FakeHTTPClient()
+    t = HTTPTransport("http://h/rest/", fake)
+    await t.close()
+    assert t.closed is True
+    assert fake.closed is True
+    # Second close is a no-op.
+    await t.close()

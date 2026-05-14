@@ -122,7 +122,9 @@ agent answers them natively for its own children, so there's no
 |---|---|---|
 | `bundled_agents/core/selftest.md` | kernel, cli | system verbs (list/create/update/delete/reflect) + REPL parsing |
 | `bundled_agents/cli/selftest.md` | cli | renderer verbs (token/done/say/error) |
-| `bundled_agents/web/selftest.md` | http, ws, web, binary | HTTP+WS proxy, transport.js, binary frames |
+| `bundled_agents/web/host/selftest.md` | http, web, binary | uvicorn rendering host — index, file proxy, transport.js, favicon, lock |
+| `bundled_agents/web/web_ws/selftest.md` | http, ws, web, web_ws | WS verb-invocation surface — mounts `/<host_id>/ws` on parent web |
+| `bundled_agents/web/web_rest/selftest.md` | http, web, web_rest | REST diagnostic surface — `POST /<rest_id>/<target_id>` body=payload |
 | `bundled_agents/scheduler/selftest.md` | kernel, persistence, time | schedule/tick/fire, history.jsonl, file_agent_id failfast |
 | `bundled_agents/file/selftest.md` | kernel, persistence | read/write/list/delete/rename/mkdir, path safety |
 | `bundled_agents/terminal/terminal_backend/selftest.md` | kernel, pty | PTY spawn, shell done-token, timeout recovery |

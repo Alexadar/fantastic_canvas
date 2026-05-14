@@ -1,4 +1,4 @@
-"""webapp/_proxy.py — WS frame protocol."""
+"""web_ws — WS frame protocol (exercises web._proxy via the web_ws surface)."""
 
 from __future__ import annotations
 
@@ -8,11 +8,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from web.app import make_app
+from web_ws.tools import _make_endpoint
 
 
 @pytest.fixture
 def client(seeded_kernel):
     app = make_app("test_web", seeded_kernel)
+    # Mount what web_ws.get_routes would publish — lets the proxy
+    # tests use client.websocket_connect("/core/ws") without spinning
+    # up a real `web` agent + child registration cycle.
+    app.add_api_websocket_route(
+        "/{host_id}/ws", _make_endpoint("test_web_ws", seeded_kernel)
+    )
     with TestClient(app) as c:
         yield c
 
@@ -89,7 +96,7 @@ def test_ws_watch_routes_events(client, seeded_kernel):
 
 def test_ws_call_state_event_carries_host_as_sender(client, seeded_kernel):
     """External WS `call` frames must tag state events with the
-    webapp's host id so telemetry rays know where to start. Without
+    web_ws surface's id so telemetry rays know where to start. Without
     this, browser-driven traffic looks "senderless" and the agent-vis
     never draws sender→recipient wires.
     """
@@ -115,6 +122,6 @@ def test_ws_call_state_event_carries_host_as_sender(client, seeded_kernel):
     ]
     assert sends_to_core, "no state event observed for the call"
     # Every external WS-driven send to core must originate from the
-    # mounted webapp id ("test_web" in this fixture).
+    # surface's id ("test_web_ws" in this fixture).
     senders = {e.get("sender") for e in sends_to_core}
-    assert senders == {"test_web"}, f"expected sender='test_web', got {senders}"
+    assert senders == {"test_web_ws"}, f"expected sender='test_web_ws', got {senders}"

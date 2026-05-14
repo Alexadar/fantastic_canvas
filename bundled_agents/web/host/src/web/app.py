@@ -1,12 +1,16 @@
-"""FastAPI factory for one web agent.
+"""FastAPI factory for one web agent (rendering host).
 
-Routes:
+Routes baked into make_app:
   GET  /                          -> agent index (HTML)
   GET  /_fantastic/transport.js   -> the inlined transport
   GET  /_assets/favicon.png       -> bundled favicon (+ /favicon.png fallback)
   GET  /{agent_id}/               -> agent's `render_html` page
   GET  /{agent_id}/file/{path}    -> proxy to agent's `read` verb
-  WS   /{agent_id}/ws             -> proxy.run(ws, kernel, agent_id)
+
+Call-surface routes (WS, REST) are NOT baked in. They live in
+sub-agent bundles (`web_ws`, `web_rest`) that declare their routes
+via the duck-typed `get_routes` verb; `web.tools._mount_surfaces`
+mounts them onto this app at runtime.
 """
 
 from __future__ import annotations
@@ -15,14 +19,13 @@ import base64
 import mimetypes
 from importlib import resources
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from fastapi.responses import (
     HTMLResponse,
     PlainTextResponse,
     Response,
 )
 
-from . import _proxy
 from ._transport_js import TRANSPORT_JS
 
 _TRANSPORT_TAG = '<script src="/_fantastic/transport.js"></script>'
@@ -173,10 +176,5 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
                 status_code=404,
             )
         return HTMLResponse(_inject(r["html"]))
-
-    @app.websocket("/{agent_id}/ws")
-    async def agent_ws(ws: WebSocket, agent_id: str):
-        await ws.accept()
-        await _proxy.run(ws, kernel, agent_id, web_agent_id)
 
     return app

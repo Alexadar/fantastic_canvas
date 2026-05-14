@@ -46,6 +46,7 @@ from typing import Any
 
 from kernel_bridge._transport import (
     ConnectionClosed,
+    HTTPTransport,
     WSTransport,
     _BaseTransport,
 )
@@ -272,7 +273,7 @@ async def _reflect(id, payload, kernel):
 
 
 async def _boot(id, payload, kernel):
-    """No args. Reads `transport` (memory|ws|ssh+ws), `peer_id`, plus transport-specific fields off the agent record. Builds the transport, spawns the read loop, emits `bridge_up`. Idempotent: re-booting a connected bridge is a no-op."""
+    """No args. Reads `transport` (memory|ws|ssh+ws|http), `peer_id` (ws/ssh+ws) or `url` (http), plus transport-specific fields off the agent record. Builds the transport, spawns the read loop, emits `bridge_up`. Idempotent: re-booting a connected bridge is a no-op."""
     rec = kernel.get(id) or {}
     st = _state(id)
     if st.transport is not None and not st.transport.closed:
@@ -280,7 +281,7 @@ async def _boot(id, payload, kernel):
 
     kind = rec.get("transport") or "ws"
     peer_id = rec.get("peer_id")
-    if not peer_id and kind != "memory":
+    if not peer_id and kind not in ("memory", "http"):
         return {"error": "kernel_bridge: peer_id required for ws/ssh+ws transports"}
 
     transport: _BaseTransport
@@ -327,6 +328,16 @@ async def _boot(id, payload, kernel):
             st.tunnel_proc = None
             st.tunnel_pid = None
             return {"error": f"kernel_bridge: ws over tunnel failed: {e}"}
+    elif kind == "http":
+        url = rec.get("url")
+        if not url:
+            return {
+                "error": "kernel_bridge: http transport requires `url` (e.g. http://host/<rest_id>/)"
+            }
+        try:
+            transport = await HTTPTransport.connect(url)
+        except Exception as e:
+            return {"error": f"kernel_bridge: http connect failed: {e}"}
     else:
         return {"error": f"kernel_bridge: unknown transport {kind!r}"}
 

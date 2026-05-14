@@ -3,9 +3,12 @@
 > scopes: http, ws, web, binary
 > requires: `uv sync`; ports free in 18800-18899
 > out-of-scope: rendering of any specific bundle's HTML (those live in
-> per-webapp selftests)
+> per-webapp selftests). The WS surface itself is tested by
+> `bundled_agents/web/web_ws/selftest.md`; this file covers the
+> rendering-host routes (HTML, file proxy, transport.js, favicon, lock).
 
-HTTP + WS transport. Tests routes, transport.js, binary frame protocol.
+HTTP rendering host. Tests static routes, transport.js, binary frame
+plumbing. WS verb-channel tests live in web_ws's selftest.
 
 ## Pre-flight
 
@@ -15,6 +18,11 @@ rm -rf .fantastic
 pkill -9 -f "fantastic" 2>/dev/null
 PORT=18901
 uv run --active fantastic core create_agent handler_module=web.tools port=$PORT >/dev/null
+# Spawn web_ws as a child of web so the `call` helper below (which
+# uses WS) works end-to-end. Call create_agent on the web agent
+# itself — the new agent lands under <web_id>/agents/.
+WEB_ID=$(ls .fantastic/agents | grep '^web_' | head -1)
+uv run --active fantastic $WEB_ID create_agent handler_module=web_ws.tools >/dev/null
 uv run --active fantastic > /tmp/serve.log 2>&1 &
 SPID=$!
 for i in $(seq 1 20); do grep -q "kernel up" /tmp/serve.log 2>/dev/null && break; sleep 0.5; done

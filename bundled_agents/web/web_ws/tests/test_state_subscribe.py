@@ -14,11 +14,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from web.app import make_app
+from web_ws.tools import _make_endpoint
 
 
 @pytest.fixture
 def client(seeded_kernel):
     app = make_app("test_web", seeded_kernel)
+    app.add_api_websocket_route(
+        "/{host_id}/ws", _make_endpoint("test_web_ws", seeded_kernel)
+    )
     with TestClient(app) as c:
         yield c
 
@@ -178,6 +182,9 @@ def test_ws_close_unsubscribes_state_callback(seeded_kernel):
     """When the WS closes, the proxy's finally block unregisters every
     state subscriber tied to that connection."""
     app = make_app("test_web", seeded_kernel)
+    app.add_api_websocket_route(
+        "/{host_id}/ws", _make_endpoint("test_web_ws", seeded_kernel)
+    )
     pre = len(seeded_kernel.ctx.state_subscribers)
     with TestClient(app) as c:
         with c.websocket_connect("/core/ws") as ws:

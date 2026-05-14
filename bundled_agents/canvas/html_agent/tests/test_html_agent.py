@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 async def _make_html(kernel, **meta):
     rec = await kernel.send(
@@ -18,14 +20,15 @@ async def test_reflect_no_content(seeded_kernel):
     assert r["html_bytes"] == 0
     assert r["display_name"] == aid  # default to id when unset
     assert "set_html" in r["verbs"]
+    # html_path is the file backing the body, next to agent.json.
+    assert r["html_path"].endswith(f"{aid}/index.html")
     # Universal page-reload event; transport.js subscribes on every served page.
     assert "reload_html" in r["emits"]
-    assert "html_updated" not in r["emits"]  # renamed; no BC alias
 
 
 async def test_reflect_with_content_and_display_name(seeded_kernel):
     aid = await _make_html(
-        seeded_kernel, html_content="<h1>hi</h1>", display_name="Panel"
+        seeded_kernel, html="<h1>hi</h1>", display_name="Panel"
     )
     r = await seeded_kernel.send(aid, {"type": "reflect"})
     assert r["display_name"] == "Panel"
@@ -34,11 +37,6 @@ async def test_reflect_with_content_and_display_name(seeded_kernel):
 
 async def test_set_html_persists_and_emits(seeded_kernel):
     aid = await _make_html(seeded_kernel)
-    # Capture all emit/send events via the tree-wide state stream
-    # (Agent.emit/send fan out to ctx.state_subscribers with full
-    # payload). Patching `seeded_kernel.emit` on root doesn't catch
-    # bundle-internal sends in the new model — each agent has its own
-    # .emit method — so we observe at the substrate layer.
     events: list[dict] = []
     unsub = seeded_kernel.add_state_subscriber(events.append)
     try:
@@ -47,7 +45,10 @@ async def test_set_html_persists_and_emits(seeded_kernel):
         unsub()
     assert r["ok"] is True
     assert r["bytes"] == len("<p>v2</p>".encode("utf-8"))
-    assert seeded_kernel.get(aid)["html_content"] == "<p>v2</p>"
+    # File-backed body — agent.json stays lean; the html lives next door.
+    html_path = Path(seeded_kernel.ctx.agents[aid]._root_path) / "index.html"
+    assert html_path.read_text() == "<p>v2</p>"
+    assert "html_content" not in seeded_kernel.get(aid)
     # Emitted reload_html on the agent's own inbox so transport.js's
     # universal listener triggers location.reload() in any open tab.
     emits_on_self = [
@@ -63,16 +64,16 @@ async def test_set_html_rejects_non_string(seeded_kernel):
 
 
 async def test_get_html_returns_stored(seeded_kernel):
-    aid = await _make_html(seeded_kernel, html_content="<b>stored</b>")
+    aid = await _make_html(seeded_kernel, html="<b>stored</b>")
     r = await seeded_kernel.send(aid, {"type": "get_html"})
     assert r["html"] == "<b>stored</b>"
 
 
 async def test_render_html_returns_stored_content(seeded_kernel):
     """No prepended scripts, no wrapping — the served HTML is exactly
-    the stored html_content. Reload-on-update is handled universally
-    by transport.js (which the webapp injects), NOT by this bundle."""
-    aid = await _make_html(seeded_kernel, html_content="<h1>hi</h1>")
+    the stored body. Reload-on-update is handled universally by
+    transport.js (which the webapp injects), NOT by this bundle."""
+    aid = await _make_html(seeded_kernel, html="<h1>hi</h1>")
     r = await seeded_kernel.send(aid, {"type": "render_html"})
     assert r["html"] == "<h1>hi</h1>"
     # Drift guard: no inline reload listener leaked into the body.
@@ -87,6 +88,21 @@ async def test_render_html_placeholder_when_unset(seeded_kernel):
     # human/agent landing on /<id>/ knows what to do next.
     assert aid in r["html"]
     assert "set_html" in r["html"]
+
+
+async def test_boot_migrates_legacy_html_content(seeded_kernel):
+    """Legacy record with inline `html_content` migrates to a file on
+    first boot. Field is stripped from agent.json; body lives in
+    `<agent_dir>/index.html`. Idempotent."""
+    aid = await _make_html(seeded_kernel, html_content="<legacy>old</legacy>")
+    # _boot fired automatically on create — migration already done.
+    rec = seeded_kernel.get(aid)
+    assert "html_content" not in rec
+    html_path = Path(seeded_kernel.ctx.agents[aid]._root_path) / "index.html"
+    assert html_path.read_text() == "<legacy>old</legacy>"
+    # render_html serves from the file.
+    r = await seeded_kernel.send(aid, {"type": "render_html"})
+    assert r["html"] == "<legacy>old</legacy>"
 
 
 async def test_get_webapp_default_size_and_title(seeded_kernel):

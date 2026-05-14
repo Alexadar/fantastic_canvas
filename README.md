@@ -134,22 +134,48 @@ fantastic> @<canvas_backend_id> add_agent handler_module=terminal_webapp.tools
 
 ## Drive from outside
 
-After `fantastic`, the kernel is reachable over HTTP (rendering +
-assets) and WS (verb invocation):
+`web` is a uvicorn host that serves HTML rendering only. Verb-
+invocation surfaces are sub-agents of `web`:
 
+- **`web_ws`** — WebSocket channel at `/<host_id>/ws`. Full duplex:
+  `call`, `emit`, `watch`, `state_subscribe`.
+- **`web_rest`** — REST diagnostic channel at `POST /<rest_id>/<target_id>`.
+  Request/reply only; curl-friendly.
+
+Compose them per project:
 ```bash
+fantastic core create_agent handler_module=web.tools port=8888
+fantastic core create_agent handler_module=web_ws.tools parent_id=<web_id>
+fantastic core create_agent handler_module=web_rest.tools parent_id=<web_id>
+```
+
+After `fantastic`:
+```bash
+# Rendering (always available)
 curl http://localhost:8888/                            # root index — agent tree (HTML)
 curl http://localhost:8888/<id>/                       # agent UI (HTML) if it ships render_html
 curl http://localhost:8888/<id>/file/<path>            # file proxy for any agent answering `read`
-# WS verb invocation: open ws://host/<id>/ws and send
+
+# WS (when web_ws is mounted)
+# open ws://host/<id>/ws and send
 #   {"type":"call","target":"<id>","payload":{...},"id":"<corr>"}
+
+# REST (when web_rest is mounted; <rest_id> is the agent's id)
+curl -X POST -H 'content-type: application/json' \
+  -d '{"type":"reflect"}' http://localhost:8888/<rest_id>/<target_id>
 ```
 
-The protocol IS the API — no client library. Open a WS to `/<id>/ws`,
-send `{"type":"call","target":"kernel","payload":{"type":"reflect"}}`
-to get the substrate primer (transports, `available_bundles`, agent
-`tree`, `well_known` singletons, `binary_protocol`, `browser_bus`).
-Any LLM CLI dropped in cold can bootstrap from one WS round-trip.
+The protocol IS the API — no client library. Send
+`{"type":"call","target":"kernel","payload":{"type":"reflect"}}`
+to either surface to get the substrate primer (transports,
+`available_bundles`, agent `tree`, `well_known` singletons,
+`binary_protocol`, `browser_bus`). Any LLM CLI dropped in cold can
+bootstrap from one WS or HTTP round-trip.
+
+**Weak binding for bridges.** `kernel_bridge` reaches a remote
+kernel's surfaces by URL + path only — `ws://host/<host>/ws` for the
+WS bridge, `http://host/<rest>/` for the HTTP bridge. No shared
+Python types cross the wire.
 
 ## Plugin system
 

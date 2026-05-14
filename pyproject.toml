@@ -11,6 +11,8 @@ dependencies = [
   "fantastic-core",
   "fantastic-cli",
   "fantastic-web",
+  "fantastic-web-ws",
+  "fantastic-web-rest",
   "fantastic-scheduler",
   "fantastic-file",
   "fantastic-terminal-backend",
@@ -50,7 +52,9 @@ testpaths = [
   "tests",
   "bundled_agents/core/tests",
   "bundled_agents/cli/tests",
-  "bundled_agents/web/tests",
+  "bundled_agents/web/host/tests",
+  "bundled_agents/web/web_ws/tests",
+  "bundled_agents/web/web_rest/tests",
   "bundled_agents/scheduler/tests",
   "bundled_agents/file/tests",
   "bundled_agents/terminal/terminal_backend/tests",
@@ -74,7 +78,9 @@ addopts = "-q"
 members = [
   "bundled_agents/core",
   "bundled_agents/cli",
-  "bundled_agents/web",
+  "bundled_agents/web/host",
+  "bundled_agents/web/web_ws",
+  "bundled_agents/web/web_rest",
   "bundled_agents/scheduler",
   "bundled_agents/file",
   "bundled_agents/terminal/terminal_backend",
@@ -98,6 +104,8 @@ members = [
 fantastic-core = { workspace = true }
 fantastic-cli = { workspace = true }
 fantastic-web = { workspace = true }
+fantastic-web-ws = { workspace = true }
+fantastic-web-rest = { workspace = true }
 fantastic-scheduler = { workspace = true }
 fantastic-file = { workspace = true }
 fantastic-terminal-backend = { workspace = true }

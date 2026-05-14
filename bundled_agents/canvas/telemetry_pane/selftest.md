@@ -22,6 +22,8 @@ rm -rf .fantastic
 PORT=18935
 pkill -9 -f "fantastic" 2>/dev/null; sleep 0.5
 uv run --active python fantastic core create_agent handler_module=web.tools port=$PORT >/dev/null
+WEB_ID=$(ls .fantastic/agents | grep '^web_' | head -1)
+uv run --active fantastic $WEB_ID create_agent handler_module=web_ws.tools >/dev/null
 uv run --active python fantastic > /tmp/tp.log 2>&1 &
 SPID=$!
 for i in $(seq 1 20); do grep -q "kernel up" /tmp/tp.log 2>/dev/null && break; sleep 0.5; done

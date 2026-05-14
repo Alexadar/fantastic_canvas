@@ -78,7 +78,9 @@ fantastic> @core list_agents
 |---|---|
 | `core` | userland orchestrator agent at the root (`id="core"`); no handler_module (substrate handles dispatch). Composes the stdout renderer (Cli) when `stdin.isatty()`. System verbs (list_agents, create/update/delete_agent) are native to Agent class. |
 | `cli` | singleton child of root; renders token/done/say/error events to stdout |
-| `web` | HTTP+WS transport (uvicorn). HTTP serves rendering only — `/` (root index from `templates/index.html`), `/<id>/` (agent's `render_html`), `/<id>/file/<path>` (read-verb file proxy), plus `transport.js` and favicon. `WS /<id>/ws` is the verb-invocation channel. |
+| `web` | uvicorn HTTP host. Serves rendering only — `/` (root index from `templates/index.html`), `/<id>/` (agent's `render_html`), `/<id>/file/<path>` (read-verb file proxy), `transport.js`, favicon. Call surfaces (WS, REST) live in sibling sub-agents and mount via the duck-typed `get_routes` verb. |
+| `web_ws` | WebSocket verb-invocation surface. Child of a `web` agent. Mounts `/<host_id>/ws` on its parent web's FastAPI app. Opt-in: `create_agent handler_module=web_ws.tools parent_id=<web>`. |
+| `web_rest` | REST diagnostic surface. Child of a `web` agent. Mounts `POST /<self_id>/<target_id>` body=payload → kernel.send → JSON reply. Multiple instances coexist with different ids. Opt-in. |
 | `file` | filesystem-as-agent (`read`, `write`, `list`, `delete`, `rename`, `mkdir`) |
 | `scheduler` | recurring tasks; persistence routed through `file_agent_id` |
 | `python_runtime` | subprocess Python exec (`python -c <code>`); per-agent interrupt/stop |
@@ -89,7 +91,7 @@ fantastic> @core list_agents
 | `ai/ai_chat_webapp` | provider-agnostic chat UI; fronts any backend that answers `send`/`history`/`interrupt` |
 | `canvas/{canvas_backend, canvas_webapp}` | spatial UI host; Liquid-Glass-styled DOM iframes (`get_webapp`) layered with GL views (`get_gl_view`); explicit `add_agent` membership; pure-streaming lifecycle (no polling) |
 | `canvas/telemetry_pane` | live agent-vis GL view — water-floating sprites + sender→receiver neon wires + traveling pulses + last-10 messages pane; runs inside any canvas's WebGL scene |
-| `kernel_bridge` | cross-kernel comms — pairs of bridge agents on two kernels exchange `forward` envelopes over memory / WS / SSH+WS. Reuses web/_proxy.py frame protocol; remote needs zero changes. Weak proxy: local→local stays direct |
+| `kernel_bridge` | cross-kernel comms — pairs of bridge agents exchange `forward` envelopes over memory / WS / SSH+WS / HTTP. WS targets the remote's `web_ws` surface (full duplex); HTTP targets `web_rest` (request/reply only). All transports are **weak binding** — addressed by URL + path only; no shared Python types with the remote kernel. Weak proxy: local→local stays direct. |
 | `ssh_runner` | remote `fantastic` lifecycle over SSH — start/stop/restart/status + local SSH tunnel for canvas iframing. Pure subprocess ssh; composes with `kernel_bridge` for messaging |
 
 Each bundle is a real Python package with its own `pyproject.toml`,
