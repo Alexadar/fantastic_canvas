@@ -106,7 +106,13 @@ TRANSPORT_JS = r"""
     return head;
   }
 
+  var _ftInstance = null;
   window.fantastic_transport = function () {
+    // Memoized singleton — one WS per page. The page may call this
+    // explicitly for the full API; the load-time bootstrap below also
+    // calls it so the universal reload listener is wired even on pages
+    // that never opt in. All callers share this one instance.
+    if (_ftInstance) return _ftInstance;
     var agentId = parseAgentId();
     var wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') +
                 location.host + '/' + agentId + '/ws';
@@ -329,7 +335,7 @@ TRANSPORT_JS = r"""
       try { location.reload(); } catch (e) {}
     });
 
-    return {
+    _ftInstance = {
       agentId: agentId,
       ready: ready,
       call: call,
@@ -343,6 +349,15 @@ TRANSPORT_JS = r"""
       dispatcher: dispatcher,
       bus: bus,
     };
+    return _ftInstance;
   };
+
+  // Load-time bootstrap: every page that has transport.js injected
+  // gets a live WS + the universal `reload_html` listener, WITHOUT
+  // having to call fantastic_transport() itself. Plain html_agent
+  // panes (just operator HTML, no JS opt-in) reload on set_html / the
+  // canvas ⟳ button because of this. Pages that DO call the factory
+  // share this same memoized instance — one WS per page.
+  try { window.fantastic_transport(); } catch (e) {}
 })();
 """.lstrip()

@@ -23,7 +23,6 @@ the field on first run. Idempotent.
 
 from __future__ import annotations
 
-import json
 from importlib import resources
 from pathlib import Path
 

@@ -112,9 +112,24 @@ async def call(kernel, target: str, rest: list[str]) -> None:
 
 
 async def reflect(kernel, rest: list[str]) -> None:
-    """Sugar for `<target> reflect`. Default target: 'kernel'."""
-    target = rest[0] if rest else "kernel"
-    return await call(kernel, target, ["reflect"])
+    """Sugar for `<target> reflect [k=v ...]`. Default target:
+    'kernel'. The first token is the target unless it's a `k=v` pair,
+    so `fantastic reflect return_readme=true` reflects the kernel with
+    the flag, and `fantastic reflect <id> return_readme=true` reflects
+    that agent.
+
+    Read-only — dispatched in-process WITHOUT the PID lock, so it
+    works whether or not a daemon owns the dir. A one-shot kernel sees
+    disk-backed records (the agent tree, readmes); live process-memory
+    state belongs to the daemon and isn't reflected here."""
+    if rest and "=" not in rest[0]:
+        target, kv = rest[0], rest[1:]
+    else:
+        target, kv = "kernel", rest
+    body = {"type": "reflect", **_parse_kv(kv)}
+    reply = await kernel.send(target, body)
+    print(json.dumps(reply, indent=2, default=str))
+    return None
 
 
 def install(rest: list[str]) -> None:
@@ -445,14 +460,14 @@ async def _read_line(prompt: str) -> str:
 
 
 def _print_help() -> None:
-    print(
-        "fantastic kernel\n"
-        "  fantastic                              # interactive REPL (tty) and/or daemon (if a web agent is persisted)\n"
-        "  fantastic <id> <verb> [k=v ...]        # one-shot RPC, print JSON, exit\n"
-        "  fantastic reflect [<id>]               # one-shot: <id> reflect (default 'kernel')\n"
-        "  fantastic install <project_dir> [pkg ...]    # uv venv <dir>/.venv + install + point python_runtime records\n"
-        "  fantastic install-bundle <spec> [--into <project>]   # uv pip install a fantastic bundle\n"
-        "\n"
-        "To run a daemon, persist a web agent first:\n"
-        "  fantastic core create_agent handler_module=web.tools port=8888"
-    )
+    """Print the CLI cheatsheet — `cli/help.md`. It lives in the `cli`
+    bundle because the CLI is what renders it: file-backed, editable
+    markdown, not a hardcoded string. Points at `fantastic reflect
+    return_readme=true` for the live-system bootstrap."""
+    import importlib.resources
+
+    try:
+        src = importlib.resources.files("cli") / "help.md"
+        print(src.read_text(encoding="utf-8").rstrip())
+    except (ModuleNotFoundError, FileNotFoundError, OSError, TypeError):
+        print("fantastic — run `fantastic reflect return_readme=true` to bootstrap.")

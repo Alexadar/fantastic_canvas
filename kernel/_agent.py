@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import importlib.resources
 import json
 import secrets
 from importlib.metadata import entry_points
@@ -146,6 +147,7 @@ class Agent:
         if not is_ephemeral:
             self._root_path.mkdir(parents=True, exist_ok=True)
             self._persist()
+            self._seed_readme()
         # Wire into parent's children dict + publish lifecycle event.
         # `parent.create(...)` is the indirect path; this one supports
         # direct construction (`Cli(kernel, parent=core)`).
@@ -178,6 +180,37 @@ class Agent:
         if type(self).ephemeral:
             return
         self._agent_file().write_text(json.dumps(self.record, indent=2))
+
+    def _seed_readme(self) -> None:
+        """Copy the bundle's shipped `readme.md` into this agent's dir
+        on first creation. Copy-if-missing — operator edits and the
+        GitHub-canonical version are never clobbered. The substrate
+        stays bundle-agnostic: it derives the package from
+        `handler_module` and asks `importlib.resources` whether that
+        package ships a `readme.md`. Bundles without one → no readme;
+        `reflect(return_readme=true)` then returns `readme: null`."""
+        if not self.handler_module:
+            return
+        dest = self._root_path / "readme.md"
+        if dest.exists():
+            return
+        pkg = self.handler_module.split(".")[0]
+        try:
+            src = importlib.resources.files(pkg) / "readme.md"
+            if src.is_file():
+                dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        except (ModuleNotFoundError, FileNotFoundError, OSError, TypeError):
+            pass
+
+    def _read_readme(self) -> str | None:
+        """The agent's own `readme.md` content, or None if it has none."""
+        p = self._root_path / "readme.md"
+        if p.exists():
+            try:
+                return p.read_text(encoding="utf-8")
+            except OSError:
+                return None
+        return None
 
     def _load_children(self) -> None:
         """Recursively hydrate children from `<self>/agents/`."""
@@ -239,12 +272,28 @@ class Agent:
             target = self._root()
             # `kernel.reflect` returns the substrate primer (root primer).
             if payload.get("type") == "reflect":
-                return target.primer()
+                reply = target.primer()
+                return self._maybe_attach_readme(target, payload, reply)
         else:
             target = self.ctx.agents.get(target_id)
         if target is None:
             return {"error": f"no agent {target_id!r}"}
-        return await target._dispatch(payload)
+        reply = await target._dispatch(payload)
+        return self._maybe_attach_readme(target, payload, reply)
+
+    @staticmethod
+    def _maybe_attach_readme(target, payload, reply):
+        """Post-process a `reflect` reply: when the caller passed
+        `return_readme: true`, attach the target agent's `readme.md`
+        content as `reply["readme"]` (or None if it has none). Default
+        is off — reflect stays lean unless asked."""
+        if (
+            payload.get("type") == "reflect"
+            and payload.get("return_readme")
+            and isinstance(reply, dict)
+        ):
+            reply["readme"] = target._read_readme()
+        return reply
 
     async def emit(self, target_id: str, payload: dict) -> None:
         """Drop a payload into target_id's inbox + tell watchers.
@@ -787,8 +836,9 @@ class Agent:
                     "example": '<send id="<agent_id>" payload=\'{"type":"list_agents"}\'/>',
                 },
                 "cli": {
-                    "shape": "fantastic call <agent_id> <verb> [k=v ...]",
+                    "shape": "fantastic <agent_id> <verb> [k=v ...]",
                     "shorthand": "fantastic reflect [<agent_id>]",
+                    "note": "one-shot — refused while a daemon owns the dir; use the web surface then.",
                 },
             },
             "well_known": dict(self.ctx.well_known),

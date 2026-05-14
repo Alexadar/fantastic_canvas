@@ -132,20 +132,14 @@ class Kernel:
     # ─── tree management (front-door API) ──────────────────────
 
     async def send(self, target_id: str, payload: dict) -> dict | None:
-        """Flat global send from outside any handler. Routes via the
-        target's `_dispatch`. `target_id == "kernel"` aliases to the
-        root's primer for `reflect`."""
-        if target_id == "kernel":
-            if self.root is None:
-                return {"error": "kernel: no root agent registered"}
-            if payload.get("type") == "reflect":
-                return self.root.primer()
-            target = self.root
-        else:
-            target = self.agents.get(target_id)
-        if target is None:
-            return {"error": f"no agent {target_id!r}"}
-        return await target._dispatch(payload)
+        """Flat global send from outside any handler. Delegates to the
+        root Agent's `send` so all of `Agent.send`'s behavior — the
+        `kernel` primer alias, the `return_readme` reflect post-process
+        — applies uniformly whether you call through `Kernel` or an
+        `Agent`."""
+        if self.root is None:
+            return {"error": "kernel: no root agent registered"}
+        return await self.root.send(target_id, payload)
 
     def create(
         self,

@@ -50,7 +50,9 @@ async def test_reflect_transports_in_prompt(seeded_kernel):
 async def test_reflect_transports_cli(seeded_kernel):
     r = await seeded_kernel.send("kernel", {"type": "reflect"})
     cli = r["transports"]["cli"]
-    assert cli["shape"].startswith("fantastic call")
+    # The one-shot form is `fantastic <id> <verb>` — there is no
+    # `call` subcommand (that token would be read as an agent id).
+    assert cli["shape"].startswith("fantastic <agent_id> <verb>")
     assert cli["shorthand"].startswith("fantastic reflect")
 
 

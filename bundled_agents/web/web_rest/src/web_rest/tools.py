@@ -65,11 +65,20 @@ def _make_post_endpoint(self_id: str, kernel):
     return _rest_call
 
 
+def _reflect_payload(request: Request) -> dict:
+    """Reflect payload, honoring the `?readme=1` query flag so the
+    browser-pastable GET shortcuts can pull an agent's readme too."""
+    payload: dict = {"type": "reflect"}
+    if request.query_params.get("readme") in ("1", "true", "yes"):
+        payload["return_readme"] = True
+    return payload
+
+
 def _make_reflect_get(self_id: str, kernel):
-    async def _reflect_target(target_id: str):
+    async def _reflect_target(request: Request, target_id: str):
         token = _current_sender.set(self_id)
         try:
-            reply = await kernel.send(target_id, {"type": "reflect"})
+            reply = await kernel.send(target_id, _reflect_payload(request))
         finally:
             _current_sender.reset(token)
         if reply is None:
@@ -80,10 +89,10 @@ def _make_reflect_get(self_id: str, kernel):
 
 
 def _make_reflect_root(self_id: str, kernel):
-    async def _reflect_kernel():
+    async def _reflect_kernel(request: Request):
         token = _current_sender.set(self_id)
         try:
-            reply = await kernel.send("kernel", {"type": "reflect"})
+            reply = await kernel.send("kernel", _reflect_payload(request))
         finally:
             _current_sender.reset(token)
         if reply is None:

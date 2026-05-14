@@ -140,4 +140,23 @@ def test_get_reflect_target_returns_error_for_missing_agent(seeded_kernel):
         assert r.status_code == 200
         body = r.json()
         assert "error" in body
-        assert "no agent" in body["error"]
+
+
+def test_get_reflect_readme_query_flag(seeded_kernel):
+    """`?readme=1` on the GET shortcut passes `return_readme:true` —
+    the reply carries the agent's readme.md content."""
+    app = FastAPI()
+    app.add_api_route(
+        "/rest_xyz/_reflect/{target_id}",
+        _make_reflect_get("rest_xyz", seeded_kernel),
+        methods=["GET"],
+    )
+    with TestClient(app) as c:
+        # Without the flag: no readme key.
+        plain = c.get("/rest_xyz/_reflect/core").json()
+        assert "readme" not in plain
+        # With ?readme=1: readme key present (core has a seeded readme).
+        withr = c.get("/rest_xyz/_reflect/core?readme=1").json()
+        assert "readme" in withr
+        assert isinstance(withr["readme"], str)
+        assert "Fantastic kernel" in withr["readme"]

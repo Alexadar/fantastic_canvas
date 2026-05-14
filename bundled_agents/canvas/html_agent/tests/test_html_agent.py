@@ -27,9 +27,7 @@ async def test_reflect_no_content(seeded_kernel):
 
 
 async def test_reflect_with_content_and_display_name(seeded_kernel):
-    aid = await _make_html(
-        seeded_kernel, html="<h1>hi</h1>", display_name="Panel"
-    )
+    aid = await _make_html(seeded_kernel, html="<h1>hi</h1>", display_name="Panel")
     r = await seeded_kernel.send(aid, {"type": "reflect"})
     assert r["display_name"] == "Panel"
     assert r["html_bytes"] == len("<h1>hi</h1>".encode("utf-8"))

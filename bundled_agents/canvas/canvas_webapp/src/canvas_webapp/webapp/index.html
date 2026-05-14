@@ -305,20 +305,25 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
   }
   applyView();
 
-  // Cursor-anchored zoom: keep the canvas point under the cursor fixed.
-  // Wheel over a cell stays inside that cell (e.g. xterm scroll, chat
-  // scroll); only wheel on empty canvas triggers zoom.
+  // Horizon-anchored zoom: the wheel always pulls toward / away from
+  // screen center (the "horizon" focal point), NOT the cursor. Both
+  // layers — the 2D iframe wrapper and the GL scene — zoom around that
+  // one shared point, so they stay locked in sync. A cursor-anchored
+  // zoom would move the 2D focal point per-wheel-event while the GL
+  // camera tracks something else, drifting the layers apart. It's pure
+  // proportional scale (camera.zoom follows view.z) — no dolly/slide.
+  // Wheel over a cell stays inside that cell (xterm/chat scroll); only
+  // wheel on empty canvas triggers zoom.
   canvas.addEventListener('wheel', (e) => {
     if (e.target.closest('.agent-frame')) return;
     e.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
     const factor = e.deltaY > 0 ? 0.95 : 1.05;
     const newZ = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, view.z * factor));
     const ratio = newZ / view.z;
-    view.ox = mx - (mx - view.ox) * ratio;
-    view.oy = my - (my - view.oy) * ratio;
+    view.ox = cx - (cx - view.ox) * ratio;
+    view.oy = cy - (cy - view.oy) * ratio;
     view.z = newZ;
     applyView();
   }, { passive: false });
@@ -397,7 +402,12 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
         </span>
       </div>
       <div class="frame-body">
-        <iframe src="${wa.url}" loading="lazy"></iframe>
+        <!-- No loading="lazy": canvas frames live in a CSS-transformed
+             world, which defeats the browser's lazy-load viewport check
+             — a "lazy" frame may never load, so its transport.js never
+             connects a WS and reload_html (set_html auto-reload AND the
+             ⟳ button) fans out to zero listeners. Load eagerly. -->
+        <iframe src="${wa.url}"></iframe>
       </div>
       <div class="resize-handle"></div>
     `;
