@@ -51,6 +51,33 @@ async def test_set_gl_source_updates_record(seeded_kernel):
     assert after["source"] == "new"
 
 
+async def test_set_gl_source_emits_gl_source_changed(seeded_kernel):
+    """set_gl_source emits `gl_source_changed` (with the agent id) on
+    its own inbox — the canvas, watching the GL member, reinstalls the
+    view in place. GL analogue of html_agent's set_html → reload_html.
+    Captured via the tree-wide state stream (bundle-internal emits
+    fan out to ctx.state_subscribers)."""
+    aid = await _make(seeded_kernel, gl_source="old")
+    events: list[dict] = []
+    unsub = seeded_kernel.add_state_subscriber(events.append)
+    try:
+        await seeded_kernel.send(aid, {"type": "set_gl_source", "source": "new"})
+    finally:
+        unsub()
+    emits_on_self = [
+        e for e in events if e.get("kind") == "emit" and e.get("agent_id") == aid
+    ]
+    changed = [
+        e
+        for e in emits_on_self
+        if e.get("payload", {}).get("type") == "gl_source_changed"
+    ]
+    assert changed, "set_gl_source did not emit gl_source_changed"
+    # Payload carries the agent id so a canvas hosting many GL views
+    # knows which one to reinstall.
+    assert changed[0]["payload"].get("id") == aid
+
+
 async def test_set_gl_source_can_update_title(seeded_kernel):
     aid = await _make(seeded_kernel, gl_source="x", title="A")
     await seeded_kernel.send(

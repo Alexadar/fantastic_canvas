@@ -115,3 +115,24 @@ async def test_render_html_has_gl_host_scaffolding(seeded_kernel):
     assert "'THREE'" in html and "'scene'" in html and "'cleanup'" in html, (
         "GL view contract injects (THREE, scene, t, onFrame, cleanup)"
     )
+
+
+async def test_render_html_gl_views_are_containerized_and_live(seeded_kernel):
+    """Each GL view runs in its own THREE.Group container (iframe
+    analogue) and reloads in place: gl_agent.set_gl_source emits
+    `gl_source_changed` → the canvas calls updateGlView → dispose the
+    group + recompile, scoped to one view. No remove/re-add, no
+    canvas refresh."""
+    aid = await _make(seeded_kernel)
+    html = (await seeded_kernel.send(aid, {"type": "render_html"}))["html"]
+    # Per-view container — the source's injected `scene` is a Group.
+    assert "new THREE.Group()" in html, "GL views must get a per-view Group container"
+    assert "disposeObject3D" in html, "must free GPU memory on teardown"
+    # In-place reload path.
+    assert "updateGlView" in html, "must have an in-place GL reload path"
+    # The canvas watches each GL member so the emit reaches it.
+    assert "t.watch(agent_id)" in html, "installGlView must watch the GL member"
+    # The producer event is wired.
+    assert "gl_source_changed" in html, (
+        "must listen for gl_source_changed → updateGlView"
+    )

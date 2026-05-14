@@ -3,7 +3,8 @@
 Mirror of html_agent for WebGL content. The agent's `gl_source` field
 IS the GL-view JS body; the canvas host (canvas_webapp) compiles it
 via `new Function('THREE','scene','t','onFrame','cleanup', source)`
-and runs it inside its WebGL scene.
+and runs it. Each view gets its own `THREE.Group` container (injected
+as `scene`) — the scene-graph analogue of an html_agent's iframe.
 
 Spawn (WS):
     ws://host/core/ws  send:
@@ -23,13 +24,11 @@ Edit live (WS):
     ws://host/<id>/ws  send:
       {"type":"call","target":"<id>","payload":{
           "type":"set_gl_source","source":"..."},"id":"1"}
-    # The canvas does not auto-reinstall a changed source — operator
-    # removes + re-adds the agent on the canvas to pick up the new
-    # body, OR refreshes the tab. Mirrors how html_agent's
-    # `set_html` relies on transport.js's reload_html listener;
-    # there's no equivalent universal subscription on the GL side
-    # because GL views run inside the canvas's scene, not as
-    # iframes.
+    # set_gl_source emits `gl_source_changed` on this agent's inbox.
+    # A canvas hosting the view watches the member and reinstalls it
+    # in place — disposes the view's THREE.Group container, recompiles
+    # the new source into a fresh one. Same agent id, no canvas
+    # refresh. The GL analogue of html_agent's set_html → reload_html.
 
 This is the GL parallel to html_agent: a generic "carry source on
 the record, answer the dispatch verb" container so per-project
@@ -55,6 +54,9 @@ async def _reflect(id, payload, kernel):
         "verbs": {
             n: (f.__doc__ or "").strip().splitlines()[0] for n, f in VERBS.items()
         },
+        "emits": {
+            "gl_source_changed": "{type:'gl_source_changed', id} — set_gl_source fires this; a canvas hosting the view reinstalls it in place",
+        },
     }
 
 
@@ -65,7 +67,7 @@ async def _get_gl_source(id, payload, kernel):
 
 
 async def _set_gl_source(id, payload, kernel):
-    """args: source:str (req), title:str?. Replaces gl_source (and optionally title) on the agent record. Canvases do NOT auto-reinstall the view on change — remove + re-add the agent on the canvas to pick up the new body."""
+    """args: source:str (req), title:str?. Replaces gl_source (and optionally title) on the agent record, then emits `gl_source_changed` so a canvas hosting the view reinstalls it in place (dispose the view's container + recompile) — no remove/re-add, no canvas refresh."""
     src = payload.get("source")
     if not isinstance(src, str):
         return {"error": "gl_agent: source (str) required"}
@@ -75,6 +77,10 @@ async def _set_gl_source(id, payload, kernel):
     rec = kernel.update(id, **meta)
     if rec is None:
         return {"error": f"no agent {id!r}"}
+    # Carry `id` in the payload: a canvas watches MANY GL members
+    # (unlike an html iframe, which watches only itself), so the
+    # consumer needs to know which view changed.
+    await kernel.emit(id, {"type": "gl_source_changed", "id": id})
     return {"ok": True, "bytes": len(src.encode("utf-8"))}
 
 
