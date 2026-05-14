@@ -766,36 +766,22 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
   // and `add_agent` it to the canvas — its `get_gl_view` source will
   // be installed by the GL host above.
 
-  // Double-click on empty canvas → create a terminal pair at click coords
-  // AND add the new webapp to THIS canvas's membership so it appears here.
+  // Double-click on empty canvas → spawn a terminal pair AS a member
+  // of THIS canvas. `add_agent` does the whole job in one call: it
+  // creates the terminal_webapp as the canvas_backend's child, boots
+  // it (terminal_webapp._boot spawns its own terminal_backend),
+  // probes the renderable contract, and emits `members_updated` →
+  // refresh() renders the new frame here. Passing x/y lands it under
+  // the cursor regardless of current zoom/pan.
   canvas.addEventListener('dblclick', async (e) => {
     if (e.target.closest('.agent-frame')) return;   // ignore dblclick inside frames
-    // Map screen click to world coords so the new frame lands under the
-    // cursor regardless of current zoom/pan.
     const w = screenToWorld(e.clientX, e.clientY);
-    const x = Math.round(w.x);
-    const y = Math.round(w.y);
-    const tb = await t.call('core', {
-      type: 'create_agent',
-      handler_module: 'terminal_backend.tools',
-    });
-    if (!tb || !tb.id) {
-      console.error('[canvas] failed to create terminal_backend:', tb);
-      return;
-    }
-    const tw = await t.call('core', {
-      type: 'create_agent',
+    const ar = await t.call(upstream, {
+      type: 'add_agent',
       handler_module: 'terminal_webapp.tools',
-      upstream_id: tb.id,
-      x, y,
+      x: Math.round(w.x),
+      y: Math.round(w.y),
     });
-    if (!tw || !tw.id) {
-      console.error('[canvas] failed to create terminal_webapp; orphan backend:', tb.id);
-      return;
-    }
-    // Add the fresh webapp to THIS canvas's membership; members_updated
-    // fires → refresh() renders the new frame here only.
-    const ar = await t.call(upstream, { type: 'add_agent', agent_id: tw.id });
     if (ar && ar.error) console.error('[canvas] add_agent failed:', ar.error);
   });
 

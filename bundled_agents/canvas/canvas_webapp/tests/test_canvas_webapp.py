@@ -117,6 +117,27 @@ async def test_render_html_has_gl_host_scaffolding(seeded_kernel):
     )
 
 
+async def test_render_html_dblclick_adds_terminal_by_handler_module(seeded_kernel):
+    """Drift guard: double-click on empty canvas must spawn a terminal
+    via `canvas_backend.add_agent` with `handler_module:
+    'terminal_webapp.tools'` — the canvas spawns + boots it as its own
+    child (terminal_webapp._boot then spawns the terminal_backend). A
+    prior version pre-created the pair on `core` and called add_agent
+    with `agent_id`, which the current add_agent (spawn-from-
+    handler_module) rejects — leaking two orphan agents and never
+    joining the canvas."""
+    aid = await _make(seeded_kernel)
+    html = (await seeded_kernel.send(aid, {"type": "render_html"}))["html"]
+    assert "dblclick" in html
+    assert "handler_module: 'terminal_webapp.tools'" in html, (
+        "dblclick must add_agent by handler_module, not adopt by agent_id"
+    )
+    assert "terminal_backend.tools" not in html, (
+        "dblclick must let the canvas spawn the subtree, not pre-create "
+        "a terminal_backend on core (orphan leak)"
+    )
+
+
 async def test_render_html_zoom_is_smoothed(seeded_kernel):
     """Drift guard: wheel zoom is lerped, not stepped. The wheel must
     only nudge `targetZ`; the rAF loop glides `view.z` toward it. If
