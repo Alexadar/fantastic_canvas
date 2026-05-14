@@ -370,9 +370,11 @@ import * as THREE from 'https://esm.sh/three@0.160.0';
   // rAF loop lerps `view.z` toward it (ZOOM_LERP of the gap per frame)
   // — a soft glide instead of a stepped jump. Each lerp step is
   // re-anchored on the screen-center horizon so the focal point holds
-  // steady through the whole glide.
+  // steady through the whole glide. ZOOM_LERP is tuned snappy: it
+  // takes the edge off the step but settles in a few frames, so the
+  // view doesn't keep sliding after the wheel stops.
   let targetZ = view.z;
-  const ZOOM_LERP = 0.18;
+  const ZOOM_LERP = 0.72;
   function applyView() {
     world.style.transform = `translate(${view.ox}px, ${view.oy}px) scale(${view.z})`;
     applyCamera();

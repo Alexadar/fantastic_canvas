@@ -85,11 +85,11 @@ fantastic> @core list_agents
 | `scheduler` | recurring tasks; persistence routed through `file_agent_id` |
 | `python_runtime` | subprocess Python exec (`python -c <code>`); per-agent interrupt/stop |
 | `html_agent` | UI-as-record; `html_content` stored on agent.json, served at `/<id>/` |
-| `terminal/{terminal_backend, terminal_webapp}` | PTY shell + xterm UI |
+| `terminal/{terminal_backend, terminal_webapp}` | PTY shell + xterm UI. VSCode-ported terminal robustness: streaming flow control (reader pauses past 100K unacked chars, resumes on the `ack` verb), incremental UTF-8 decode (no split-char `<?>` litter across `os.read` chunks), serialized full-buffer writes (bracketed-paste-safe), image-paste bridge (browser-clipboard image → `paste_image` → file saved + path typed into the PTY for a CLI like `claude`). |
 | `ai/ollama/ollama_backend` | local LLM agent (ollama); per-client chat threads, FIFO lock, menu cache |
 | `ai/nvidia/nvidia_nim_backend` | NVIDIA NIM LLM agent (OpenAI-compatible); api_key sidecar via `file_agent_id`; rate-limit retry; same surface as ollama_backend |
 | `ai/ai_chat_webapp` | provider-agnostic chat UI; fronts any backend that answers `send`/`history`/`interrupt` |
-| `canvas/{canvas_backend, canvas_webapp}` | spatial UI host; Liquid-Glass-styled DOM iframes (`get_webapp`) layered with GL views (`get_gl_view`); explicit `add_agent` membership; pure-streaming lifecycle (no polling) |
+| `canvas/{canvas_backend, canvas_webapp}` | spatial UI host; Liquid-Glass-styled DOM iframes (`get_webapp`) layered with GL views (`get_gl_view`); explicit `add_agent` membership; pure-streaming lifecycle (no polling). Each GL view runs in its own `THREE.Group` container — live `set_gl_source` reload in place (`gl_source_changed`), no canvas refresh. Wheel zoom is horizon-anchored (pulls toward screen center, 2D + GL locked in sync) and smoothed (rAF-lerped toward a `targetZ`). |
 | `canvas/telemetry_pane` | live agent-vis GL view — water-floating sprites + sender→receiver neon wires + traveling pulses + last-10 messages pane; runs inside any canvas's WebGL scene |
 | `kernel_bridge` | cross-kernel comms — pairs of bridge agents exchange `forward` envelopes over memory / WS / SSH+WS / HTTP. WS targets the remote's `web_ws` surface (full duplex); HTTP targets `web_rest` (request/reply only). All transports are **weak binding** — addressed by URL + path only; no shared Python types with the remote kernel. Weak proxy: local→local stays direct. |
 | `ssh_runner` | remote `fantastic` lifecycle over SSH — start/stop/restart/status + local SSH tunnel for canvas iframing. Pure subprocess ssh; composes with `kernel_bridge` for messaging |
@@ -188,7 +188,7 @@ that's a primer regression — flag it."
 
 ## Tests
 
-- **Unit** — `pytest -n auto` (`pytest-xdist`). 221+ tests, parallel,
+- **Unit** — `pytest -n auto` (`pytest-xdist`). 480+ tests, parallel,
   in-process. Each bundle's tests live in `bundled_agents/<bundle>/tests/`;
   kernel-level tests live in `tests/`. `conftest.py` at root exposes
   `kernel`, `seeded_kernel`, `file_agent` fixtures.

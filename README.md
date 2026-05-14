@@ -58,12 +58,29 @@ Plugin-discovered agents, one primitive (`send`), hermetic protocol.
   cwd)` spawns `<interp> -c <code>`, captures stdout/stderr, returns
   exit code. Per-agent venv resolution (record `python` / `venv`
   fields override the kernel's interpreter).
+- **terminal** — `terminal_backend` (PTY shell session) +
+  `terminal_webapp` (browser xterm). The backend ports VSCode's
+  terminal robustness: streaming **flow control** (the PTY reader
+  pauses past 100K unacknowledged chars and resumes on the consumer's
+  `ack` verb — backpressure so a flood can't lock up a tab),
+  **incremental UTF-8 decode** (a multi-byte char split across an
+  `os.read` chunk is reassembled, not shattered into `<?>` litter),
+  and **serialized full-buffer writes** (large/bracketed pastes land
+  whole). `paste_image` bridges a browser-clipboard image into a
+  CLI running in the PTY (e.g. `claude`): the webapp ships the bytes,
+  the backend saves a file and types its path in — mimicking a
+  drag-drop, since the server can't reach the browser clipboard.
 - **canvas** — `canvas_backend` + `canvas_webapp` pair.
   `canvas_webapp` is a two-layer host: a DOM layer (iframes for
   agents answering `{type:"get_webapp"}`) and a WebGL layer (Three.js
-  content for agents answering `{type:"get_gl_view"}`). Membership is
-  **structural**: `canvas_backend.add_agent` spawns the new member as
-  a child of the canvas via the substrate's `create_agent` — no
+  content for agents answering `{type:"get_gl_view"}`). Each GL view
+  runs in its own `THREE.Group` container — the scene-graph analogue
+  of an iframe — so `gl_agent.set_gl_source` reloads one view in
+  place (`gl_source_changed` → dispose group + recompile) without a
+  canvas refresh. Wheel zoom is horizon-anchored (pulls toward screen
+  center, DOM + GL layers locked in sync) and rAF-smoothed. Membership
+  is **structural**: `canvas_backend.add_agent` spawns the new member
+  as a child of the canvas via the substrate's `create_agent` — no
   separate `members` field. Cascade-delete the canvas and every
   member dies with it.
 - **telemetry_pane** — a GL agent. Subscribes to the kernel state
