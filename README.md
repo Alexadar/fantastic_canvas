@@ -3,6 +3,28 @@
 A medium that unifies humans and AIs into a single workspace.
 Plugin-discovered agents, one primitive (`send`), hermetic protocol.
 
+## Quickstart (container)
+
+The fastest path to a running canvas — no local Python, no workspace
+install. Needs `podman` on `$PATH`:
+
+```bash
+podman pull ghcr.io/alexadar/fantastic-canvas/base:dev
+podman run -d --name fantastic -v "$PWD:/workdir" -p 8080:8080 \
+  ghcr.io/alexadar/fantastic-canvas/base:dev
+# open http://localhost:8080/ in your browser
+```
+
+Ships with the full canvas stack pre-seeded (`web` + `web_ws` +
+`web_rest` + `canvas_webapp`) and all 20+ standard bundles installed
+in the image's venv. Workdir state lives in `./.fantastic/` and is
+portable to a local `fantastic` run in the same directory. Full
+operator guide: [`containerfiles/base/README.md`](containerfiles/base/README.md).
+
+_Prefer running from source?_ `uv sync && uv run fantastic` — same
+`.fantastic/` schema, fully portable between modes (not concurrently —
+the kernel's lock file prevents that).
+
 ## Concept
 
 - **Agent** — recursive node, the universal type. Every entity in the

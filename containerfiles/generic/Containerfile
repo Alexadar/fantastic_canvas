@@ -1,0 +1,51 @@
+# Parameterized recipe — the single source of truth for fantastic-canvas
+# images. Variants in sibling dirs (../base, ../gpubase) just pick the
+# `BASE_IMAGE` and invoke podman build.
+#
+# Build directly:
+#   podman build -f containerfiles/generic/Containerfile \
+#       --build-arg BASE_IMAGE=python:3.13-slim \
+#       -t fantastic-canvas-base:dev .
+#
+# Or via the per-variant wrapper:
+#   ./containerfiles/base/build.sh
+
+# Declared BEFORE the first FROM so it can substitute into both FROMs.
+ARG BASE_IMAGE
+
+# ---------- builder ----------
+FROM ${BASE_IMAGE} AS builder
+RUN pip install --no-cache-dir uv
+WORKDIR /app
+COPY . .
+# `uv sync` is the only resolver that respects [tool.uv.workspace] +
+# [tool.uv.sources] — `uv pip install .` won't pick up workspace members.
+# --frozen pins to uv.lock so image content is reproducible.
+RUN uv sync --no-dev --frozen --no-cache && \
+    find /app -name __pycache__ -prune -exec rm -rf {} + && \
+    rm -rf /app/.git /app/tests /app/containerfiles
+
+# ---------- final ----------
+FROM ${BASE_IMAGE}
+# uv is needed at runtime by `fantastic install-bundle` (shells out to uv pip).
+RUN pip install --no-cache-dir uv
+# Keep the install path as /app — `uv sync` bakes absolute-path
+# shebangs into the venv's bin scripts (#!/app/.venv/bin/python3), so
+# renaming to /opt/fantastic or anywhere else breaks every entry point.
+COPY --from=builder /app /app
+ENV PATH=/app/.venv/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+WORKDIR /workdir
+EXPOSE 8080
+COPY containerfiles/generic/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# GHCR auto-links the package to the repo via image.source; the rest
+# populate the GHCR package UI.
+LABEL org.opencontainers.image.source=https://github.com/Alexadar/fantastic_canvas \
+      org.opencontainers.image.title=fantastic-canvas \
+      org.opencontainers.image.description="Containerized Fantastic Kernel with the canvas stack pre-seeded." \
+      org.opencontainers.image.licenses=MIT
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
