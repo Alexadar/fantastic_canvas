@@ -15,20 +15,38 @@ ARG BASE_IMAGE
 
 # ---------- builder ----------
 FROM ${BASE_IMAGE} AS builder
-RUN pip install --no-cache-dir uv
+# CUDA runtime images ship no Python; install one if missing. PEP 668 on
+# apt-installed pip requires --break-system-packages; harmless on slim.
+RUN if ! command -v pip >/dev/null 2>&1; then \
+      apt-get update && \
+      apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi && \
+    (pip install --no-cache-dir --break-system-packages uv 2>/dev/null || \
+     pip install --no-cache-dir uv)
 WORKDIR /app
 COPY . .
 # `uv sync` is the only resolver that respects [tool.uv.workspace] +
 # [tool.uv.sources] — `uv pip install .` won't pick up workspace members.
 # --frozen pins to uv.lock so image content is reproducible.
-RUN uv sync --no-dev --frozen --no-cache && \
+# --python python3 forces the system interpreter (3.12 on Ubuntu 24.04)
+# instead of letting uv fetch its own 3.11 — uv-managed Python uses
+# absolute symlinks that break when /app is COPY'd to the final stage.
+# requires-python is >=3.11, so 3.12 satisfies the constraint.
+RUN uv sync --no-dev --frozen --no-cache --python python3 && \
     find /app -name __pycache__ -prune -exec rm -rf {} + && \
     rm -rf /app/.git /app/tests /app/containerfiles
 
 # ---------- final ----------
 FROM ${BASE_IMAGE}
 # uv is needed at runtime by `fantastic install-bundle` (shells out to uv pip).
-RUN pip install --no-cache-dir uv
+RUN if ! command -v pip >/dev/null 2>&1; then \
+      apt-get update && \
+      apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi && \
+    (pip install --no-cache-dir --break-system-packages uv 2>/dev/null || \
+     pip install --no-cache-dir uv)
 # Keep the install path as /app — `uv sync` bakes absolute-path
 # shebangs into the venv's bin scripts (#!/app/.venv/bin/python3), so
 # renaming to /opt/fantastic or anywhere else breaks every entry point.

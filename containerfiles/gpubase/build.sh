@@ -16,7 +16,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
 IMG="${IMG:-fantastic-canvas-gpubase:dev}"
-BASE_IMAGE="${BASE_IMAGE:-nvidia/cuda:12.4.1-runtime-ubuntu24.04}"
+BASE_IMAGE="${BASE_IMAGE:-docker.io/nvidia/cuda:12.8.2-runtime-ubuntu24.04}"
 
 exec podman build \
     -f containerfiles/generic/Containerfile \

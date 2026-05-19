@@ -1,10 +1,22 @@
 # containerfiles/gpubase — GPU variant operator guide
 
-Like `../base/`, but the image base is `nvidia/cuda:12.4.1-runtime-ubuntu24.04`
+Like `../base/`, but the image base is `nvidia/cuda:12.8.2-runtime-ubuntu24.04`
 (Ubuntu 24.04 ships Python 3.12 — satisfies the kernel's
-`requires-python >= 3.11`). Verified targets: NVIDIA Ampere+
-(RTX 3090 / 4090, A100, H100). **Not yet tested on a GPU host — adapt
-this README + the selftest probes when you do**.
+`requires-python >= 3.11`). The CUDA runtime image ships no Python, so
+the shared Containerfile apt-installs `python3` + `python3-pip` before
+running `uv sync`. Verified targets: NVIDIA Ampere+
+(RTX 3090 / 4090, A100, H100). **Validated end-to-end on RTX 3090 /
+Ubuntu 24.04 / driver 580.126.20 (2026-05-19)** — see `selftest.md`
+results table.
+
+## Pull the prebuilt image
+
+```bash
+podman pull ghcr.io/alexadar/fantastic-canvas/gpubase:dev-amd64
+podman run -d --name fantastic --device nvidia.com/gpu=all \
+  -v "$PWD:/workdir" -p 8080:8080 \
+  ghcr.io/alexadar/fantastic-canvas/gpubase:dev-amd64
+```
 
 ## Host setup (one-time per GPU server)
 
@@ -25,7 +37,7 @@ sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
 
 # 3. Sanity check from a throwaway container.
 podman run --rm --device nvidia.com/gpu=all \
-  nvidia/cuda:12.4.1-base-ubuntu24.04 nvidia-smi
+  docker.io/nvidia/cuda:12.8.2-base-ubuntu24.04 nvidia-smi
 ```
 
 If the throwaway container prints the GPU → host is ready.
@@ -70,5 +82,14 @@ self-contained image without manual layering.
 
 ## Status
 
-**Not yet validated end-to-end** — to be tested on a host with an
-NVIDIA 3090 (or compatible). See `selftest.md` for the probe plan.
+**Validated 2026-05-19** on NVIDIA RTX 3090 / Ubuntu 24.04 / driver
+580.126.20 / podman 4.9.3 / nvidia-container-toolkit 1.19.0. All 11
+selftest probes (gpu-host + 1–10) PASS. See `selftest.md` for the
+results table.
+
+## Known gaps
+
+- `fantastic install-bundle git+<url>` reaches `uv pip install` but uv
+  errors with "Git executable not found" — the runtime image doesn't
+  ship `git`. Add `git` to the apt-install line in the final stage if
+  bundle installs from git URLs inside the container are wanted.
