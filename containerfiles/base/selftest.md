@@ -19,10 +19,12 @@ Port `18080` is used on the host (mapped to container `8080`) to dodge collision
 
 ```bash
 WORKDIR=$(mktemp -d)
-IMG=fantastic-canvas-base:dev
-# Wraps podman build with BASE_IMAGE=python:3.13-slim against
-# the shared recipe at containerfiles/generic/Containerfile.
-./containerfiles/base/build.sh
+# Pick the arch dir matching your host. Both wrap podman build with
+# BASE_IMAGE=python:3.11-slim against the shared recipe at
+# containerfiles/generic/Containerfile — only --platform differs.
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+IMG=fantastic-canvas-base:dev-$ARCH
+./containerfiles/base-$ARCH/build.sh
 podman run -d --name ft-test -v "$WORKDIR:/workdir" -p 18080:8080 "$IMG"
 
 # Wait up to 30s for [kernel] up.

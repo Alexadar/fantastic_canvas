@@ -14,20 +14,34 @@ prevents that).
 
 ## Image location
 
+Two separate per-arch images on GHCR (no combined multi-arch manifest
+yet — keeps each tag's footprint to one architecture's actual bytes):
+
 ```
-ghcr.io/alexadar/fantastic-canvas/base:<tag>
+ghcr.io/alexadar/fantastic-canvas/base:dev-amd64    # x86_64 / Intel-AMD
+ghcr.io/alexadar/fantastic-canvas/base:dev-arm64    # Apple Silicon / aarch64
 ```
 
-Tag scheme:
+Tag scheme: `<base>-<arch>` where `<arch>` ∈ `amd64`, `arm64`. The
+`<base>` part:
 - `dev` — latest from the `container` branch
 - `<git-sha>` — snapshot per commit
 - semver — on releases
 
-Push is manual (no CI yet):
+Per-arch dirs hold thin wrappers that pin `--platform` and call the
+shared `generic/Containerfile`:
+
+- `containerfiles/base-amd64/{build.sh, push.sh}` — x86_64
+- `containerfiles/base-arm64/{build.sh, push.sh}` — aarch64
+
+Push is manual (no CI yet) — one run per arch:
 
 ```bash
 echo "$GHCR_PAT" | podman login ghcr.io -u <github_user> --password-stdin
-podman push ghcr.io/alexadar/fantastic-canvas/base:dev
+# native arch on the Mac (Apple Silicon) → fast:
+./containerfiles/base-arm64/push.sh
+# the other arch via qemu → ~5× slower:
+./containerfiles/base-amd64/push.sh
 ```
 
 PAT scope: `write:packages`. The image's
@@ -36,42 +50,53 @@ repo's "Packages" sidebar and inherits repo visibility.
 
 ## Pull
 
+Pick the tag matching the host you're pulling on:
+
 ```bash
-podman pull ghcr.io/alexadar/fantastic-canvas/base:dev
+# x86_64 Linux server
+podman pull ghcr.io/alexadar/fantastic-canvas/base:dev-amd64
+
+# Apple Silicon / aarch64
+podman pull ghcr.io/alexadar/fantastic-canvas/base:dev-arm64
 ```
 
 ## Build (local, for iteration)
 
 ```bash
-./containerfiles/base/build.sh
+# pick the arch dir matching your host
+./containerfiles/base-arm64/build.sh    # Apple Silicon / aarch64 native
+./containerfiles/base-amd64/build.sh    # x86_64 native (or via qemu on arm64)
 ```
 
-That wraps `podman build` with `BASE_IMAGE=python:3.13-slim` against
-the shared recipe at `containerfiles/generic/Containerfile`. Override
-the output tag with `IMG=...` or the base image with `BASE_IMAGE=...`
-on the env. Direct invocation:
+Both wrap `podman build` with `BASE_IMAGE=python:3.11-slim` against
+the shared recipe at `containerfiles/generic/Containerfile` — only
+`--platform` differs. Override the output tag with `IMG=...`. Direct
+invocation if you'd rather:
 
 ```bash
 podman build \
+  --platform linux/arm64 \
   -f containerfiles/generic/Containerfile \
-  --build-arg BASE_IMAGE=python:3.13-slim \
-  -t fantastic-canvas-base:dev .
+  --build-arg BASE_IMAGE=python:3.11-slim \
+  -t fantastic-canvas-base:dev-arm64 .
 ```
 
-Use this when iterating on the image without round-tripping through GHCR.
+Use this when iterating without round-tripping through GHCR.
 
 ## Run
 
 Single command. The name is **derived from the workdir path** so two
 `podman run` invocations against the same workdir hit the **same**
-container (idempotency by convention — industry standard):
+container (idempotency by convention — industry standard). Replace
+`<arch>` with `amd64` or `arm64` to match your host:
 
 ```bash
 NAME="fantastic-$(echo "$PWD" | shasum | head -c8)"
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 podman run -d --name "$NAME" \
   -v "$PWD:/workdir" \
   -p 8080:8080 \
-  ghcr.io/alexadar/fantastic-canvas/base:dev
+  ghcr.io/alexadar/fantastic-canvas/base:dev-$ARCH
 ```
 
 If files in the workdir come out owned by an unexpected UID inside the

@@ -9,11 +9,16 @@ The fastest path to a running canvas — no local Python, no workspace
 install. Needs `podman` on `$PATH`:
 
 ```bash
-podman pull ghcr.io/alexadar/fantastic-canvas/base:dev
+# pick the tag matching your host arch
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+podman pull ghcr.io/alexadar/fantastic-canvas/base:dev-$ARCH
 podman run -d --name fantastic -v "$PWD:/workdir" -p 8080:8080 \
-  ghcr.io/alexadar/fantastic-canvas/base:dev
+  ghcr.io/alexadar/fantastic-canvas/base:dev-$ARCH
 # open http://localhost:8080/ in your browser
 ```
+
+Two separate per-arch images (no combined manifest yet) — `:dev-amd64`
+for x86_64 Linux servers, `:dev-arm64` for Apple Silicon / aarch64.
 
 Ships with the full canvas stack pre-seeded (`web` + `web_ws` +
 `web_rest` + `canvas_webapp`) and all 20+ standard bundles installed
