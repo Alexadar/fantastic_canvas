@@ -178,7 +178,14 @@ async def _stop(id, payload, kernel):
 
 
 async def _boot(id, payload, kernel):
-    """No-op. python_runtime is stateless per-call."""
+    """Idempotent. Persists sys.executable into record.python when
+    neither python nor venv is set so cross-runtime opens (e.g. the
+    same workdir loaded under the Rust kernel) read a deterministic
+    interpreter from disk instead of falling back to the new
+    runtime's PATH lookup."""
+    rec = kernel.get(id) or {}
+    if not rec.get("python") and not rec.get("venv"):
+        kernel.update(id, python=sys.executable)
     return None
 
 
