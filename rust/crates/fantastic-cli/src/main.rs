@@ -68,20 +68,25 @@ fn register_default_bundles() -> BundleRegistry {
 
     // ── Full-tier-only bundles (subprocess / dynamic-loading / etc.).
     //
-    // None ported yet. When a future bundle needs `std::process::Command`,
-    // `fork`, or `libloading::Library`, add its crate as an optional dep
-    // and register it under this gate. The `embedded` build (iOS Lite,
-    // visionOS, sandboxed macOS) compiles cleanly without these.
-    //
-    // Example:
-    //   #[cfg(feature = "full")]
-    //   reg.register("terminal_backend.tools", fantastic_terminal_backend::TerminalBackendBundle);
-    //
-    //   #[cfg(feature = "full")]
-    //   reg.register("python_runtime.tools", fantastic_python_runtime::PythonRuntimeBundle);
+    // These spawn child processes (`std::process::Command` /
+    // `tokio::process::Command`). The `embedded` build (iOS Lite,
+    // visionOS, sandboxed macOS) compiles cleanly without them — the
+    // `optional = true` dep + `#[cfg(feature = "full")]` gate enforces
+    // that at compile time.
     #[cfg(feature = "full")]
     {
-        // (placeholder — populate when desktop-only bundles land)
+        reg.register(
+            "terminal_backend.tools",
+            fantastic_terminal_backend::TerminalBackendBundle,
+        );
+        reg.register(
+            "python_runtime.tools",
+            fantastic_python_runtime::PythonRuntimeBundle,
+        );
+        reg.register(
+            "local_runner.tools",
+            fantastic_local_runner::LocalRunnerBundle,
+        );
     }
 
     reg

@@ -27,6 +27,9 @@ members = [
     "crates/bundles/fantastic-ollama-backend",
     "crates/bundles/fantastic-kernel-bridge",
     "crates/bundles/fantastic-nvidia-nim-backend",
+    "crates/bundles/fantastic-terminal-backend",
+    "crates/bundles/fantastic-python-runtime",
+    "crates/bundles/fantastic-local-runner",
 ]
 
 [workspace.package]
