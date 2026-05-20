@@ -49,6 +49,10 @@ fn register_default_bundles() -> BundleRegistry {
         "ai_chat_webapp.tools",
         fantastic_ai_chat_webapp::AiChatWebappBundle,
     );
+    reg.register(
+        "terminal_webapp.tools",
+        fantastic_terminal_webapp::TerminalWebappBundle,
+    );
 
     // ── Full-tier-only bundles (subprocess / dynamic-loading / etc.).
     //

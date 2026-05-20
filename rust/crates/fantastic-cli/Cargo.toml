@@ -24,6 +24,7 @@ fantastic-scheduler = { path = "../bundles/fantastic-scheduler" }
 fantastic-gl-agent = { path = "../bundles/fantastic-gl-agent" }
 fantastic-telemetry-pane = { path = "../bundles/fantastic-telemetry-pane" }
 fantastic-ai-chat-webapp = { path = "../bundles/fantastic-ai-chat-webapp" }
+fantastic-terminal-webapp = { path = "../bundles/fantastic-terminal-webapp" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

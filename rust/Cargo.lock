@@ -406,6 +406,7 @@ dependencies = [
  "fantastic-kernel",
  "fantastic-scheduler",
  "fantastic-telemetry-pane",
+ "fantastic-terminal-webapp",
  "fantastic-web",
  "fantastic-web-rest",
  "fantastic-web-ws",
@@ -518,6 +519,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fantastic-terminal-webapp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-kernel",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "fantastic-uniffi"
 version = "0.1.0"
 dependencies = [
@@ -531,6 +544,7 @@ dependencies = [
  "fantastic-kernel",
  "fantastic-scheduler",
  "fantastic-telemetry-pane",
+ "fantastic-terminal-webapp",
  "fantastic-web",
  "fantastic-web-rest",
  "fantastic-web-ws",

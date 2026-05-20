@@ -48,8 +48,7 @@ pub const README: &str = include_str!("readme.md");
 
 /// Stub source returned by `get_gl_source` when the record has no
 /// `glsl_source` set yet.
-pub const STUB_GLSL: &str =
-    "// gl_agent — no source set. Use set_gl_source to install one.";
+pub const STUB_GLSL: &str = "// gl_agent — no source set. Use set_gl_source to install one.";
 
 /// Default viewport width served via `get_gl_view`.
 pub const DEFAULT_WIDTH: u32 = 800;

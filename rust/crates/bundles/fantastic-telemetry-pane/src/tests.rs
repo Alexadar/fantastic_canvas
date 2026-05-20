@@ -7,9 +7,7 @@ use tempfile::TempDir;
 
 fn mk_kernel(tmp: &TempDir) -> Arc<Kernel> {
     let mut kernel = Kernel::new();
-    kernel
-        .bundles
-        .register(HANDLER_MODULE, TelemetryPaneBundle);
+    kernel.bundles.register(HANDLER_MODULE, TelemetryPaneBundle);
     let kernel = Arc::new(kernel);
     let root = Agent::new(
         AgentId::from("core"),

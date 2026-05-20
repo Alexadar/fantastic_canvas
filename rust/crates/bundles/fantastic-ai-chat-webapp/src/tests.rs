@@ -105,10 +105,7 @@ async fn boot_refuses_without_upstream_id() {
         )
         .await;
     let r = kernel
-        .send(
-            &AgentId::from("chat_no_upstream"),
-            json!({"type": "boot"}),
-        )
+        .send(&AgentId::from("chat_no_upstream"), json!({"type": "boot"}))
         .await;
     let err = r["error"].as_str().unwrap_or("");
     assert!(

@@ -45,7 +45,10 @@ async fn reflect_reports_has_source_flag() {
         .await;
     assert_eq!(r["has_source"], false);
     assert_eq!(r["id"], "g1");
-    assert!(r["sentence"].as_str().unwrap().contains("GL-view-as-record"));
+    assert!(r["sentence"]
+        .as_str()
+        .unwrap()
+        .contains("GL-view-as-record"));
     // Install source → reflect flips.
     kernel
         .send(
@@ -98,9 +101,7 @@ async fn set_gl_source_persists_and_emits() {
     assert_eq!(event["verb"], "gl_source_changed");
 
     // Persistence: agent.json holds glsl_source.
-    let path = tmp
-        .path()
-        .join(".fantastic/agents/g2/agent.json");
+    let path = tmp.path().join(".fantastic/agents/g2/agent.json");
     let raw = std::fs::read_to_string(&path).expect("agent.json written");
     let rec: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(rec["glsl_source"], "// new");
