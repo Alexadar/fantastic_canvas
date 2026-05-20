@@ -1,0 +1,9 @@
+# Project-root ignores. Per-tree ignores live alongside the tree
+# (rust/.gitignore for the cargo target dir, python/.gitignore for
+# venv + caches).
+
+# Scratch / temporary working dir for one-off dumps, notes, traces.
+tmp/
+
+# macOS junk.
+.DS_Store

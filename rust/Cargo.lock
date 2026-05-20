@@ -390,6 +390,7 @@ dependencies = [
  "fantastic-file",
  "fantastic-html-agent",
  "fantastic-kernel",
+ "fantastic-scheduler",
  "fantastic-web",
  "fantastic-web-rest",
  "fantastic-web-ws",
@@ -464,6 +465,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fantastic-scheduler"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-file",
+ "fantastic-kernel",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "fantastic-uniffi"
 version = "0.1.0"
 dependencies = [
@@ -473,6 +488,7 @@ dependencies = [
  "fantastic-file",
  "fantastic-html-agent",
  "fantastic-kernel",
+ "fantastic-scheduler",
  "fantastic-web",
  "fantastic-web-rest",
  "fantastic-web-ws",

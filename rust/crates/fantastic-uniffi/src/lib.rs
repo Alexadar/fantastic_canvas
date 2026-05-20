@@ -81,6 +81,7 @@ fn register_default_bundles() -> BundleRegistry {
         "canvas_webapp.tools",
         fantastic_canvas_webapp::CanvasWebappBundle,
     );
+    reg.register("scheduler.tools", fantastic_scheduler::SchedulerBundle);
 
     // ── Full-tier-only (subprocess / fork / dynamic loading).
     //

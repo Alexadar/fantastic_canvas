@@ -20,6 +20,7 @@ fantastic-web-rest = { path = "../bundles/fantastic-web-rest" }
 fantastic-html-agent = { path = "../bundles/fantastic-html-agent" }
 fantastic-canvas-backend = { path = "../bundles/fantastic-canvas-backend" }
 fantastic-canvas-webapp = { path = "../bundles/fantastic-canvas-webapp" }
+fantastic-scheduler = { path = "../bundles/fantastic-scheduler" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
