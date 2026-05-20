@@ -39,11 +39,18 @@ pub enum KernelError {
     Internal(String),
 }
 
-/// Default bundle set linked into the Swift-embedded build. Identical
-/// to the CLI's default set; any `handler_module` outside this list
-/// triggers weak-load skip+log at boot.
+/// Default bundle set linked into the Swift-embedded build.
+///
+/// Always-available bundles compile under both the `embedded` (iOS /
+/// sandboxed) and `desktop` (unsandboxed) features. Full-tier-only
+/// bundles are added via the `#[cfg(feature = "full")]` gate below
+/// — currently none, but the placeholder keeps the contract explicit
+/// so the iOS-sandbox guarantee doesn't silently regress when a
+/// subprocess-using bundle gets ported.
 fn register_default_bundles() -> BundleRegistry {
     let mut reg = BundleRegistry::new();
+
+    // ── Always-available (iOS-safe).
     reg.register("file.tools", fantastic_file::FileBundle);
     reg.register("web.tools", fantastic_web::WebBundle);
     reg.register("web_ws.tools", fantastic_web_ws::WebWsBundle);
@@ -57,6 +64,17 @@ fn register_default_bundles() -> BundleRegistry {
         "canvas_webapp.tools",
         fantastic_canvas_webapp::CanvasWebappBundle,
     );
+
+    // ── Full-tier-only (subprocess / fork / dynamic loading).
+    //
+    // None ported yet. Sandboxed iOS builds must NOT see these. When
+    // adding one, gate both the dep in Cargo.toml AND the register
+    // call here on `feature = "full"`.
+    #[cfg(feature = "full")]
+    {
+        // (placeholder — populate when desktop-only bundles land)
+    }
+
     reg
 }
 

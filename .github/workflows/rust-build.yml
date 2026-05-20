@@ -36,3 +36,15 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace
+
+      # Embedded-tier compile check — proves the iOS / sandboxed slice
+      # builds clean without the `desktop` feature. When a future
+      # subprocess-using bundle gets added under
+      # `#[cfg(feature = "desktop")]`, this job is the canary that
+      # catches accidental dependency-graph leakage into the embedded
+      # build (e.g. an `embedded`-default crate that transitively pulls
+      # in `std::process`).
+      - name: cargo check (embedded-tier only)
+        run: |
+          cargo check -p fantastic-uniffi --no-default-features --features embedded
+          cargo check -p fantastic-cli --no-default-features --features embedded

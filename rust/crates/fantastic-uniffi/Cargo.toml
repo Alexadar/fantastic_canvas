@@ -30,4 +30,17 @@ once_cell = "1"
 uniffi = { version = "0.29", features = ["build"] }
 
 [features]
-default = []
+# Default for the Swift-embedded build is the sandboxed tier — that's
+# what FantasticLite (iOS/iPadOS/visionOS/macOS Lite) needs. The
+# embedded build MUST compile without subprocess-using bundles. The
+# `full` feature exists for parity with the CLI crate so the same
+# UniFFI library can be linked into an unsandboxed host that wants
+# the full bundle set; today no bundle differs between the two.
+default = ["embedded"]
+
+# Sandboxed / embedded-library tier — compile-time guarantee no
+# `std::process`, no `fork`, no dynamic library loading.
+embedded = []
+
+# Full tier — same shape as the CLI's `full` feature.
+full = []

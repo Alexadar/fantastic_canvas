@@ -19,6 +19,13 @@ use std::sync::Arc;
 
 fn register_default_bundles() -> BundleRegistry {
     let mut reg = BundleRegistry::new();
+
+    // ── Always-available bundles (work under both `desktop` and `embedded`).
+    //
+    // None of these spawn subprocesses, fork, or load dynamic libraries,
+    // so they all compile + run on iOS. The Bundle trait is the only
+    // dependency the kernel cares about; everything below is pure-Rust
+    // async over axum/tokio.
     reg.register("file.tools", fantastic_file::FileBundle);
     reg.register("web.tools", fantastic_web::WebBundle);
     reg.register("web_ws.tools", fantastic_web_ws::WebWsBundle);
@@ -32,6 +39,25 @@ fn register_default_bundles() -> BundleRegistry {
         "canvas_webapp.tools",
         fantastic_canvas_webapp::CanvasWebappBundle,
     );
+
+    // ── Full-tier-only bundles (subprocess / dynamic-loading / etc.).
+    //
+    // None ported yet. When a future bundle needs `std::process::Command`,
+    // `fork`, or `libloading::Library`, add its crate as an optional dep
+    // and register it under this gate. The `embedded` build (iOS Lite,
+    // visionOS, sandboxed macOS) compiles cleanly without these.
+    //
+    // Example:
+    //   #[cfg(feature = "full")]
+    //   reg.register("terminal_backend.tools", fantastic_terminal_backend::TerminalBackendBundle);
+    //
+    //   #[cfg(feature = "full")]
+    //   reg.register("python_runtime.tools", fantastic_python_runtime::PythonRuntimeBundle);
+    #[cfg(feature = "full")]
+    {
+        // (placeholder — populate when desktop-only bundles land)
+    }
+
     reg
 }
 
