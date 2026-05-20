@@ -224,7 +224,16 @@ class Agent:
         return None
 
     def _load_children(self) -> None:
-        """Recursively hydrate children from `<self>/agents/`."""
+        """Recursively hydrate children from `<self>/agents/`.
+
+        Weak loading: if a child's `handler_module` doesn't import in
+        this runtime (bundle isn't installed), log one line to stderr
+        and skip the agent + its subtree. The record stays on disk
+        untouched — boot under a runtime that has the bundle and the
+        agent rehydrates intact. This makes the same `.fantastic/`
+        workdir interchangeable between the Python kernel and the
+        forthcoming Rust kernel.
+        """
         cdir = self._children_dir()
         if not cdir.exists():
             return
@@ -236,6 +245,18 @@ class Agent:
                 rec = json.loads(af.read_text())
             except (json.JSONDecodeError, OSError):
                 continue
+            handler_module = rec.get("handler_module")
+            if handler_module:
+                try:
+                    importlib.import_module(handler_module)
+                except Exception:
+                    # Identical log shape required across runtimes
+                    # (grep-able from CI + selftest).
+                    sys.stderr.write(
+                        f"[kernel] skipping agent {rec.get('id')}: "
+                        f"bundle {handler_module} not installed in this runtime\n"
+                    )
+                    continue
             child_meta = {
                 k: v
                 for k, v in rec.items()
@@ -246,7 +267,7 @@ class Agent:
                 root_path=entry,
                 ctx=self.ctx,
                 parent=self,
-                handler_module=rec.get("handler_module"),
+                handler_module=handler_module,
                 **child_meta,
             )
             self._children[child.id] = child

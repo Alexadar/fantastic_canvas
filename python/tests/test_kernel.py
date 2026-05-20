@@ -113,6 +113,55 @@ def test_load_all_skips_corrupted_agent_json(tmp_path, monkeypatch):
     assert k.get("broken") is None
 
 
+def test_load_all_weak_loads_unknown_handler_module(tmp_path, monkeypatch, capsys):
+    """Weak loading: an agent.json with a handler_module that doesn't
+    import (e.g. bundle installed in another runtime — Rust, or a
+    plugin we don't have) gets skipped + logged on boot. The record
+    is left untouched on disk, the rest of the tree still loads, and
+    nothing crashes. Reboot under a runtime that has the bundle and
+    the agent rehydrates intact. Same workdir runs under either the
+    Python kernel or the forthcoming Rust kernel.
+
+    Log line shape MUST be byte-identical to the Rust kernel's so
+    selftests + CI can grep across both:
+        [kernel] skipping agent <id>: bundle <module> not installed in this runtime
+    """
+    monkeypatch.chdir(tmp_path)
+    # Plant a ghost agent: handler_module points at a bundle not installed here.
+    ghost = tmp_path / ".fantastic" / "agents" / "ghost_42"
+    ghost.mkdir(parents=True)
+    (ghost / "agent.json").write_text(
+        json.dumps(
+            {
+                "id": "ghost_42",
+                "handler_module": "ghost_bundle_that_does_not_exist.tools",
+                "parent_id": "core",
+            }
+        )
+    )
+    # Also plant a real agent alongside so we verify the rest of the
+    # tree still loads.
+    k = Core(Kernel(), argv=[])
+    k.create("file.tools", id="real_agent", x=42)
+
+    # Drop and restart from the same dir.
+    del k
+    k2 = Core(Kernel(), argv=[])
+
+    # Ghost was skipped — not in the agent map.
+    assert k2.get("ghost_42") is None
+    # Real agent still loads.
+    real = k2.get("real_agent")
+    assert real is not None and real["x"] == 42
+
+    # Exact log line shape (grep-able across runtimes).
+    err = capsys.readouterr().err
+    assert (
+        "[kernel] skipping agent ghost_42: bundle "
+        "ghost_bundle_that_does_not_exist.tools not installed in this runtime"
+    ) in err
+
+
 async def test_reflect_kernel_returns_substrate_primer(seeded_kernel):
     """`send("kernel", {reflect})` returns root's primer (transports +
     tree + bundles). Whether you use the magic id "kernel" or root's
