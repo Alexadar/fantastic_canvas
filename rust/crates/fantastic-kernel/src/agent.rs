@@ -292,7 +292,14 @@ mod tests {
         assert!(obj.contains_key("port"));
         // None-valued optional fields must NOT appear (matches Python's
         // omission when handler_module / parent_id are None).
-        let bare = Agent::new("root".into(), None, None, Map::new(), Path::new("/").to_path_buf(), false);
+        let bare = Agent::new(
+            "root".into(),
+            None,
+            None,
+            Map::new(),
+            Path::new("/").to_path_buf(),
+            false,
+        );
         let v2 = serde_json::to_value(bare.record()).unwrap();
         let o2 = v2.as_object().unwrap();
         assert!(o2.contains_key("id"));

@@ -23,6 +23,7 @@
 //!   restart" should behave differently from "gone forever".
 
 use crate::agent::AgentId;
+use crate::kernel::Kernel;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -31,6 +32,10 @@ use std::sync::Arc;
 /// Reply envelope. `None` = no reply (fire-and-forget); `Some(v)` =
 /// caller receives `v` as the `kernel.send` return value.
 pub type Reply = Option<Value>;
+
+/// Boxed error returned from bundle handler logic. Aliased so the
+/// trait signature stays readable.
+pub type BundleError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Plugin trait. Every Rust bundle implements this.
 #[async_trait]
@@ -42,30 +47,29 @@ pub trait Bundle: Send + Sync {
     /// Dispatch a verb. `payload["type"]` names the verb. Substrate
     /// guarantees `payload` is an `Object` shape.
     ///
+    /// `kernel` is passed so the handler can `kernel.send(...)` to
+    /// other agents or read shared state. Avoids storing back-refs
+    /// on each `Agent` (would create Arc cycles).
+    ///
     /// Return `Ok(Some(value))` for normal replies, `Ok(None)` for
-    /// fire-and-forget verbs (e.g. emit-style notifications).
-    /// `Err` surfaces a substrate-level failure; domain errors should
-    /// be returned as `Ok(Some(json!({"error": "..."})))`.
+    /// fire-and-forget verbs. `Err` surfaces a substrate-level
+    /// failure; domain errors should be returned as
+    /// `Ok(Some(json!({"error": "..."})))`.
     async fn handle(
         &self,
         agent_id: &AgentId,
         payload: &Value,
-    ) -> Result<Reply, Box<dyn std::error::Error + Send + Sync>>;
+        kernel: &Kernel,
+    ) -> Result<Reply, BundleError>;
 
     /// Pre-detach hook. Default: noop.
-    async fn on_delete(
-        &self,
-        _agent_id: &AgentId,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn on_delete(&self, _agent_id: &AgentId, _kernel: &Kernel) -> Result<(), BundleError> {
         Ok(())
     }
 
     /// Pre-shutdown hook. Default: delegate to on_delete.
-    async fn on_shutdown(
-        &self,
-        agent_id: &AgentId,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.on_delete(agent_id).await
+    async fn on_shutdown(&self, agent_id: &AgentId, kernel: &Kernel) -> Result<(), BundleError> {
+        self.on_delete(agent_id, kernel).await
     }
 
     /// Optional readme text seeded into the agent's dir on creation.
@@ -132,7 +136,8 @@ mod tests {
             &self,
             _agent_id: &AgentId,
             _payload: &Value,
-        ) -> Result<Reply, Box<dyn std::error::Error + Send + Sync>> {
+            _kernel: &Kernel,
+        ) -> Result<Reply, BundleError> {
             Ok(Some(json!({"ok": true})))
         }
     }
@@ -142,8 +147,9 @@ mod tests {
         let mut reg = BundleRegistry::new();
         reg.register("fake.tools", FakeBundle);
         let b = reg.get("fake.tools").expect("registered");
+        let kernel = Kernel::new();
         let reply = b
-            .handle(&AgentId::from("x"), &json!({"type": "ping"}))
+            .handle(&AgentId::from("x"), &json!({"type": "ping"}), &kernel)
             .await
             .unwrap();
         assert_eq!(reply, Some(json!({"ok": true})));

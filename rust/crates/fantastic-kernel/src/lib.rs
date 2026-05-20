@@ -24,10 +24,14 @@ pub mod agent;
 pub mod bundle;
 pub mod errors;
 pub mod kernel;
+pub mod lifecycle;
 pub mod lock;
 pub mod persistence;
+pub mod reflect;
+pub mod send;
 
 pub use agent::{Agent, AgentId, AgentRecord};
 pub use bundle::{Bundle, BundleRegistry, Reply};
 pub use errors::{KernelError, KernelResult};
 pub use kernel::{Kernel, StateSubscriber, DEFAULT_INBOX_BOUND};
+pub use send::{current_sender, with_sender, CURRENT_SENDER};

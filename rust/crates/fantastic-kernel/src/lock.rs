@@ -85,10 +85,7 @@ pub fn release(workdir: &Path) -> KernelResult<()> {
     if !path.exists() {
         return Ok(());
     }
-    fs::remove_file(&path).map_err(|e| KernelError::LockIo {
-        path,
-        source: e,
-    })?;
+    fs::remove_file(&path).map_err(|e| KernelError::LockIo { path, source: e })?;
     Ok(())
 }
 

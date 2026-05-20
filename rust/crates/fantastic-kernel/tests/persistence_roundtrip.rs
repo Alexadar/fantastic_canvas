@@ -20,6 +20,7 @@ impl Bundle for NoopBundle {
         &self,
         _id: &AgentId,
         _payload: &Value,
+        _kernel: &Kernel,
     ) -> Result<Reply, Box<dyn std::error::Error + Send + Sync>> {
         Ok(None)
     }
@@ -124,9 +125,8 @@ fn load_children_hydrates_registered_agents() {
         false,
     );
     let _rx = kernel.register(Arc::clone(&parent));
-    let loaded =
-        fantastic_kernel::persistence::load_children(&kernel, &reg, Arc::clone(&parent))
-            .expect("hydrate");
+    let loaded = fantastic_kernel::persistence::load_children(&kernel, &reg, Arc::clone(&parent))
+        .expect("hydrate");
     assert_eq!(loaded.len(), 2);
     assert!(kernel.agents.contains_key(&AgentId::from("known")));
     assert!(kernel.agents.contains_key(&AgentId::from("grandchild")));
@@ -176,9 +176,8 @@ fn load_children_weak_load_skips_unknown_handler_module_and_subtree() {
         false,
     );
     let _rx = kernel.register(Arc::clone(&parent));
-    let loaded =
-        fantastic_kernel::persistence::load_children(&kernel, &reg, Arc::clone(&parent))
-            .expect("hydrate");
+    let loaded = fantastic_kernel::persistence::load_children(&kernel, &reg, Arc::clone(&parent))
+        .expect("hydrate");
 
     // Only `real_1` loaded; ghost branch skipped wholesale.
     assert_eq!(loaded, vec![AgentId::from("real_1")]);
@@ -211,9 +210,8 @@ fn load_children_tolerates_corrupt_agent_json() {
         false,
     );
     let _rx = kernel.register(Arc::clone(&parent));
-    let loaded =
-        fantastic_kernel::persistence::load_children(&kernel, &reg, Arc::clone(&parent))
-            .expect("hydrate");
+    let loaded = fantastic_kernel::persistence::load_children(&kernel, &reg, Arc::clone(&parent))
+        .expect("hydrate");
     assert!(loaded.is_empty());
     assert!(!kernel.agents.contains_key(&AgentId::from("broken")));
 }

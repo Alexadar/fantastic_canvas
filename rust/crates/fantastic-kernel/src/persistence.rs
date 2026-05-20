@@ -45,10 +45,7 @@ pub fn persist(agent: &Agent) -> KernelResult<()> {
     let path = agent.agent_file();
     let json = serde_json::to_string_pretty(&agent.record())
         .expect("AgentRecord is always JSON-serializable");
-    fs::write(&path, json).map_err(|e| KernelError::Persistence {
-        path,
-        source: e,
-    })?;
+    fs::write(&path, json).map_err(|e| KernelError::Persistence { path, source: e })?;
     Ok(())
 }
 
@@ -67,10 +64,7 @@ pub fn seed_readme(agent: &Agent, readme: &str) -> KernelResult<()> {
         path: agent.root_path.clone(),
         source: e,
     })?;
-    fs::write(&path, readme).map_err(|e| KernelError::Persistence {
-        path,
-        source: e,
-    })?;
+    fs::write(&path, readme).map_err(|e| KernelError::Persistence { path, source: e })?;
     Ok(())
 }
 
