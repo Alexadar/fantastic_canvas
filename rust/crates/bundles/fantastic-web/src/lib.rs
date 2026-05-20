@@ -29,14 +29,15 @@
 
 use async_trait::async_trait;
 use axum::{
-    extract::{Path as AxPath, State},
+    extract::{ws::Message, ws::WebSocket, Json, Path as AxPath, Query, State, WebSocketUpgrade},
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
 use fantastic_kernel::{AgentId, Kernel};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -203,12 +204,21 @@ fn read_port(agent_id: &AgentId, kernel: &Kernel) -> Option<u16> {
 }
 
 fn build_router(state: AppState) -> Router {
+    // Order matters for axum's matchit: place literal-segment routes
+    // (transport.js, favicon, agent ws / _reflect / _reflect/{target})
+    // before parametric ones so the trie disambiguates correctly.
+    // The file proxy uses `:agent_id/file/*path` syntax so the
+    // wildcard sits at the trailing position cleanly.
     Router::new()
         .route("/", get(serve_root_index))
         .route("/transport.js", get(serve_transport_js))
         .route("/favicon.ico", get(serve_favicon))
-        .route("/{agent_id}/", get(serve_agent_render))
-        .route("/{agent_id}/file/{*path}", get(serve_file_proxy))
+        .route("/:agent_id/ws", get(serve_ws))
+        .route("/:agent_id/_reflect", get(serve_rest_reflect_root))
+        .route("/:agent_id/_reflect/:target_id", get(serve_rest_reflect))
+        .route("/:agent_id/file/*path", get(serve_file_proxy))
+        .route("/:agent_id/", get(serve_agent_render))
+        .route("/:rest_id/:target_id", post(serve_rest_post))
         .with_state(state)
 }
 
@@ -346,6 +356,236 @@ fn guess_mime(path: &str) -> &'static str {
     } else {
         "text/plain; charset=utf-8"
     }
+}
+
+// ─── WebSocket surface ──────────────────────────────────────────────
+//
+// `ws://host/<agent_id>/ws` — frame protocol per docs/_proxy.py:
+//   C→S {type:"call",  target, payload, id}     → kernel.send → reply
+//   C→S {type:"emit",  target, payload}         → kernel.emit (no reply)
+//   C→S {type:"watch", src}                     → register synthetic watcher
+//   C→S {type:"unwatch", src}                   → unregister
+//   S→C {type:"reply", id, data} | {type:"error", id, error}
+//   S→C {type:"event", payload}                 → drained from watcher inbox
+//
+// Binary frames are deferred to a later milestone.
+
+async fn serve_ws(
+    State(state): State<AppState>,
+    AxPath(_agent_id): AxPath<String>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade.on_upgrade(move |socket| ws_loop(state, socket))
+}
+
+async fn ws_loop(state: AppState, socket: WebSocket) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_CLIENT_HEX: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT_CLIENT_HEX.fetch_add(1, Ordering::SeqCst);
+    let client_id = AgentId::from(format!("_ws_{n:06x}").as_str());
+
+    let (mut sink, mut stream) = socket.split();
+
+    // Spawn a watcher-drain task: pulls events from the client's
+    // auto-vivified inbox and serializes them as {type:"event"} frames.
+    // We need a separate channel because axum's split sink is single-
+    // consumer; the inbox receiver lives in the kernel.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<String>(state.kernel.inbox_bound);
+    // Hook the synthetic client inbox into the kernel.
+    let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::channel::<Value>(state.kernel.inbox_bound);
+    state.kernel.inboxes.insert(client_id.clone(), inbox_tx);
+
+    let drain_task = tokio::spawn({
+        let out_tx = out_tx.clone();
+        async move {
+            while let Some(payload) = inbox_rx.recv().await {
+                let frame = serde_json::json!({"type": "event", "payload": payload});
+                let line = match serde_json::to_string(&frame) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                if out_tx.send(line).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Outbound forwarder: anything written to out_tx hits the socket.
+    let send_task = tokio::spawn(async move {
+        while let Some(line) = out_rx.recv().await {
+            if sink.send(Message::Text(line)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Inbound loop: parse text frames, dispatch.
+    while let Some(msg) = stream.next().await {
+        let text = match msg {
+            Ok(Message::Text(t)) => t,
+            Ok(Message::Close(_)) | Err(_) => break,
+            _ => continue,
+        };
+        let Ok(env): Result<Value, _> = serde_json::from_str(&text) else {
+            continue;
+        };
+        let ty = env.get("type").and_then(Value::as_str).unwrap_or("");
+        let target = env.get("target").and_then(Value::as_str).map(AgentId::from);
+        let payload = env.get("payload").cloned().unwrap_or(Value::Null);
+        let id = env.get("id").and_then(Value::as_str).map(str::to_string);
+        let kernel = Arc::clone(&state.kernel);
+        let sender_for_scope = client_id.clone();
+        let out = out_tx.clone();
+        match ty {
+            "call" => {
+                let Some(target) = target else {
+                    if let Some(id) = id {
+                        let _ = out
+                            .send(
+                                serde_json::json!({"type":"error","id":id,"error":"call requires target"})
+                                    .to_string(),
+                            )
+                            .await;
+                    }
+                    continue;
+                };
+                tokio::spawn(async move {
+                    let reply = fantastic_kernel::send::with_sender(sender_for_scope, async {
+                        kernel.send(&target, payload).await
+                    })
+                    .await;
+                    if let Some(id) = id {
+                        let frame = if reply.get("error").is_some() {
+                            serde_json::json!({
+                                "type": "error",
+                                "id": id,
+                                "error": reply
+                                    .get("error")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("error")
+                                    .to_string(),
+                            })
+                        } else {
+                            serde_json::json!({
+                                "type": "reply",
+                                "id": id,
+                                "data": reply,
+                            })
+                        };
+                        let _ = out.send(frame.to_string()).await;
+                    }
+                });
+            }
+            "emit" => {
+                let Some(target) = target else { continue };
+                tokio::spawn(async move {
+                    fantastic_kernel::send::with_sender(sender_for_scope, async {
+                        kernel.emit(&target, payload).await
+                    })
+                    .await;
+                });
+            }
+            "watch" => {
+                let Some(src) = env.get("src").and_then(Value::as_str).map(AgentId::from) else {
+                    continue;
+                };
+                kernel.watch(&src, client_id.clone()).await;
+            }
+            "unwatch" => {
+                let Some(src) = env.get("src").and_then(Value::as_str).map(AgentId::from) else {
+                    continue;
+                };
+                kernel.unwatch(&src, &client_id).await;
+            }
+            _ => {}
+        }
+    }
+
+    // Cleanup.
+    state.kernel.inboxes.remove(&client_id);
+    drain_task.abort();
+    send_task.abort();
+}
+
+// ─── REST surface ───────────────────────────────────────────────────
+//
+// POST /<rest_id>/<target_id> body=<payload-json> → kernel.send → JSON.
+// GET  /<rest_id>/_reflect[/<target_id>][?readme=1]               → reflect helper.
+
+#[derive(serde::Deserialize)]
+struct ReflectQuery {
+    readme: Option<u8>,
+}
+
+async fn serve_rest_post(
+    State(state): State<AppState>,
+    AxPath((rest_id, target_id)): AxPath<(String, String)>,
+    Json(payload): Json<Value>,
+) -> Response {
+    let target = AgentId::from(target_id.as_str());
+    let sender = AgentId::from(rest_id.as_str());
+    let reply = fantastic_kernel::send::with_sender(sender, async {
+        state.kernel.send(&target, payload).await
+    })
+    .await;
+    let status = if reply.get("error").is_some() {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::OK
+    };
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        reply.to_string(),
+    )
+        .into_response()
+}
+
+async fn serve_rest_reflect_root(
+    State(state): State<AppState>,
+    AxPath(rest_id): AxPath<String>,
+    Query(q): Query<ReflectQuery>,
+) -> Response {
+    let sender = AgentId::from(rest_id.as_str());
+    let target = AgentId::from("kernel");
+    let payload = serde_json::json!({
+        "type": "reflect",
+        "return_readme": q.readme.unwrap_or(0) != 0,
+    });
+    let reply = fantastic_kernel::send::with_sender(sender, async {
+        state.kernel.send(&target, payload).await
+    })
+    .await;
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        reply.to_string(),
+    )
+        .into_response()
+}
+
+async fn serve_rest_reflect(
+    State(state): State<AppState>,
+    AxPath((rest_id, target_id)): AxPath<(String, String)>,
+    Query(q): Query<ReflectQuery>,
+) -> Response {
+    let sender = AgentId::from(rest_id.as_str());
+    let target = AgentId::from(target_id.as_str());
+    let payload = serde_json::json!({
+        "type": "reflect",
+        "return_readme": q.readme.unwrap_or(0) != 0,
+    });
+    let reply = fantastic_kernel::send::with_sender(sender, async {
+        state.kernel.send(&target, payload).await
+    })
+    .await;
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        reply.to_string(),
+    )
+        .into_response()
 }
 
 // base64 is a transitive dep — re-declare via fantastic-kernel's

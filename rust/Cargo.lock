@@ -264,6 +264,8 @@ dependencies = [
  "fantastic-web",
  "fantastic-web-rest",
  "fantastic-web-ws",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -336,7 +338,9 @@ dependencies = [
  "base64",
  "fantastic-bundle",
  "fantastic-kernel",
+ "futures-util",
  "reqwest",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -348,8 +352,9 @@ dependencies = [
 name = "fantastic-web-rest"
 version = "0.1.0"
 dependencies = [
- "axum",
+ "async-trait",
  "fantastic-bundle",
+ "fantastic-kernel",
  "serde_json",
 ]
 
@@ -357,11 +362,10 @@ dependencies = [
 name = "fantastic-web-ws"
 version = "0.1.0"
 dependencies = [
- "axum",
+ "async-trait",
  "fantastic-bundle",
+ "fantastic-kernel",
  "serde_json",
- "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]
@@ -407,6 +411,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
 
 [[package]]
+name = "futures-macro"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "futures-sink"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -425,6 +440,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
  "futures-core",
+ "futures-macro",
  "futures-sink",
  "futures-task",
  "pin-project-lite",

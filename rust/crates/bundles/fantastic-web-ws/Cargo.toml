@@ -7,7 +7,6 @@ description = "WebSocket verb channel — mounts ws://host/<agent_id>/ws on a pa
 
 [dependencies]
 fantastic-bundle = { path = "../../fantastic-bundle" }
-tokio = { workspace = true }
-tokio-tungstenite = { workspace = true }
-axum = { workspace = true }
+fantastic-kernel = { path = "../../fantastic-kernel" }
+async-trait = { workspace = true }
 serde_json = { workspace = true }

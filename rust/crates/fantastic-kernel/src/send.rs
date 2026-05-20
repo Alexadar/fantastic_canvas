@@ -219,11 +219,15 @@ async fn dispatch(kernel: &Arc<Kernel>, target: Arc<Agent>, payload: &Value) -> 
     }
 }
 
-/// Substrate verbs answered natively on every agent.
+/// Substrate verbs answered natively on every agent — explicitly
+/// excludes `reflect`. Reflect is per-bundle (each handler customizes
+/// its `sentence` + state shape); the substrate's reflect path only
+/// fires for bare agents (no `handler_module`), which is handled
+/// inside `dispatch`.
 fn is_system_verb(verb: &str) -> bool {
     matches!(
         verb,
-        "create_agent" | "delete_agent" | "update_agent" | "list_agents" | "reflect" | "get"
+        "create_agent" | "delete_agent" | "update_agent" | "list_agents" | "get"
     )
 }
 
@@ -234,7 +238,6 @@ async fn handle_system_verb(
     payload: &Value,
 ) -> Value {
     match verb {
-        "reflect" => crate::reflect::reflect(kernel, target, payload),
         "list_agents" => {
             let mut out: Vec<Value> = Vec::new();
             for entry in kernel.agents.iter() {
