@@ -27,6 +27,7 @@ fantastic-ai-chat-webapp = { path = "../bundles/fantastic-ai-chat-webapp" }
 fantastic-terminal-webapp = { path = "../bundles/fantastic-terminal-webapp" }
 fantastic-ollama-backend = { path = "../bundles/fantastic-ollama-backend" }
 fantastic-kernel-bridge = { path = "../bundles/fantastic-kernel-bridge" }
+fantastic-nvidia-nim-backend = { path = "../bundles/fantastic-nvidia-nim-backend" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

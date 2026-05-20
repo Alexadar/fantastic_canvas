@@ -61,6 +61,10 @@ fn register_default_bundles() -> BundleRegistry {
         "kernel_bridge.tools",
         fantastic_kernel_bridge::KernelBridgeBundle,
     );
+    reg.register(
+        "nvidia_nim_backend.tools",
+        fantastic_nvidia_nim_backend::NvidiaNimBundle,
+    );
 
     // ── Full-tier-only bundles (subprocess / dynamic-loading / etc.).
     //
