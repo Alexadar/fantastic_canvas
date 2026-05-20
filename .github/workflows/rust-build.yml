@@ -48,3 +48,16 @@ jobs:
         run: |
           cargo check -p fantastic-uniffi --no-default-features --features embedded
           cargo check -p fantastic-cli --no-default-features --features embedded
+
+      # Cold-start budget. Runs the bench with 2× ceilings via the
+      # FANTASTIC_BENCH_RELAXED env so CI variance doesn't false-fail;
+      # strict targets stay in the script for local runs. Builds the
+      # release binary first since the bench needs an optimized build
+      # to be meaningful.
+      - name: cargo build --release --bin fantastic
+        run: cargo build --release --bin fantastic
+
+      - name: bench-coldstart (relaxed ceilings)
+        env:
+          FANTASTIC_BENCH_RELAXED: "1"
+        run: ./scripts/bench-coldstart.sh

@@ -176,6 +176,33 @@ at `packaging/FantasticKernel/`.
 UniFFI v0.29 — async-native, `Result<T, E>` → Swift `throws`,
 XCFramework + SPM distribution used by Firefox iOS in production.
 
+## Cold start
+
+The release binary's boot budget, measured by `scripts/bench-coldstart.sh`:
+
+| metric                    | target  | latest |
+|---------------------------|---------|--------|
+| virgin-dir reflect        |  50 ms  |  36 ms |
+| 18-agent hydrate reflect  | 100 ms  |  32 ms |
+| boot-to-listening (HTTP)  | 200 ms  |  90 ms |
+
+Captured on macOS arm64 (M-series) in release mode against a fresh
+tempdir. CI runs the same script with 2× ceilings via
+`FANTASTIC_BENCH_RELAXED=1` to absorb cloud-runner variance.
+
+Run locally:
+
+```bash
+cd rust
+cargo build --release --bin fantastic
+./scripts/bench-coldstart.sh
+```
+
+If a measurement breaches its target, the long pole is usually one of:
+- `Kernel::new` + `DashMap` shard allocation
+- `bootstrap::load_children` disk walk (linear in agent count)
+- `axum::serve` handshake on the bound port
+
 ## Pre-push checks
 
 ```bash
