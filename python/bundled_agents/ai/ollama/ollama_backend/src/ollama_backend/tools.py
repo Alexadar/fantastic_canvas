@@ -6,6 +6,24 @@ tool, execute every tool_call via kernel.send, feed reply back via
 role:tool with tool_call_id linkage). Loops UNTIL the model stops
 emitting tool_calls — bounded only by SEND_TIMEOUT (hard) and the
 `interrupt` verb (user-driven). No fixed max-step ceiling.
+
+AI rehaul backlog (TODO — not in scope for the current port).
+These items will need a coordinated redesign across all LLM
+backends + ai_chat_webapp before the next major bump:
+  1. Cross-backend conversation portability — today history lives
+     in <backend>/chat_<client>.json. Switching upstream_id starts
+     a fresh conversation. Future: history travels with the chat
+     tile, backends become stateless-modulo-streaming.
+  2. Tool-call streaming protocol — current contract is one
+     tool_call per chunk (ollama) vs argument fragments aggregated
+     across chunks (OpenAI/NIM). Pick one and version it.
+  3. Multi-modal binary frames — image/audio payloads currently
+     have no defined wire shape. Needs the WS binary frame channel
+     (also blocks terminal_backend's image-paste).
+  4. Cost / token tracking — no per-turn cost report today.
+  5. Context-window management — backends silently truncate; no
+     surface to inspect or override.
+  6. Auth — api_key sidecar is plaintext; no per-tenant scoping.
 """
 
 from __future__ import annotations
