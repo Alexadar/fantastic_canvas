@@ -24,6 +24,9 @@ members = [
     "crates/bundles/fantastic-telemetry-pane",
     "crates/bundles/fantastic-ai-chat-webapp",
     "crates/bundles/fantastic-terminal-webapp",
+    "crates/bundles/fantastic-ollama-backend",
+    "crates/bundles/fantastic-kernel-bridge",
+    "crates/bundles/fantastic-nvidia-nim-backend",
 ]
 
 [workspace.package]

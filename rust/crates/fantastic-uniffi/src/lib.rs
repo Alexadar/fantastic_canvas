@@ -95,6 +95,14 @@ fn register_default_bundles() -> BundleRegistry {
         "terminal_webapp.tools",
         fantastic_terminal_webapp::TerminalWebappBundle,
     );
+    reg.register(
+        "ollama_backend.tools",
+        fantastic_ollama_backend::OllamaBackendBundle,
+    );
+    reg.register(
+        "kernel_bridge.tools",
+        fantastic_kernel_bridge::KernelBridgeBundle,
+    );
 
     // ── Full-tier-only (subprocess / fork / dynamic loading).
     //
