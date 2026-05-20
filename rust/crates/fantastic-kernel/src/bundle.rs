@@ -25,6 +25,7 @@
 use crate::agent::AgentId;
 use crate::kernel::Kernel;
 use async_trait::async_trait;
+use base64::Engine;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -61,6 +62,38 @@ pub trait Bundle: Send + Sync {
         payload: &Value,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError>;
+
+    /// Dispatch a binary-framed verb. `header` is the JSON header
+    /// object from the framed WS message (carries `target`, `type`,
+    /// optional `id`, etc.); `blob` is the raw byte payload that
+    /// followed the header in the same frame.
+    ///
+    /// Default impl: base64-encode `blob` into `header["data"]` and
+    /// route through [`Self::handle`]. Bundles that need raw bytes
+    /// (e.g. `terminal_backend.paste_image`) override this method
+    /// to skip the base64 round-trip.
+    async fn handle_binary(
+        &self,
+        agent_id: &AgentId,
+        header: Value,
+        blob: Vec<u8>,
+        kernel: &Arc<Kernel>,
+    ) -> Result<Reply, BundleError> {
+        let mut payload = header;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&blob);
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("data".to_string(), Value::String(encoded));
+        } else {
+            // Header wasn't an object — synthesize a minimal one carrying
+            // the encoded blob so the handler still gets something
+            // useful. Matches the "be liberal on input" stance the
+            // wire protocol takes elsewhere.
+            let mut map = serde_json::Map::new();
+            map.insert("data".to_string(), Value::String(encoded));
+            payload = Value::Object(map);
+        }
+        self.handle(agent_id, &payload, kernel).await
+    }
 
     /// Pre-detach hook. Default: noop.
     async fn on_delete(

@@ -100,6 +100,46 @@ echo "$FILE_REPLY" | grep -q 'Filesystem root' \
     || fail "POST /<rest>/ff reflect" "wrong sentence"
 pass "POST /<rest>/ff reflect   → Filesystem root sentence"
 
+# ── WS binary-frame channel ─────────────────────────────────────────
+# Probe: open a WS to the web_ws surface, send one binary frame with a
+# JSON header targeting a NON-EXISTENT agent + a tiny blob. The server
+# decodes the frame, calls send_with_binary, gets back
+# {"error":"no agent ..."} from the kernel, wraps it into a `{type:
+# "error"}` reply and sends it back over the same WS. The probe asserts
+# (a) the connection stays up (no protocol error closes the socket) and
+# (b) a reply frame arrives with the expected error.
+if command -v python3 >/dev/null 2>&1; then
+    BIN_REPLY="$(WSPORT="$PORT" python3 - <<'PY' 2>&1 || true
+import asyncio, json, os, struct, sys
+try:
+    import websockets
+except ImportError:
+    print("SKIP: websockets module not installed", file=sys.stderr)
+    sys.exit(0)
+port = os.environ["WSPORT"]
+async def main():
+    url = f"ws://localhost:{port}/w/ws"
+    async with websockets.connect(url, open_timeout=3) as ws:
+        header = {"target": "does_not_exist_zzz", "type": "frob", "id": "bp1"}
+        hdr = json.dumps(header).encode("utf-8")
+        frame = struct.pack(">I", len(hdr)) + hdr + b"\x00\x01\x02\x03"
+        await ws.send(frame)
+        reply = await asyncio.wait_for(ws.recv(), timeout=3)
+        print(reply)
+asyncio.run(main())
+PY
+)"
+    if echo "$BIN_REPLY" | grep -q "SKIP:"; then
+        printf "  - %s\n" "binary frame probe skipped (no websockets module)"
+    elif echo "$BIN_REPLY" | grep -q '"error"' && echo "$BIN_REPLY" | grep -q 'no agent'; then
+        pass "WS binary frame → reply with 'no agent' error"
+    else
+        fail "WS binary frame probe" "unexpected reply: $BIN_REPLY"
+    fi
+else
+    printf "  - %s\n" "binary frame probe skipped (no python3)"
+fi
+
 # ── weak-load skip+log ──────────────────────────────────────────────
 "$RUST_BIN" core create_agent handler_module=ghost_unknown.tools id=ghost_1 >/dev/null 2>&1 || true
 mkdir -p "$WORKDIR/.fantastic/agents/ghost_planted"

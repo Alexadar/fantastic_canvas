@@ -118,6 +118,62 @@ impl Kernel {
         reply
     }
 
+    /// Send a binary-framed verb. Mirrors [`Self::send`] except the
+    /// payload travels as `(header, blob)` instead of a single JSON
+    /// `Value`. Dispatches through the target bundle's
+    /// [`crate::bundle::Bundle::handle_binary`] (whose default impl
+    /// base64-encodes the blob into `header["data"]` and calls
+    /// `handle`).
+    ///
+    /// State events: emits `{"type":"send_binary", sender, target,
+    /// verb, summary}` for telemetry parity with text dispatch. Watcher
+    /// fanout uses the same event payload.
+    pub async fn send_with_binary(
+        self: &Arc<Self>,
+        target_id: &AgentId,
+        header: Value,
+        blob: Vec<u8>,
+    ) -> Value {
+        // Resolve target. Special id `"kernel"` aliases to the root.
+        let resolved: Option<Arc<Agent>> = if target_id.as_str() == "kernel" {
+            self.root()
+        } else {
+            self.agents.get(target_id).map(|e| Arc::clone(&e))
+        };
+        let Some(target) = resolved else {
+            return json!({ "error": format!("no agent {target_id}") });
+        };
+
+        let sender = current_sender().unwrap_or_else(|| target.id.clone());
+        let verb = verb_of(&header).to_string();
+        let blob_len = blob.len();
+        let summary = summarize_payload(&header);
+
+        // Run dispatch under a fresh CURRENT_SENDER scope so nested
+        // sends attribute to this target (matches Python contextvars).
+        let kernel = Arc::clone(self);
+        let target_for_dispatch = Arc::clone(&target);
+        let header_clone = header.clone();
+        let reply = with_sender(target.id.clone(), async move {
+            dispatch_binary(&kernel, target_for_dispatch, header_clone, blob).await
+        })
+        .await;
+
+        // State event + watcher fanout.
+        let event = json!({
+            "type": "send_binary",
+            "sender": sender.0,
+            "target": target.id.0,
+            "verb": verb,
+            "summary": summary,
+            "bytes": blob_len,
+        });
+        self.publish_state(&event);
+        self.fanout_to_watchers(&target, &event).await;
+
+        reply
+    }
+
     /// Emit a payload to a target's inbox without dispatching. Returns
     /// immediately. Fans the event out to watchers; publishes a state
     /// event of type `"emit"`.
@@ -213,6 +269,36 @@ async fn dispatch(kernel: &Arc<Kernel>, target: Arc<Agent>, payload: &Value) -> 
         });
     };
     match bundle.handle(&target.id, payload, kernel).await {
+        Ok(Some(v)) => v,
+        Ok(None) => Value::Null,
+        Err(e) => json!({ "error": e.to_string() }),
+    }
+}
+
+/// Binary-frame dispatch: route to the target bundle's `handle_binary`.
+/// Bare agents (no handler_module) have no binary verb surface — return
+/// an error matching the text-dispatch shape so callers get a uniform
+/// error envelope across both channels.
+async fn dispatch_binary(
+    kernel: &Arc<Kernel>,
+    target: Arc<Agent>,
+    header: Value,
+    blob: Vec<u8>,
+) -> Value {
+    let Some(hm) = target.handler_module.as_deref() else {
+        return json!({
+            "error": format!(
+                "agent {:?} has no handler_module; cannot answer binary frame",
+                target.id.0
+            ),
+        });
+    };
+    let Some(bundle) = kernel.bundles.get(hm) else {
+        return json!({
+            "error": format!("no bundle for handler_module {hm:?}"),
+        });
+    };
+    match bundle.handle_binary(&target.id, header, blob, kernel).await {
         Ok(Some(v)) => v,
         Ok(None) => Value::Null,
         Err(e) => json!({ "error": e.to_string() }),

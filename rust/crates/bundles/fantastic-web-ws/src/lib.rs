@@ -1,15 +1,17 @@
-//! WebSocket verb channel — thin compat bundle.
+//! WebSocket verb channel — sub-agent of a `web` host.
 //!
-//! The actual WS server lives inside [`fantastic-web`]. This crate's
-//! presence in the registry exists so that workdirs created on either
-//! runtime (which persist `handler_module: "web_ws.tools"` records as
-//! children of a `web` agent) continue to rehydrate cleanly under
-//! this runtime. It reports `running` based on whether its parent
-//! web bundle is up.
+//! The actual WS server lives inside [`fantastic-web`]; this bundle
+//! declares the WS route via the duck-typed `get_routes` verb that the
+//! parent `web` agent queries during boot (and again on any
+//! `routes_changed` emit). Adding / removing a `web_ws` child of a
+//! running `web` agent hot-(un)mounts the endpoint without restarting
+//! axum.
 //!
 //! Verbs:
-//! - `reflect` — `{id, sentence, mounted_on}`
-//! - `boot` / `shutdown` — no-op; the WS endpoint comes up with `web`.
+//! - `reflect` — `{id, sentence, mounted_on, path_pattern}`
+//! - `boot` / `shutdown` — no-op; the parent web agent owns the route
+//! - `get_routes` — declares `{routes:[{kind:"websocket", path}]}`
+//!   where `path` is `/<parent_id>/ws`
 
 #![deny(missing_docs)]
 
@@ -47,28 +49,56 @@ impl Bundle for WebWsBundle {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         let reply = match verb {
             "reflect" => {
-                let mounted_on = kernel
-                    .agents
-                    .get(agent_id)
-                    .and_then(|e| e.parent_id.clone())
-                    .map(|p| p.0)
-                    .unwrap_or_default();
+                let mounted_on = parent_id(agent_id, kernel);
+                let path_pattern = ws_path(&mounted_on);
                 json!({
                     "id": agent_id.as_str(),
-                    "sentence": "WebSocket verb channel (served by parent web agent).",
+                    "sentence": "WS verb-invocation surface; mounts /<parent_id>/ws on the parent web.",
                     "mounted_on": mounted_on,
+                    "path_pattern": path_pattern,
                     "verbs": {
-                        "reflect": "Identity + parent web agent id. No args.",
+                        "reflect": "Identity + parent web agent id + URL pattern. No args.",
                         "boot": "No-op (the WS endpoint comes up with the parent web agent).",
                         "shutdown": "No-op.",
+                        "get_routes": "Returns {routes:[{kind:'websocket', path:'/<parent>/ws'}]}.",
                     }
                 })
             }
             "boot" | "shutdown" => Value::Null,
+            "get_routes" => {
+                let mounted_on = parent_id(agent_id, kernel);
+                json!({
+                    "routes": [{
+                        "kind": "websocket",
+                        "path": ws_path(&mounted_on),
+                    }]
+                })
+            }
             other => json!({"error": format!("unknown verb {other:?}")}),
         };
         Ok(Some(reply))
     }
+}
+
+/// Resolve this surface's parent agent id (the `web` host). Empty
+/// string if the agent has no parent_id (shouldn't happen in practice
+/// — surface bundles only make sense as children of a `web` agent —
+/// but we tolerate it so `reflect` returns gracefully).
+fn parent_id(agent_id: &AgentId, kernel: &Kernel) -> String {
+    kernel
+        .agents
+        .get(agent_id)
+        .and_then(|e| e.parent_id.clone())
+        .map(|p| p.0)
+        .unwrap_or_default()
+}
+
+/// Compose the WS path from the parent web agent's id. Format matches
+/// Python's `/<host_id>/ws`. The parent agent id is the path's host
+/// segment; axum's matchit needs a concrete prefix (no `{host_id}`
+/// placeholder) so we substitute at mount time.
+fn ws_path(parent: &str) -> String {
+    format!("/{parent}/ws")
 }
 
 #[cfg(test)]

@@ -1,13 +1,22 @@
-//! REST verb channel — thin compat bundle.
+//! REST verb channel — sub-agent of a `web` host.
 //!
-//! The actual REST routes (POST + `_reflect` GET helpers) live inside
-//! [`fantastic-web`]'s axum router. This crate's presence in the
-//! registry exists so workdirs persisting `handler_module:
-//! "web_rest.tools"` records continue to rehydrate cleanly.
+//! The actual REST routes (POST + `_reflect` GET helpers) are handled
+//! inside [`fantastic-web`]'s axum router; this bundle declares the
+//! routes via the duck-typed `get_routes` verb that the parent `web`
+//! agent queries during boot. The `self_id` is baked into the path
+//! literal so several `web_rest` agents under the same `web` parent
+//! don't collide.
+//!
+//! Routes mounted:
+//!
+//! - `POST /<self_id>/{target_id}` body=payload → kernel.send → JSON
+//! - `GET  /<self_id>/_reflect` → kernel.reflect (substrate primer)
+//! - `GET  /<self_id>/_reflect/{target_id}` → reflect on a specific agent
 //!
 //! Verbs:
-//! - `reflect` — `{id, sentence, mounted_on}`
-//! - `boot` / `shutdown` — no-op.
+//! - `reflect` — `{id, sentence, mounted_on, path_pattern, ...}`
+//! - `boot` / `shutdown` — no-op
+//! - `get_routes` — declares the surface for mounting
 
 #![deny(missing_docs)]
 
@@ -43,30 +52,58 @@ impl Bundle for WebRestBundle {
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
+        let id_str = agent_id.as_str();
         let reply = match verb {
             "reflect" => {
-                let mounted_on = kernel
-                    .agents
-                    .get(agent_id)
-                    .and_then(|e| e.parent_id.clone())
-                    .map(|p| p.0)
-                    .unwrap_or_default();
+                let mounted_on = parent_id(agent_id, kernel);
                 json!({
-                    "id": agent_id.as_str(),
-                    "sentence": "REST verb channel (served by parent web agent).",
+                    "id": id_str,
+                    "sentence": "REST verb-invocation surface; POST /<self>/<target_id> body=payload.",
                     "mounted_on": mounted_on,
+                    "path_pattern": format!("/{id_str}/{{target_id}}"),
+                    "method": "POST",
+                    "reflect_url": format!("/{id_str}/_reflect"),
+                    "reflect_pattern": format!("/{id_str}/_reflect/{{target_id}}"),
                     "verbs": {
-                        "reflect": "Identity + parent web agent id. No args.",
+                        "reflect": "Identity + parent web agent id + URL patterns. No args.",
                         "boot": "No-op (REST routes come up with the parent web agent).",
                         "shutdown": "No-op.",
+                        "get_routes": "Returns {routes:[…]} for the POST + _reflect surface.",
                     }
                 })
             }
             "boot" | "shutdown" => Value::Null,
+            "get_routes" => json!({
+                "routes": [
+                    {
+                        "kind": "post",
+                        "path": format!("/{id_str}/{{target_id}}"),
+                    },
+                    {
+                        "kind": "get",
+                        "path": format!("/{id_str}/_reflect"),
+                    },
+                    {
+                        "kind": "get",
+                        "path": format!("/{id_str}/_reflect/{{target_id}}"),
+                    },
+                ]
+            }),
             other => json!({"error": format!("unknown verb {other:?}")}),
         };
         Ok(Some(reply))
     }
+}
+
+/// Resolve this surface's parent agent id (the `web` host). Empty
+/// string if not parented — see analogous helper in `fantastic-web-ws`.
+fn parent_id(agent_id: &AgentId, kernel: &Kernel) -> String {
+    kernel
+        .agents
+        .get(agent_id)
+        .and_then(|e| e.parent_id.clone())
+        .map(|p| p.0)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

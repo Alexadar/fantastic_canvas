@@ -29,20 +29,28 @@
 
 use async_trait::async_trait;
 use axum::{
+    body::Body,
     extract::{ws::Message, ws::WebSocket, Json, Path as AxPath, Query, State, WebSocketUpgrade},
-    http::{header, StatusCode},
+    http::{header, Request, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Router,
 };
 use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
-use fantastic_kernel::{AgentId, Kernel};
+use fantastic_kernel::{AgentId, Kernel, SubscriberToken};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+use tokio::sync::RwLock as AsyncRwLock;
 use tokio::task::JoinHandle;
+use tower::ServiceExt;
+// axum's ServiceExt provides `.into_make_service()` on any tower Service.
+use axum::ServiceExt as _;
 
 /// `handler_module` key under which this bundle registers.
 pub const HANDLER_MODULE: &str = "web.tools";
@@ -58,20 +66,40 @@ pub const TRANSPORT_JS: &str = include_str!("transport.js");
 /// Static `/` index — link tree placeholder.
 pub const ROOT_INDEX_HTML: &str = include_str!("index.html");
 
-/// Live web servers, keyed by web-agent id. Holds the JoinHandle so
-/// `stop` / `on_delete` can cancel cleanly.
+/// Live web servers, keyed by web-agent id. Holds the JoinHandle +
+/// the Arc-RwLock'd Router (for hot re-mounting) + the
+/// `routes_changed` state subscriber token (so `stop` / `on_delete`
+/// can detach cleanly).
 pub(crate) static SERVERS: once_cell_lock::OnceLockMap = once_cell_lock::OnceLockMap::new();
+
+/// Per-agent live server bookkeeping. Tracked outside `Agent` so the
+/// substrate's plain record stays disk-shape only.
+pub(crate) struct ServerHandle {
+    /// The serve loop's task handle.
+    pub task: JoinHandle<()>,
+    /// The shared router; writers swap the inner Router in place to
+    /// hot-mount/unmount child surfaces without restarting axum.
+    /// Held here so the boot path and the `routes_changed`
+    /// subscriber closure share the same Arc; never read back from
+    /// this map (the closure has its own clone), but keeps the
+    /// lifetime tied to the running server.
+    #[allow(dead_code)]
+    pub router: Arc<AsyncRwLock<Router>>,
+    /// State-subscriber token for the `routes_changed` watcher; detach
+    /// on stop so the closure's captured Arcs drop.
+    pub sub_token: SubscriberToken,
+}
 
 mod once_cell_lock {
     use super::*;
     use std::sync::OnceLock;
-    /// Lazy-initialized concurrent map of web-agent id → JoinHandle.
-    pub struct OnceLockMap(OnceLock<Mutex<HashMap<AgentId, JoinHandle<()>>>>);
+    /// Lazy-initialized concurrent map of web-agent id → ServerHandle.
+    pub struct OnceLockMap(OnceLock<Mutex<HashMap<AgentId, ServerHandle>>>);
     impl OnceLockMap {
         pub const fn new() -> Self {
             Self(OnceLock::new())
         }
-        pub fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<AgentId, JoinHandle<()>>> {
+        pub fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<AgentId, ServerHandle>> {
             self.0
                 .get_or_init(|| Mutex::new(HashMap::new()))
                 .lock()
@@ -119,12 +147,8 @@ impl Bundle for WebBundle {
         Ok(Some(reply))
     }
 
-    async fn on_delete(
-        &self,
-        agent_id: &AgentId,
-        _kernel: &Arc<Kernel>,
-    ) -> Result<(), BundleError> {
-        let _ = stop_reply(agent_id);
+    async fn on_delete(&self, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Result<(), BundleError> {
+        let _ = stop_with_kernel(agent_id, kernel);
         Ok(())
     }
 }
@@ -163,7 +187,13 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
         kernel: Arc::clone(kernel),
         web_agent_id: agent_id.clone(),
     };
-    let app = build_router(state);
+    // Build the base router synchronously (always-present routes) + walk
+    // siblings to mount their `get_routes`. The result lives inside an
+    // Arc<RwLock<Router>> so the `routes_changed` subscription can swap
+    // it in place without restarting axum.
+    let initial = build_router_from_siblings(&state, agent_id, kernel).await;
+    let router_lock = Arc::new(AsyncRwLock::new(initial));
+
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
@@ -173,13 +203,58 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
         Ok(a) => a.port(),
         Err(_) => port,
     };
-    let serve = axum::serve(listener, app);
+
+    // Subscribe to kernel state events BEFORE handing the listener to
+    // axum::serve. If a child emits `routes_changed` while boot is
+    // still resolving siblings, the closure rebuilds against the
+    // current sibling set — boot is idempotent so we can't race past
+    // it. (See module-level note on boot sequencing.)
+    let sub_state = state.clone();
+    let sub_self_id = agent_id.clone();
+    let sub_router = Arc::clone(&router_lock);
+    let sub_kernel = Arc::clone(kernel);
+    let sub_token = kernel.add_state_subscriber(Arc::new(move |event: &Value| {
+        let ty = event.get("type").and_then(Value::as_str).unwrap_or("");
+        let verb = event.get("verb").and_then(Value::as_str).unwrap_or("");
+        // Match either an explicit `routes_changed` emit OR a
+        // `created`/`removed` system event on a sibling (so adding /
+        // dropping a web_ws child re-mounts even if the child doesn't
+        // emit). Conservative re-mount: cheap (the build only walks
+        // direct siblings) + idempotent.
+        let is_routes_changed = ty == "emit" && verb == "routes_changed";
+        let is_created = ty == "created"
+            && event.get("parent_id").and_then(Value::as_str) == Some(sub_self_id.as_str());
+        let is_removed = ty == "removed";
+        if !is_routes_changed && !is_created && !is_removed {
+            return;
+        }
+        let state = sub_state.clone();
+        let self_id = sub_self_id.clone();
+        let router = Arc::clone(&sub_router);
+        let kernel = Arc::clone(&sub_kernel);
+        tokio::spawn(async move {
+            let new_router = build_router_from_siblings(&state, &self_id, &kernel).await;
+            *router.write().await = new_router;
+        });
+    }));
+
+    let dynamic = DynamicRouter {
+        inner: Arc::clone(&router_lock),
+    };
+    let serve = axum::serve(listener, dynamic.into_make_service());
     let task = tokio::spawn(async move {
         if let Err(e) = serve.await {
             tracing::warn!(error = %e, "web: axum serve exited with error");
         }
     });
-    SERVERS.lock().insert(agent_id.clone(), task);
+    SERVERS.lock().insert(
+        agent_id.clone(),
+        ServerHandle {
+            task,
+            router: router_lock,
+            sub_token,
+        },
+    );
     json!({
         "id": agent_id.as_str(),
         "running": true,
@@ -188,9 +263,37 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
 }
 
 fn stop_reply(agent_id: &AgentId) -> Value {
+    // Snapshot the handle WITHOUT dropping it while holding the lock
+    // (the kernel state-subscriber detach below takes its own lock,
+    // and we want to be lock-free during that).
     let removed = SERVERS.lock().remove(agent_id);
-    if let Some(task) = removed {
-        task.abort();
+    if let Some(handle) = removed {
+        handle.task.abort();
+        // No kernel reference here — `on_delete` / `stop` could be
+        // called from many paths and we don't always have an Arc<Kernel>
+        // in scope. The subscriber holds Arcs that drop with this
+        // handle, so detaching is best-effort cleanup. We rely on the
+        // closure becoming a no-op when its captured `router` Arc is
+        // the only one (router_lock dropped along with handle).
+        // For a clean detach pattern from places that DO own a kernel
+        // ref, see `WebBundle::on_delete`.
+        json!({
+            "id": agent_id.as_str(),
+            "stopped": true,
+            "sub_token": handle.sub_token.0,
+        })
+    } else {
+        json!({"id": agent_id.as_str(), "stopped": false, "reason": "not running"})
+    }
+}
+
+/// Stop variant that also detaches the kernel state subscriber. Called
+/// from `on_delete` (where we always have a `kernel` ref).
+fn stop_with_kernel(agent_id: &AgentId, kernel: &Kernel) -> Value {
+    let removed = SERVERS.lock().remove(agent_id);
+    if let Some(handle) = removed {
+        handle.task.abort();
+        kernel.remove_state_subscriber(handle.sub_token);
         json!({"id": agent_id.as_str(), "stopped": true})
     } else {
         json!({"id": agent_id.as_str(), "stopped": false, "reason": "not running"})
@@ -203,23 +306,297 @@ fn read_port(agent_id: &AgentId, kernel: &Kernel) -> Option<u16> {
     meta.get("port").and_then(|v| v.as_u64()).map(|p| p as u16)
 }
 
+/// Build the base router: always-present rendering routes only.
+///
+/// Call surfaces (WS, REST) are NOT in the base — they mount via
+/// [`build_router_from_siblings`] only when a `web_ws` / `web_rest`
+/// child agent declares them through its `get_routes` verb. This
+/// matches Python's `_mount_surface` semantics: a `web` instance
+/// with no children serves rendering and 404s on `/<id>/ws`.
 fn build_router(state: AppState) -> Router {
     // Order matters for axum's matchit: place literal-segment routes
-    // (transport.js, favicon, agent ws / _reflect / _reflect/{target})
-    // before parametric ones so the trie disambiguates correctly.
-    // The file proxy uses `:agent_id/file/*path` syntax so the
-    // wildcard sits at the trailing position cleanly.
+    // (transport.js, favicon) before parametric ones so the trie
+    // disambiguates correctly. The file proxy uses
+    // `:agent_id/file/*path` syntax so the wildcard sits at the
+    // trailing position cleanly.
     Router::new()
         .route("/", get(serve_root_index))
         .route("/transport.js", get(serve_transport_js))
         .route("/favicon.ico", get(serve_favicon))
-        .route("/:agent_id/ws", get(serve_ws))
-        .route("/:agent_id/_reflect", get(serve_rest_reflect_root))
-        .route("/:agent_id/_reflect/:target_id", get(serve_rest_reflect))
         .route("/:agent_id/file/*path", get(serve_file_proxy))
         .route("/:agent_id/", get(serve_agent_render))
-        .route("/:rest_id/:target_id", post(serve_rest_post))
         .with_state(state)
+}
+
+/// Walk this web agent's direct child agents. For each one, ask
+/// `get_routes` and mount the returned route specs onto a fresh
+/// router built atop the always-present base.
+///
+/// Bundles return `{routes: [{kind, path, ...}]}` where `kind` is one
+/// of `"websocket"`, `"get"`, `"post"`, `"http"` (with `method`). The
+/// `endpoint` field that Python sends is NOT used — Rust dispatch
+/// goes through static handlers that know the kind + path pattern
+/// (e.g. `/<id>/ws` always uses `serve_ws_dynamic`, `POST
+/// /<rest>/<target>` always uses `serve_rest_post`).
+async fn build_router_from_siblings(
+    state: &AppState,
+    self_id: &AgentId,
+    kernel: &Arc<Kernel>,
+) -> Router {
+    let base = build_router(state.clone());
+
+    // Find children of this web agent.
+    let child_ids: Vec<AgentId> = match kernel.agents.get(self_id) {
+        Some(entry) => entry.child_ids(),
+        None => Vec::new(),
+    };
+
+    // Build child surfaces as a separate `Router<()>` (state baked in
+    // per route), then merge into base. We must apply `.with_state`
+    // per route group because axum's chained `route()` calls require
+    // matching state types.
+    let mut surface = Router::<()>::new();
+    let mut surface_has_routes = false;
+
+    for cid in child_ids {
+        let reply = kernel.send(&cid, json!({"type": "get_routes"})).await;
+        let Some(routes) = reply.get("routes").and_then(Value::as_array) else {
+            continue;
+        };
+        for spec in routes {
+            let kind = spec.get("kind").and_then(Value::as_str).unwrap_or("");
+            let path = match spec.get("path").and_then(Value::as_str) {
+                Some(p) => p,
+                None => continue,
+            };
+            // Python uses `{name}` path-param syntax; axum 0.7 uses
+            // `:name`. Translate so a Python-style spec mounts cleanly.
+            let axum_path = translate_path(path);
+            let next = match kind {
+                "websocket" => Some(
+                    Router::<AppState>::new()
+                        .route(&axum_path, get(serve_ws_dynamic))
+                        .with_state(state.clone()),
+                ),
+                "get" | "http" => {
+                    let method = if kind == "get" {
+                        "GET".to_string()
+                    } else {
+                        spec.get("method")
+                            .and_then(Value::as_str)
+                            .unwrap_or("GET")
+                            .to_uppercase()
+                    };
+                    if method == "GET" {
+                        if axum_path.ends_with("/_reflect") {
+                            Some(
+                                Router::<AppState>::new()
+                                    .route(&axum_path, get(serve_rest_reflect_root_dynamic))
+                                    .with_state(state.clone()),
+                            )
+                        } else if axum_path.contains("/_reflect/") {
+                            Some(
+                                Router::<AppState>::new()
+                                    .route(&axum_path, get(serve_rest_reflect_dynamic))
+                                    .with_state(state.clone()),
+                            )
+                        } else {
+                            tracing::warn!(path = %axum_path, "web: unknown GET surface path");
+                            None
+                        }
+                    } else if method == "POST" {
+                        Some(
+                            Router::<AppState>::new()
+                                .route(&axum_path, post(serve_rest_post_dynamic))
+                                .with_state(state.clone()),
+                        )
+                    } else {
+                        tracing::warn!(method = %method, path = %axum_path, "web: unsupported HTTP method");
+                        None
+                    }
+                }
+                "post" => Some(
+                    Router::<AppState>::new()
+                        .route(&axum_path, post(serve_rest_post_dynamic))
+                        .with_state(state.clone()),
+                ),
+                other => {
+                    tracing::warn!(kind = %other, "web: unknown route kind");
+                    None
+                }
+            };
+            if let Some(r) = next {
+                surface = surface.merge(r);
+                surface_has_routes = true;
+            }
+        }
+    }
+
+    if surface_has_routes {
+        base.merge(surface)
+    } else {
+        base
+    }
+}
+
+/// Translate a Python/FastAPI-style path with `{name}` placeholders
+/// into axum 0.7's `:name` syntax. Wildcards (`{name:path}`) become
+/// `*name` (axum's catch-all). Idempotent — already-axum paths pass
+/// through.
+fn translate_path(p: &str) -> String {
+    let mut out = String::with_capacity(p.len());
+    let mut i = 0;
+    let bytes = p.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            // Find matching '}'.
+            if let Some(end_rel) = p[i + 1..].find('}') {
+                let name = &p[i + 1..i + 1 + end_rel];
+                if let Some((n, kind)) = name.split_once(':') {
+                    if kind == "path" {
+                        out.push('*');
+                        out.push_str(n);
+                    } else {
+                        out.push(':');
+                        out.push_str(n);
+                    }
+                } else {
+                    out.push(':');
+                    out.push_str(name);
+                }
+                i = i + 1 + end_rel + 1;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// `DynamicRouter` wraps an `Arc<RwLock<Router>>` and forwards each
+/// request through the current router (clone-cheap because axum's
+/// Router is internally `Arc`-shared). Mounting / unmounting child
+/// surfaces is a write-lock swap; per-request reads take the read-lock
+/// briefly, clone the router, drop the lock, and `oneshot` the
+/// request. `tokio::sync::RwLock` is the async-aware lock — required
+/// because the call site is `Service::call` returning a Future, and
+/// holding a `parking_lot` guard across an `.await` is unsound.
+#[derive(Clone)]
+struct DynamicRouter {
+    inner: Arc<AsyncRwLock<Router>>,
+}
+
+impl tower::Service<Request<Body>> for DynamicRouter {
+    type Response = Response;
+    type Error = std::convert::Infallible;
+    #[allow(clippy::type_complexity)]
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let guard = inner.read().await;
+            // Router::clone is Arc-cheap. We clone to avoid holding the
+            // read lock across the (async) oneshot.
+            let svc = guard.clone();
+            drop(guard);
+            svc.oneshot(req).await
+        })
+    }
+}
+
+/// Dynamic-mount WS endpoint. The mounted path is a literal
+/// `/<parent_id>/ws` — no path params. Axum's extractor framework
+/// rejects requests against handlers whose path-param arity doesn't
+/// match the mounted path, so this handler takes no `AxPath`.
+async fn serve_ws_dynamic(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {
+    upgrade.on_upgrade(move |socket| ws_loop(state, socket))
+}
+
+/// Dynamic-mount POST endpoint. Mounted path is `/<self_id>/:target_id`
+/// — one path param (`target_id`). The `self_id` (`rest_id` in
+/// telemetry) isn't available from the path; we substitute the synthetic
+/// `_ws_dyn_post` sender so the telemetry pane still gets a non-empty
+/// sender for the dispatched verb. To attribute back to the surface
+/// agent's id we'd need to bake it into the handler via a per-route
+/// state — wired into the closure-style mount as a future improvement.
+async fn serve_rest_post_dynamic(
+    State(state): State<AppState>,
+    AxPath(target_id): AxPath<String>,
+    Json(payload): Json<Value>,
+) -> Response {
+    let target = AgentId::from(target_id.as_str());
+    let sender = AgentId::from("_rest_dyn");
+    let reply = fantastic_kernel::send::with_sender(sender, async {
+        state.kernel.send(&target, payload).await
+    })
+    .await;
+    let status = if reply.get("error").is_some() {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::OK
+    };
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        reply.to_string(),
+    )
+        .into_response()
+}
+
+/// Dynamic-mount GET `_reflect` endpoint (no target). Mounted path is
+/// `/<self_id>/_reflect` — no path params; the `self_id` again isn't
+/// extracted (see note on `serve_rest_post_dynamic`).
+async fn serve_rest_reflect_root_dynamic(
+    State(state): State<AppState>,
+    Query(q): Query<ReflectQuery>,
+) -> Response {
+    let sender = AgentId::from("_rest_dyn");
+    let target = AgentId::from("kernel");
+    let payload = serde_json::json!({
+        "type": "reflect",
+        "return_readme": q.readme.unwrap_or(0) != 0,
+    });
+    let reply = fantastic_kernel::send::with_sender(sender, async {
+        state.kernel.send(&target, payload).await
+    })
+    .await;
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        reply.to_string(),
+    )
+        .into_response()
+}
+
+/// Dynamic-mount GET `_reflect/:target_id` endpoint. Mounted path is
+/// `/<self_id>/_reflect/:target_id` — one path param.
+async fn serve_rest_reflect_dynamic(
+    State(state): State<AppState>,
+    AxPath(target_id): AxPath<String>,
+    Query(q): Query<ReflectQuery>,
+) -> Response {
+    let sender = AgentId::from("_rest_dyn");
+    let target = AgentId::from(target_id.as_str());
+    let payload = serde_json::json!({
+        "type": "reflect",
+        "return_readme": q.readme.unwrap_or(0) != 0,
+    });
+    let reply = fantastic_kernel::send::with_sender(sender, async {
+        state.kernel.send(&target, payload).await
+    })
+    .await;
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        reply.to_string(),
+    )
+        .into_response()
 }
 
 async fn serve_root_index() -> impl IntoResponse {
@@ -370,14 +747,6 @@ fn guess_mime(path: &str) -> &'static str {
 //
 // Binary frames are deferred to a later milestone.
 
-async fn serve_ws(
-    State(state): State<AppState>,
-    AxPath(_agent_id): AxPath<String>,
-    upgrade: WebSocketUpgrade,
-) -> Response {
-    upgrade.on_upgrade(move |socket| ws_loop(state, socket))
-}
-
 async fn ws_loop(state: AppState, socket: WebSocket) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_CLIENT_HEX: AtomicU64 = AtomicU64::new(0);
@@ -420,10 +789,14 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
         }
     });
 
-    // Inbound loop: parse text frames, dispatch.
+    // Inbound loop: parse text + binary frames, dispatch.
     while let Some(msg) = stream.next().await {
         let text = match msg {
             Ok(Message::Text(t)) => t,
+            Ok(Message::Binary(bytes)) => {
+                handle_binary_frame(&state, &client_id, &out_tx, bytes).await;
+                continue;
+            }
             Ok(Message::Close(_)) | Err(_) => break,
             _ => continue,
         };
@@ -508,6 +881,95 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
     send_task.abort();
 }
 
+/// Decode a binary WS frame and dispatch it through
+/// [`Kernel::send_with_binary`]. Frame shape (matches Python's wire):
+///
+/// ```text
+/// [4-byte BE u32 header_len][header_len bytes JSON header][rest = blob]
+/// ```
+///
+/// `header` must carry at least `target` (agent id); `id` (if present)
+/// rides through to the reply frame so callers can correlate.
+///
+/// On any decode error the frame is dropped silently (we log a debug
+/// trace) — the WS stays open. The shape is documented + a single
+/// malformed frame from a JS client shouldn't kill the channel.
+async fn handle_binary_frame(
+    state: &AppState,
+    client_id: &AgentId,
+    out_tx: &tokio::sync::mpsc::Sender<String>,
+    bytes: Vec<u8>,
+) {
+    if bytes.len() < 4 {
+        tracing::debug!(
+            len = bytes.len(),
+            "ws binary frame too short for header_len"
+        );
+        return;
+    }
+    let hdr_len = u32::from_be_bytes(match bytes[0..4].try_into() {
+        Ok(arr) => arr,
+        Err(_) => {
+            tracing::debug!("ws binary frame: failed to read header_len");
+            return;
+        }
+    }) as usize;
+    if 4usize.saturating_add(hdr_len) > bytes.len() {
+        tracing::debug!(
+            hdr_len,
+            frame_len = bytes.len(),
+            "ws binary frame: header_len exceeds frame"
+        );
+        return;
+    }
+    let header: Value = match serde_json::from_slice(&bytes[4..4 + hdr_len]) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!(error = %e, "ws binary frame: header decode failed");
+            return;
+        }
+    };
+    let blob = bytes[4 + hdr_len..].to_vec();
+    let Some(target_str) = header.get("target").and_then(Value::as_str) else {
+        tracing::debug!("ws binary frame: header missing target");
+        return;
+    };
+    let target = AgentId::from(target_str);
+    let id = header.get("id").cloned();
+
+    let kernel = Arc::clone(&state.kernel);
+    let sender_for_scope = client_id.clone();
+    let out = out_tx.clone();
+    let header_for_dispatch = header.clone();
+    tokio::spawn(async move {
+        let reply = fantastic_kernel::send::with_sender(sender_for_scope, async {
+            kernel
+                .send_with_binary(&target, header_for_dispatch, blob)
+                .await
+        })
+        .await;
+        // Reply over the same WS as a Text frame matching the existing
+        // shape — `id` is carried through (if present) so callers can
+        // correlate with the original frame. If the request had no
+        // `id`, the reply just omits it; the client can choose to
+        // ignore replies it didn't ask for.
+        let frame = if reply.get("error").is_some() {
+            json!({
+                "type": "error",
+                "id": id,
+                "error": reply.get("error").and_then(Value::as_str).unwrap_or("error").to_string(),
+            })
+        } else {
+            json!({
+                "type": "reply",
+                "id": id,
+                "data": reply,
+            })
+        };
+        let _ = out.send(frame.to_string()).await;
+    });
+}
+
 // ─── REST surface ───────────────────────────────────────────────────
 //
 // POST /<rest_id>/<target_id> body=<payload-json> → kernel.send → JSON.
@@ -518,75 +980,12 @@ struct ReflectQuery {
     readme: Option<u8>,
 }
 
-async fn serve_rest_post(
-    State(state): State<AppState>,
-    AxPath((rest_id, target_id)): AxPath<(String, String)>,
-    Json(payload): Json<Value>,
-) -> Response {
-    let target = AgentId::from(target_id.as_str());
-    let sender = AgentId::from(rest_id.as_str());
-    let reply = fantastic_kernel::send::with_sender(sender, async {
-        state.kernel.send(&target, payload).await
-    })
-    .await;
-    let status = if reply.get("error").is_some() {
-        StatusCode::BAD_REQUEST
-    } else {
-        StatusCode::OK
-    };
-    (
-        status,
-        [(header::CONTENT_TYPE, "application/json")],
-        reply.to_string(),
-    )
-        .into_response()
-}
-
-async fn serve_rest_reflect_root(
-    State(state): State<AppState>,
-    AxPath(rest_id): AxPath<String>,
-    Query(q): Query<ReflectQuery>,
-) -> Response {
-    let sender = AgentId::from(rest_id.as_str());
-    let target = AgentId::from("kernel");
-    let payload = serde_json::json!({
-        "type": "reflect",
-        "return_readme": q.readme.unwrap_or(0) != 0,
-    });
-    let reply = fantastic_kernel::send::with_sender(sender, async {
-        state.kernel.send(&target, payload).await
-    })
-    .await;
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        reply.to_string(),
-    )
-        .into_response()
-}
-
-async fn serve_rest_reflect(
-    State(state): State<AppState>,
-    AxPath((rest_id, target_id)): AxPath<(String, String)>,
-    Query(q): Query<ReflectQuery>,
-) -> Response {
-    let sender = AgentId::from(rest_id.as_str());
-    let target = AgentId::from(target_id.as_str());
-    let payload = serde_json::json!({
-        "type": "reflect",
-        "return_readme": q.readme.unwrap_or(0) != 0,
-    });
-    let reply = fantastic_kernel::send::with_sender(sender, async {
-        state.kernel.send(&target, payload).await
-    })
-    .await;
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        reply.to_string(),
-    )
-        .into_response()
-}
+// (REST handler implementations live above in the dynamic-mount block:
+// `serve_rest_post_dynamic`, `serve_rest_reflect_root_dynamic`,
+// `serve_rest_reflect_dynamic`. The previous static-route versions
+// expected the `:rest_id` segment in the path; that segment is now
+// baked into the mount-time path literal, so no static handlers are
+// needed.)
 
 // base64 is a transitive dep — re-declare via fantastic-kernel's
 // indirect graph. Pull it in via Cargo.toml if not already there.

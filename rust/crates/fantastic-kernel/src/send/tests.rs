@@ -116,6 +116,71 @@ async fn unwatch_stops_fanout() {
 }
 
 #[tokio::test]
+async fn send_with_binary_missing_target_returns_error() {
+    let kernel = Arc::new(Kernel::new());
+    let v = kernel
+        .send_with_binary(
+            &AgentId::from("nope"),
+            json!({"type": "frob"}),
+            vec![1, 2, 3],
+        )
+        .await;
+    assert!(v["error"].as_str().unwrap_or("").contains("no agent"));
+}
+
+#[tokio::test]
+async fn send_with_binary_routes_through_bundle_handle_binary() {
+    use crate::bundle::{Bundle, BundleError, BundleRegistry, Reply};
+    struct EchoBytes;
+    #[async_trait::async_trait]
+    impl Bundle for EchoBytes {
+        fn name(&self) -> &str {
+            "echo_bytes"
+        }
+        async fn handle(
+            &self,
+            _agent_id: &AgentId,
+            _payload: &Value,
+            _kernel: &Arc<Kernel>,
+        ) -> Result<Reply, BundleError> {
+            Ok(Some(json!({"error": "text path not exercised here"})))
+        }
+        async fn handle_binary(
+            &self,
+            _agent_id: &AgentId,
+            _header: Value,
+            blob: Vec<u8>,
+            _kernel: &Arc<Kernel>,
+        ) -> Result<Reply, BundleError> {
+            Ok(Some(json!({"ok": true, "len": blob.len()})))
+        }
+    }
+    let mut kernel = Kernel::new();
+    let mut reg = BundleRegistry::new();
+    reg.register("echo_bytes.tools", EchoBytes);
+    kernel.bundles = reg;
+    let kernel = Arc::new(kernel);
+    let agent = Agent::new(
+        AgentId::from("eb"),
+        Some("echo_bytes.tools".to_string()),
+        None,
+        Map::new(),
+        Path::new("/tmp/nowhere").join("eb"),
+        true,
+    );
+    let _rx = kernel.register(Arc::clone(&agent));
+    let reply = kernel
+        .send_with_binary(
+            &AgentId::from("eb"),
+            json!({"type": "ingest"}),
+            vec![0u8; 64],
+        )
+        .await;
+    assert_eq!(reply["ok"], true);
+    assert_eq!(reply["len"], 64);
+}
+
+#[tokio::test]
 async fn list_agents_returns_records_for_every_registered() {
     let kernel = Arc::new(Kernel::new());
     let a = make_agent("a_1");

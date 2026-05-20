@@ -22,3 +22,6 @@ futures-util = "0.3"
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { workspace = true, features = ["test-util", "macros"] }
+tokio-tungstenite = { workspace = true }
+fantastic-web-ws = { path = "../fantastic-web-ws" }
+fantastic-web-rest = { path = "../fantastic-web-rest" }
