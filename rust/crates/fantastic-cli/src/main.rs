@@ -45,6 +45,10 @@ fn register_default_bundles() -> BundleRegistry {
         "telemetry_pane.tools",
         fantastic_telemetry_pane::TelemetryPaneBundle,
     );
+    reg.register(
+        "ai_chat_webapp.tools",
+        fantastic_ai_chat_webapp::AiChatWebappBundle,
+    );
 
     // ── Full-tier-only bundles (subprocess / dynamic-loading / etc.).
     //

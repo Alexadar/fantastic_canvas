@@ -22,6 +22,7 @@ members = [
     "crates/bundles/fantastic-scheduler",
     "crates/bundles/fantastic-gl-agent",
     "crates/bundles/fantastic-telemetry-pane",
+    "crates/bundles/fantastic-ai-chat-webapp",
 ]
 
 [workspace.package]
