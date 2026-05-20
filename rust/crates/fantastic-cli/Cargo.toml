@@ -33,6 +33,7 @@ fantastic-nvidia-nim-backend = { path = "../bundles/fantastic-nvidia-nim-backend
 fantastic-terminal-backend = { path = "../bundles/fantastic-terminal-backend", optional = true }
 fantastic-python-runtime = { path = "../bundles/fantastic-python-runtime", optional = true }
 fantastic-local-runner = { path = "../bundles/fantastic-local-runner", optional = true }
+fantastic-ssh-runner = { path = "../bundles/fantastic-ssh-runner", optional = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -53,6 +54,8 @@ full = [
     "dep:fantastic-terminal-backend",
     "dep:fantastic-python-runtime",
     "dep:fantastic-local-runner",
+    "dep:fantastic-ssh-runner",
+    "fantastic-kernel-bridge/full",
 ]
 
 # Sandboxed / embedded-library tier — must compile clean for iOS /

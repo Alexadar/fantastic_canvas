@@ -257,6 +257,54 @@ async fn reconnect_calls_shutdown_then_boot() {
         .await;
 }
 
+#[cfg(feature = "full")]
+#[tokio::test]
+async fn ssh_transport_unreachable_host_fails_cleanly() {
+    // Skip gracefully if `ssh` isn't on PATH (CI containers without
+    // openssh-client should not flake on this).
+    if which::which("ssh").is_err() {
+        eprintln!("skipping ssh_transport_unreachable_host_fails_cleanly — no `ssh` on PATH");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let kernel = mk_kernel(&tmp).await;
+    let bid = id_for("brg_sshws", &tmp);
+    // TEST-NET-1 (RFC 5737) — guaranteed unreachable. ExitOnForwardFailure
+    // + BatchMode mean ssh exits non-zero quickly on auth/route failure,
+    // so this should resolve well before the 5s tunnel-ready deadline.
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": HANDLER_MODULE,
+                "id": bid,
+                "peer_id": "peer_x",
+                "transport": "ssh+ws",
+                "host": "192.0.2.1",
+                "remote_port": 9,
+                "local_port": 0,
+            }),
+        )
+        .await;
+    let r = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        kernel.send(&AgentId::from(bid.as_str()), json!({"type": "boot"})),
+    )
+    .await
+    .expect("ssh+ws boot should not hang");
+    let err = r["error"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("ssh+ws") || !err.is_empty(),
+        "expected clean error, got: {r}",
+    );
+    let ref_r = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "reflect"}))
+        .await;
+    assert_eq!(ref_r["connected"], false, "reflect: {ref_r}");
+}
+
 #[tokio::test]
 async fn ws_boot_fails_cleanly_on_unreachable_host() {
     let tmp = TempDir::new().unwrap();

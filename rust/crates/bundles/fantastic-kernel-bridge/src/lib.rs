@@ -4,15 +4,14 @@
 //! over a pluggable transport. Weak binding: remote agents are
 //! addressed by URL + path only; no shared Rust types across kernels.
 //!
-//! Three transports ship today:
-//! - `memory` — in-process paired channels (tests only)
-//! - `ws`     — `tokio-tungstenite` client against a remote axum WS surface
-//! - `http`   — `reqwest` POST against a remote `web_rest` surface
-//!
-//! The SSH transport (Python ships an `ssh+ws` variant that opens a
-//! local SSH tunnel then connects WS through it) is Tier-C
-//! (full-tier-only — subprocess spawning isn't permitted in the
-//! sandboxed `embedded` build). Port when terminal_backend lands.
+//! Four transports ship today:
+//! - `memory`  — in-process paired channels (tests only)
+//! - `ws`      — `tokio-tungstenite` client against a remote axum WS surface
+//! - `http`    — `reqwest` POST against a remote `web_rest` surface
+//! - `ssh+ws`  — spawns `ssh -L local:localhost:remote -N <host>` as a
+//!   subprocess, then layers `ws` over the local tunnel port. Gated by
+//!   `feature = "full"` — the embedded slice (iOS) does not spawn
+//!   subprocesses.
 //!
 //! # Verbs
 //!
@@ -54,6 +53,8 @@ pub mod transport;
 
 use transport::http::HttpTransport;
 use transport::memory::MemoryTransport;
+#[cfg(feature = "full")]
+use transport::ssh::SshTransport;
 use transport::ws::WsTransport;
 use transport::{BridgeTransport, TransportError};
 
@@ -171,12 +172,14 @@ fn reflect_reply(agent_id: &AgentId, kernel: &Kernel) -> Value {
     let pending = bridge.as_ref().map(|b| b.pending_count()).unwrap_or(0);
     json!({
         "id": agent_id.as_str(),
-        "sentence": "Cross-kernel comms bridge — pairs over memory/ws/http; weak proxy.",
+        "sentence": "Cross-kernel comms bridge — pairs over memory/ws/http/ssh+ws; weak proxy.",
         "transport": transport_kind,
         "connected": connected,
         "host": meta_string(agent_id, kernel, "host"),
         "port": meta_u64(agent_id, kernel, "port"),
         "peer_id": meta_string(agent_id, kernel, "peer_id"),
+        "local_port": meta_u64(agent_id, kernel, "local_port"),
+        "remote_port": meta_u64(agent_id, kernel, "remote_port"),
         "pending_count": pending,
         "verbs": {
             "reflect": "Identity + transport + connectivity. No args.",
@@ -235,6 +238,41 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
                 }
             };
             HttpTransport::new(&url)
+        }
+        #[cfg(feature = "full")]
+        "ssh+ws" => {
+            let peer_id = match meta_string(agent_id, kernel, "peer_id") {
+                Some(p) => p,
+                None => return json!({"error": "kernel_bridge: ssh+ws transport requires peer_id"}),
+            };
+            let host = match meta_string(agent_id, kernel, "host") {
+                Some(h) => h,
+                None => return json!({"error": "kernel_bridge: ssh+ws transport requires host"}),
+            };
+            let remote_port = match meta_u64(agent_id, kernel, "remote_port") {
+                Some(p) if p > 0 && p <= u16::MAX as u64 => p as u16,
+                _ => {
+                    return json!({
+                        "error": "kernel_bridge: ssh+ws transport requires remote_port"
+                    })
+                }
+            };
+            // local_port is optional — 0 means "pick an ephemeral
+            // loopback port" inside the transport.
+            let local_port = meta_u64(agent_id, kernel, "local_port")
+                .filter(|p| *p <= u16::MAX as u64)
+                .map(|p| p as u16)
+                .unwrap_or(0);
+            match SshTransport::open(&host, &peer_id, remote_port, local_port).await {
+                Ok(t) => t,
+                Err(e) => return json!({"error": format!("kernel_bridge: ssh+ws failed: {e}")}),
+            }
+        }
+        #[cfg(not(feature = "full"))]
+        "ssh+ws" => {
+            return json!({
+                "error": "kernel_bridge: ssh+ws transport requires the `full` feature"
+            })
         }
         other => return json!({"error": format!("kernel_bridge: unknown transport {other:?}")}),
     };

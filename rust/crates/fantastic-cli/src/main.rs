@@ -87,6 +87,7 @@ fn register_default_bundles() -> BundleRegistry {
             "local_runner.tools",
             fantastic_local_runner::LocalRunnerBundle,
         );
+        reg.register("ssh_runner.tools", fantastic_ssh_runner::SshRunnerBundle);
     }
 
     reg

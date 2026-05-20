@@ -465,6 +465,7 @@ dependencies = [
  "fantastic-ollama-backend",
  "fantastic-python-runtime",
  "fantastic-scheduler",
+ "fantastic-ssh-runner",
  "fantastic-telemetry-pane",
  "fantastic-terminal-backend",
  "fantastic-terminal-webapp",
@@ -563,6 +564,7 @@ dependencies = [
  "fantastic-file",
  "fantastic-kernel",
  "futures-util",
+ "nix 0.29.0",
  "reqwest",
  "serde",
  "serde_json",
@@ -570,6 +572,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "which",
 ]
 
 [[package]]
@@ -652,6 +655,22 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "fantastic-ssh-runner"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-kernel",
+ "nix 0.29.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "which",
 ]
 
 [[package]]

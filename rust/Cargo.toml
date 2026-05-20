@@ -30,6 +30,7 @@ members = [
     "crates/bundles/fantastic-terminal-backend",
     "crates/bundles/fantastic-python-runtime",
     "crates/bundles/fantastic-local-runner",
+    "crates/bundles/fantastic-ssh-runner",
 ]
 
 [workspace.package]

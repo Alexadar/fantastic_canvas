@@ -31,6 +31,8 @@ use std::fmt;
 
 pub mod http;
 pub mod memory;
+#[cfg(feature = "full")]
+pub mod ssh;
 pub mod ws;
 
 /// Errors a transport can raise. Kept narrow on purpose — every
