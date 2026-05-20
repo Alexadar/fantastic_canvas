@@ -1,0 +1,9 @@
+[package]
+name = "fantastic-cli-bundle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ephemeral stdout renderer — renders token/done/say/error events to stdout."
+
+[dependencies]
+fantastic-bundle = { path = "../../fantastic-bundle" }

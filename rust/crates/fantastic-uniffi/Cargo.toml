@@ -1,0 +1,12 @@
+[package]
+name = "fantastic-uniffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UniFFI-bound Swift surface for embedding the Rust kernel in iOS/macOS apps."
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+fantastic-kernel = { path = "../fantastic-kernel" }

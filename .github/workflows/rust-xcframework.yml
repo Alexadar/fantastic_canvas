@@ -1,0 +1,47 @@
+name: Rust XCFramework
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'rust/crates/fantastic-uniffi/**'
+      - 'rust/scripts/build-xcframework.sh'
+      - 'rust/packaging/**'
+      - '.github/workflows/rust-xcframework.yml'
+  push:
+    tags: ['v*']
+
+jobs:
+  xcframework:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # All five Apple slices Lite/Pro need.
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios-sim,aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: build XCFramework
+        # The script lands with task #229 / Phase 3. Until then this
+        # workflow exists as a placeholder so the CI matrix is wired up.
+        run: |
+          if [ -x scripts/build-xcframework.sh ]; then
+            ./scripts/build-xcframework.sh
+          else
+            echo "scripts/build-xcframework.sh not yet present (Phase 3 deliverable). Skipping."
+          fi
+
+      - name: upload artifact
+        if: ${{ hashFiles('rust/packaging/FantasticKernel/Fantastic.xcframework/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fantastic.xcframework
+          path: rust/packaging/FantasticKernel/Fantastic.xcframework/

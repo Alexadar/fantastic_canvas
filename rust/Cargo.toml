@@ -1,0 +1,55 @@
+# Fantastic Kernel — Rust workspace.
+#
+# Each Phase-1 crate has its own Cargo.toml under crates/. See
+# ./README.md for the architecture overview and build instructions.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/fantastic-kernel",
+    "crates/fantastic-bundle",
+    "crates/fantastic-cli",
+    "crates/fantastic-uniffi",
+    "crates/bundles/fantastic-core",
+    "crates/bundles/fantastic-cli-bundle",
+    "crates/bundles/fantastic-web",
+    "crates/bundles/fantastic-web-ws",
+    "crates/bundles/fantastic-web-rest",
+    "crates/bundles/fantastic-file",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://github.com/Alexadar/fantastic_canvas"
+
+[workspace.dependencies]
+# Async runtime — single source of truth so every crate uses the same version.
+tokio = { version = "1.40", features = ["full"] }
+async-trait = "0.1"
+
+# JSON record encoding + WS frames + reflect payloads.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Concurrent maps for kernel.agents + kernel.inboxes.
+dashmap = "6"
+arc-swap = "1"
+
+# HTTP + WS surfaces.
+axum = { version = "0.7", features = ["ws"] }
+tokio-tungstenite = "0.24"
+
+# Path-safety + cross-platform PID checks for the lock file.
+libc = "0.2"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Bundle registration macro.
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

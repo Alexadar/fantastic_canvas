@@ -115,15 +115,14 @@ def test_load_all_skips_corrupted_agent_json(tmp_path, monkeypatch):
 
 def test_load_all_weak_loads_unknown_handler_module(tmp_path, monkeypatch, capsys):
     """Weak loading: an agent.json with a handler_module that doesn't
-    import (e.g. bundle installed in another runtime — Rust, or a
-    plugin we don't have) gets skipped + logged on boot. The record
-    is left untouched on disk, the rest of the tree still loads, and
-    nothing crashes. Reboot under a runtime that has the bundle and
-    the agent rehydrates intact. Same workdir runs under either the
-    Python kernel or the forthcoming Rust kernel.
+    import (bundle not installed in this runtime, third-party plugin
+    we don't have, etc.) gets skipped + logged on boot. The record is
+    left untouched on disk, the rest of the tree still loads, and
+    nothing crashes. Install the bundle and the agent rehydrates on
+    the next boot. Wipe-and-rebuild safe.
 
-    Log line shape MUST be byte-identical to the Rust kernel's so
-    selftests + CI can grep across both:
+    Log line shape is part of the contract (grep-able from CI +
+    selftests):
         [kernel] skipping agent <id>: bundle <module> not installed in this runtime
     """
     monkeypatch.chdir(tmp_path)

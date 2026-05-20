@@ -1,0 +1,12 @@
+[package]
+name = "fantastic-file"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Filesystem-as-agent — read/write/list/delete/rename/mkdir rooted at the `root` field."
+
+[dependencies]
+fantastic-bundle = { path = "../../fantastic-bundle" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

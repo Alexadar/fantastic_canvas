@@ -1,0 +1,23 @@
+[package]
+name = "fantastic-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The `fantastic` binary — composes the kernel + default bundle set."
+
+[[bin]]
+name = "fantastic"
+path = "src/main.rs"
+
+[dependencies]
+fantastic-kernel = { path = "../fantastic-kernel" }
+fantastic-core = { path = "../bundles/fantastic-core" }
+fantastic-cli-bundle = { path = "../bundles/fantastic-cli-bundle" }
+fantastic-file = { path = "../bundles/fantastic-file" }
+fantastic-web = { path = "../bundles/fantastic-web" }
+fantastic-web-ws = { path = "../bundles/fantastic-web-ws" }
+fantastic-web-rest = { path = "../bundles/fantastic-web-rest" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -229,10 +229,8 @@ class Agent:
         Weak loading: if a child's `handler_module` doesn't import in
         this runtime (bundle isn't installed), log one line to stderr
         and skip the agent + its subtree. The record stays on disk
-        untouched — boot under a runtime that has the bundle and the
-        agent rehydrates intact. This makes the same `.fantastic/`
-        workdir interchangeable between the Python kernel and the
-        forthcoming Rust kernel.
+        untouched — install the bundle and the agent rehydrates intact
+        on the next boot. Wipe-and-rebuild safe.
         """
         cdir = self._children_dir()
         if not cdir.exists():

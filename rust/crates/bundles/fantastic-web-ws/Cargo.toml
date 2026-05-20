@@ -1,0 +1,13 @@
+[package]
+name = "fantastic-web-ws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WebSocket verb channel — mounts ws://host/<agent_id>/ws on a parent web agent."
+
+[dependencies]
+fantastic-bundle = { path = "../../fantastic-bundle" }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+axum = { workspace = true }
+serde_json = { workspace = true }
