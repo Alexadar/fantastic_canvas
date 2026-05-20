@@ -16,14 +16,14 @@ impl crate::Bundle for CountingBundle {
         &self,
         _id: &AgentId,
         _payload: &Value,
-        _k: &Kernel,
+        _k: &Arc<Kernel>,
     ) -> Result<crate::Reply, crate::bundle::BundleError> {
         Ok(None)
     }
     async fn on_delete(
         &self,
         _id: &AgentId,
-        _k: &Kernel,
+        _k: &Arc<Kernel>,
     ) -> Result<(), crate::bundle::BundleError> {
         self.deletes.fetch_add(1, Ordering::SeqCst);
         Ok(())

@@ -17,7 +17,7 @@ impl Bundle for Noop {
         &self,
         _id: &AgentId,
         _payload: &Value,
-        _k: &Kernel,
+        _k: &Arc<Kernel>,
     ) -> Result<crate::Reply, crate::bundle::BundleError> {
         Ok(None)
     }

@@ -59,7 +59,7 @@ impl Bundle for FileBundle {
         &self,
         agent_id: &AgentId,
         payload: &Value,
-        kernel: &Kernel,
+        kernel: &std::sync::Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         // Snapshot meta so concurrent updates don't race.

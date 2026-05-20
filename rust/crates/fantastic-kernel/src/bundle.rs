@@ -59,16 +59,24 @@ pub trait Bundle: Send + Sync {
         &self,
         agent_id: &AgentId,
         payload: &Value,
-        kernel: &Kernel,
+        kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError>;
 
     /// Pre-detach hook. Default: noop.
-    async fn on_delete(&self, _agent_id: &AgentId, _kernel: &Kernel) -> Result<(), BundleError> {
+    async fn on_delete(
+        &self,
+        _agent_id: &AgentId,
+        _kernel: &Arc<Kernel>,
+    ) -> Result<(), BundleError> {
         Ok(())
     }
 
     /// Pre-shutdown hook. Default: delegate to on_delete.
-    async fn on_shutdown(&self, agent_id: &AgentId, kernel: &Kernel) -> Result<(), BundleError> {
+    async fn on_shutdown(
+        &self,
+        agent_id: &AgentId,
+        kernel: &Arc<Kernel>,
+    ) -> Result<(), BundleError> {
         self.on_delete(agent_id, kernel).await
     }
 

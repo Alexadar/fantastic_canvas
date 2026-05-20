@@ -20,7 +20,7 @@ impl Bundle for NoopBundle {
         &self,
         _id: &AgentId,
         _payload: &Value,
-        _kernel: &Kernel,
+        _kernel: &std::sync::Arc<Kernel>,
     ) -> Result<Reply, Box<dyn std::error::Error + Send + Sync>> {
         Ok(None)
     }

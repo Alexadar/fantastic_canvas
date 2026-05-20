@@ -14,7 +14,7 @@ impl Bundle for FakeBundle {
         &self,
         _agent_id: &AgentId,
         _payload: &Value,
-        _kernel: &Kernel,
+        _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         Ok(Some(json!({"ok": true})))
     }
@@ -25,7 +25,7 @@ async fn register_and_lookup() {
     let mut reg = BundleRegistry::new();
     reg.register("fake.tools", FakeBundle);
     let b = reg.get("fake.tools").expect("registered");
-    let kernel = Kernel::new();
+    let kernel = Arc::new(Kernel::new());
     let reply = b
         .handle(&AgentId::from("x"), &json!({"type": "ping"}), &kernel)
         .await

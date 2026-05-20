@@ -7,3 +7,8 @@ description = "Ephemeral stdout renderer — renders token/done/say/error events
 
 [dependencies]
 fantastic-bundle = { path = "../../fantastic-bundle" }
+fantastic-kernel = { path = "../../fantastic-kernel" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
