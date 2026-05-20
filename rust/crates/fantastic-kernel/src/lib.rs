@@ -21,6 +21,7 @@
 #![deny(missing_docs)]
 
 pub mod agent;
+pub mod bootstrap;
 pub mod bundle;
 pub mod errors;
 pub mod kernel;

@@ -9,12 +9,4 @@
 pub const README: &str = include_str!("readme.md");
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn readme_present_and_titled() {
-        assert!(!README.is_empty());
-        assert!(README.contains("cli — stdout renderer"));
-    }
-}
+mod tests;

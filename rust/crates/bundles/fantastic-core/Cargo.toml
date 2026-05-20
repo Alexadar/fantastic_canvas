@@ -7,3 +7,4 @@ description = "Root orchestrator bundle — the userland id=\"core\" agent at th
 
 [dependencies]
 fantastic-bundle = { path = "../../fantastic-bundle" }
+fantastic-kernel = { path = "../../fantastic-kernel" }

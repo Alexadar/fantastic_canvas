@@ -248,15 +248,20 @@ name = "fantastic-core"
 version = "0.1.0"
 dependencies = [
  "fantastic-bundle",
+ "fantastic-kernel",
 ]
 
 [[package]]
 name = "fantastic-file"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "base64",
  "fantastic-bundle",
+ "fantastic-kernel",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
