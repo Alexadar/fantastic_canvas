@@ -18,6 +18,23 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
+/// Callback bridge for the kernel's state stream. UniFFI generates a
+/// Swift protocol of the same name; consumers implement it on their
+/// side and hand an instance to [`Kernel::subscribe`].
+///
+/// `on_event` fires inline on the kernel's dispatching task. Keep the
+/// implementation short — off-thread heavy work via Swift's
+/// structured concurrency (`Task.detached`, `MainActor.run`, etc.).
+pub trait StateListener: Send + Sync {
+    /// One JSON-serialized state event per call. Shapes:
+    /// `{"type":"send",  sender, target, verb, summary}`
+    /// `{"type":"emit",  sender, target, verb, summary}`
+    /// `{"type":"created", id, parent_id, handler_module}`
+    /// `{"type":"removed", id}`
+    /// `{"type":"updated", id}`
+    fn on_event(&self, event_json: String);
+}
+
 /// Errors surfaced to Swift via UniFFI's `[Throws=KernelError]`.
 #[derive(Debug, Error)]
 pub enum KernelError {
@@ -196,6 +213,27 @@ impl Kernel {
         serde_json::to_string(&reply).unwrap_or_else(|_| "null".to_string())
     }
 
+    /// Register a [`StateListener`] for the kernel's state stream.
+    /// Returns an opaque token consumers pass to [`Self::unsubscribe`]
+    /// to detach. The closure runs inline on the dispatching task —
+    /// keep it short.
+    pub fn subscribe(&self, listener: Box<dyn StateListener>) -> u64 {
+        let listener: Arc<dyn StateListener> = Arc::from(listener);
+        let cb: fantastic_kernel::StateSubscriber = Arc::new(move |event: &Value| {
+            let s = serde_json::to_string(event).unwrap_or_else(|_| "null".to_string());
+            listener.on_event(s);
+        });
+        let token = self.inner.add_state_subscriber(cb);
+        token.0
+    }
+
+    /// Detach a listener previously registered via [`Self::subscribe`].
+    /// No-op if `token` isn't (or no longer is) registered.
+    pub fn unsubscribe(&self, token: u64) {
+        self.inner
+            .remove_state_subscriber(fantastic_kernel::kernel::SubscriberToken(token));
+    }
+
     /// Stop the listener, release the workdir lock. Idempotent.
     pub fn shutdown(&self) {
         let mut g = self.stopped.lock().expect("stopped poisoned");
@@ -232,3 +270,79 @@ impl Drop for Kernel {
 }
 
 uniffi::include_scaffolding!("fantastic");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Counting {
+        count: Arc<AtomicUsize>,
+    }
+    impl StateListener for Counting {
+        fn on_event(&self, _event_json: String) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_callback_fires_for_each_event() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let kernel = start_kernel(tmp.path().to_string_lossy().to_string(), 0)
+            .await
+            .expect("boot");
+        let count = Arc::new(AtomicUsize::new(0));
+        let listener = Counting {
+            count: Arc::clone(&count),
+        };
+        let token = kernel.subscribe(Box::new(listener));
+
+        // Trigger a few state events. Every send publishes one;
+        // create_agent also publishes a "created" event on its own.
+        let _ = kernel
+            .send_json(
+                "core".into(),
+                r#"{"type":"create_agent","handler_module":"file.tools","id":"t1","root":"/tmp"}"#
+                    .into(),
+            )
+            .await;
+        let _ = kernel
+            .send_json("t1".into(), r#"{"type":"reflect"}"#.into())
+            .await;
+        let _ = kernel
+            .send_json("core".into(), r#"{"type":"delete_agent","id":"t1"}"#.into())
+            .await;
+
+        // Each send fires at least one state event; some fire two
+        // (created + send, removed + send, etc.). Assert lower bound.
+        let after = count.load(Ordering::SeqCst);
+        assert!(
+            after >= 3,
+            "expected >=3 state events fired through listener, got {after}",
+        );
+
+        // Detach + confirm the counter stops climbing.
+        kernel.unsubscribe(token);
+        let frozen = count.load(Ordering::SeqCst);
+        let _ = kernel
+            .send_json("kernel".into(), r#"{"type":"reflect"}"#.into())
+            .await;
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            frozen,
+            "events still firing after unsubscribe",
+        );
+
+        kernel.shutdown();
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_unknown_token_is_noop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let kernel = start_kernel(tmp.path().to_string_lossy().to_string(), 0)
+            .await
+            .expect("boot");
+        kernel.unsubscribe(99_999_999);
+        kernel.shutdown();
+    }
+}

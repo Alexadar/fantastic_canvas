@@ -28,8 +28,14 @@ pub type StateSubscriber = Arc<dyn Fn(&Value) + Send + Sync>;
 
 /// Opaque token returned by [`Kernel::add_state_subscriber`]; pass to
 /// [`Kernel::remove_state_subscriber`] to detach.
+///
+/// The inner `u64` is `pub` so foreign-language bindings (e.g.
+/// fantastic-uniffi for Swift) can round-trip the value through a
+/// primitive type. Treat it as opaque from Rust callers — its
+/// numeric value carries no meaning beyond "token issued by this
+/// kernel".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SubscriberToken(u64);
+pub struct SubscriberToken(pub u64);
 
 /// Shared kernel context.
 pub struct Kernel {

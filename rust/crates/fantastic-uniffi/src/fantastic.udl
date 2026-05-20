@@ -45,6 +45,33 @@ interface Kernel {
     [Async]
     string send_json(string target_id, string payload_json);
 
+    /// Register a Swift listener for the kernel's state-event stream.
+    /// Fires for every send/emit/created/removed/updated event,
+    /// JSON-serialized as a single line per call.
+    ///
+    /// Returns an opaque token. Pass it to [`unsubscribe`] to detach.
+    /// Subscribing inside the embedding app is the right pattern for
+    /// canvas UIs that need to redraw on agent lifecycle changes —
+    /// it avoids polling `reflect` and avoids opening a WebSocket
+    /// against the bundled axum server.
+    u64 subscribe(StateListener listener);
+
+    /// Detach a previously-registered listener. No-op if `token`
+    /// isn't (or no longer is) registered.
+    void unsubscribe(u64 token);
+
     /// Stop the listener and release the workdir lock. Idempotent.
     void shutdown();
+};
+
+/// Callback bridge for the kernel's state stream. Implement in Swift,
+/// hand to [`Kernel::subscribe`].
+///
+/// `on_event` fires inline on the dispatching task — keep the callback
+/// short. Off-thread heavy work via `Task.detached { ... }` or
+/// post-to-MainActor for UI updates.
+callback interface StateListener {
+    /// One JSON-serialized state event:
+    /// `{"type":"send"|"emit"|"created"|"removed"|"updated", ...}`.
+    void on_event(string event_json);
 };
