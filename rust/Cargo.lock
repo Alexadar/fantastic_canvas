@@ -253,13 +253,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "fantastic-canvas-backend"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-kernel",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "fantastic-canvas-webapp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-kernel",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "fantastic-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fantastic-canvas-backend",
+ "fantastic-canvas-webapp",
  "fantastic-cli-bundle",
  "fantastic-core",
  "fantastic-file",
+ "fantastic-html-agent",
  "fantastic-kernel",
  "fantastic-web",
  "fantastic-web-rest",
@@ -299,6 +326,18 @@ dependencies = [
  "fantastic-bundle",
  "fantastic-kernel",
  "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "fantastic-html-agent"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-kernel",
  "serde_json",
  "tempfile",
  "tokio",

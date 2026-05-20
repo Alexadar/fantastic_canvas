@@ -23,6 +23,15 @@ fn register_default_bundles() -> BundleRegistry {
     reg.register("web.tools", fantastic_web::WebBundle);
     reg.register("web_ws.tools", fantastic_web_ws::WebWsBundle);
     reg.register("web_rest.tools", fantastic_web_rest::WebRestBundle);
+    reg.register("html_agent.tools", fantastic_html_agent::HtmlAgentBundle);
+    reg.register(
+        "canvas_backend.tools",
+        fantastic_canvas_backend::CanvasBackendBundle,
+    );
+    reg.register(
+        "canvas_webapp.tools",
+        fantastic_canvas_webapp::CanvasWebappBundle,
+    );
     reg
 }
 

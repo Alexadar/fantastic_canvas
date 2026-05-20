@@ -16,6 +16,9 @@ members = [
     "crates/bundles/fantastic-web-ws",
     "crates/bundles/fantastic-web-rest",
     "crates/bundles/fantastic-file",
+    "crates/bundles/fantastic-html-agent",
+    "crates/bundles/fantastic-canvas-backend",
+    "crates/bundles/fantastic-canvas-webapp",
 ]
 
 [workspace.package]
