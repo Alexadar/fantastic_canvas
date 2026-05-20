@@ -388,6 +388,7 @@ dependencies = [
  "fantastic-cli-bundle",
  "fantastic-core",
  "fantastic-file",
+ "fantastic-gl-agent",
  "fantastic-html-agent",
  "fantastic-kernel",
  "fantastic-scheduler",
@@ -429,6 +430,18 @@ dependencies = [
  "fantastic-bundle",
  "fantastic-kernel",
  "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "fantastic-gl-agent"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-kernel",
  "serde_json",
  "tempfile",
  "tokio",
@@ -486,6 +499,7 @@ dependencies = [
  "fantastic-canvas-webapp",
  "fantastic-core",
  "fantastic-file",
+ "fantastic-gl-agent",
  "fantastic-html-agent",
  "fantastic-kernel",
  "fantastic-scheduler",
