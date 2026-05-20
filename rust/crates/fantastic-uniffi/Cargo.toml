@@ -21,6 +21,7 @@ fantastic-canvas-backend = { path = "../bundles/fantastic-canvas-backend" }
 fantastic-canvas-webapp = { path = "../bundles/fantastic-canvas-webapp" }
 fantastic-scheduler = { path = "../bundles/fantastic-scheduler" }
 fantastic-gl-agent = { path = "../bundles/fantastic-gl-agent" }
+fantastic-telemetry-pane = { path = "../bundles/fantastic-telemetry-pane" }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

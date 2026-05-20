@@ -41,6 +41,10 @@ fn register_default_bundles() -> BundleRegistry {
     );
     reg.register("scheduler.tools", fantastic_scheduler::SchedulerBundle);
     reg.register("gl_agent.tools", fantastic_gl_agent::GlAgentBundle);
+    reg.register(
+        "telemetry_pane.tools",
+        fantastic_telemetry_pane::TelemetryPaneBundle,
+    );
 
     // ── Full-tier-only bundles (subprocess / dynamic-loading / etc.).
     //
