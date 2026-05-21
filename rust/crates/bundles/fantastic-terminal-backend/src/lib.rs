@@ -440,7 +440,9 @@ async fn write_reply(agent_id: &AgentId, payload: &Value) -> Value {
     // by the state's Mutex; we can't move it across spawn_blocking
     // without giving up the lock. Inline blocking write is OK here —
     // PTY master buffers are kilobyte-sized, so writes don't sit long.
-    let res = writer_guard.write_all(&bytes).and_then(|_| writer_guard.flush());
+    let res = writer_guard
+        .write_all(&bytes)
+        .and_then(|_| writer_guard.flush());
     match res {
         Ok(()) => json!({"written": n}),
         Err(e) => json!({"error": format!("write: {e}")}),
@@ -883,10 +885,8 @@ async fn reader_loop(
             {
                 let mut sb = state.scrollback.lock().expect("scrollback poisoned");
                 sb.push_back(out.clone());
-                let mut total = state
-                    .scrollback_bytes
-                    .fetch_add(nbytes, Ordering::Relaxed)
-                    + nbytes;
+                let mut total =
+                    state.scrollback_bytes.fetch_add(nbytes, Ordering::Relaxed) + nbytes;
                 while total > MAX_SCROLLBACK_BYTES {
                     let Some(old) = sb.pop_front() else { break };
                     let drop_bytes = old.len();

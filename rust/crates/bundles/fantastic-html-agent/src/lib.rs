@@ -139,17 +139,9 @@ impl Bundle for HtmlAgentBundle {
             // it can't iframe a member that doesn't answer get_webapp.
             "get_webapp" => {
                 let meta = agent.meta.read().expect("meta poisoned");
-                let default_width = meta
-                    .get("width")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(480);
-                let default_height = meta
-                    .get("height")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(360);
-                let display_name = agent
-                    .display_name()
-                    .unwrap_or_else(|| "html".to_string());
+                let default_width = meta.get("width").and_then(Value::as_u64).unwrap_or(480);
+                let default_height = meta.get("height").and_then(Value::as_u64).unwrap_or(360);
+                let display_name = agent.display_name().unwrap_or_else(|| "html".to_string());
                 drop(meta);
                 json!({
                     "url": format!("/{}/", agent_id.as_str()),

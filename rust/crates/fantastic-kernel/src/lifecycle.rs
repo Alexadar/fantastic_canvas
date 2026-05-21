@@ -123,10 +123,8 @@ pub(crate) async fn create_from_payload(
     // async future is recursive and Rust requires explicit indirection.
     let new_id = new_agent.id.clone();
     let kernel_for_boot = Arc::clone(kernel);
-    let boot_reply = Box::pin(async move {
-        kernel_for_boot.send(&new_id, json!({"type": "boot"})).await
-    })
-    .await;
+    let boot_reply =
+        Box::pin(async move { kernel_for_boot.send(&new_id, json!({"type": "boot"})).await }).await;
     let new_id = new_agent.id.clone();
     if let Some(err) = boot_reply.get("error").and_then(Value::as_str) {
         tracing::warn!(agent = %new_id, error = %err, "boot after create_agent errored");
@@ -172,10 +170,7 @@ pub(crate) async fn delete_from_payload(
     // (canvas frame chrome, etc.). Mirrors Python's
     // `await self.emit(self.id, {type:"agent_deleted", id})`.
     kernel
-        .emit(
-            &caller.id,
-            json!({"type": "agent_deleted", "id": id.0}),
-        )
+        .emit(&caller.id, json!({"type": "agent_deleted", "id": id.0}))
         .await;
     json!({ "deleted": true, "id": id.0 })
 }

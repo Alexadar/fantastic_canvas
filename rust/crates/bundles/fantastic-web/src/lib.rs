@@ -615,7 +615,10 @@ async fn serve_root_index_dynamic(State(state): State<AppState>) -> impl IntoRes
 
     // Pull the substrate primer to get the tree.
     let primer = kernel
-        .send(&AgentId::from("kernel"), serde_json::json!({"type":"reflect"}))
+        .send(
+            &AgentId::from("kernel"),
+            serde_json::json!({"type":"reflect"}),
+        )
         .await;
     let tree = primer.get("tree").cloned().unwrap_or(Value::Null);
 
@@ -669,11 +672,15 @@ async fn serve_root_index_dynamic(State(state): State<AppState>) -> impl IntoRes
     }
 
     fn html_escape(s: &str) -> String {
-        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
     }
 
     fn render_node(node: &Value, has_html: &std::collections::HashMap<String, bool>) -> String {
-        let Some(obj) = node.as_object() else { return String::new() };
+        let Some(obj) = node.as_object() else {
+            return String::new();
+        };
         let aid = obj
             .get("id")
             .and_then(Value::as_str)
@@ -691,7 +698,10 @@ async fn serve_root_index_dynamic(State(state): State<AppState>) -> impl IntoRes
             .unwrap_or("(root)")
             .to_string();
         let visit = if *has_html.get(&aid).unwrap_or(&false) {
-            format!(r#"<a class="visit" href="/{}/" title="open agent UI">↗</a>"#, aid)
+            format!(
+                r#"<a class="visit" href="/{}/" title="open agent UI">↗</a>"#,
+                aid
+            )
         } else {
             String::new()
         };
@@ -699,10 +709,7 @@ async fn serve_root_index_dynamic(State(state): State<AppState>) -> impl IntoRes
             if children.is_empty() {
                 String::new()
             } else {
-                let inner: String = children
-                    .iter()
-                    .map(|c| render_node(c, has_html))
-                    .collect();
+                let inner: String = children.iter().map(|c| render_node(c, has_html)).collect();
                 format!("<ul>{inner}</ul>")
             }
         } else {
