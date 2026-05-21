@@ -131,10 +131,7 @@ fn register_default_bundles() -> BundleRegistry {
             "python_runtime.tools",
             fantastic_python_runtime::PythonRuntimeBundle,
         );
-        reg.register(
-            "ssh_runner.tools",
-            fantastic_ssh_runner::SshRunnerBundle,
-        );
+        reg.register("ssh_runner.tools", fantastic_ssh_runner::SshRunnerBundle);
     }
 
     reg
