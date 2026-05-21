@@ -62,7 +62,14 @@ fn summarize_payload(payload: &Value) -> String {
         Err(_) => format!("{payload:?}"),
     };
     if s.len() > 160 {
-        s.truncate(157);
+        // Walk back to the nearest char boundary so we don't slice a
+        // multi-byte UTF-8 sequence (terminal output is full of those
+        // — Box-drawing glyphs in TUI redraws are 3-byte runs).
+        let mut cut = 157usize.min(s.len());
+        while cut > 0 && !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
         s.push_str("...");
     }
     s
@@ -99,10 +106,34 @@ impl Kernel {
         let kernel = Arc::clone(self);
         let target_for_dispatch = Arc::clone(&target);
         let payload_clone = payload.clone();
-        let reply = with_sender(target.id.clone(), async move {
+        let mut reply = with_sender(target.id.clone(), async move {
             dispatch(&kernel, target_for_dispatch, &payload_clone).await
         })
         .await;
+
+        // Universal post-process: when reflect is called with
+        // `return_readme: true`, attach the target's readme.md content
+        // as `reply["readme"]` (or null if absent). Mirrors Python's
+        // `Agent._maybe_attach_readme` — readme stays opt-in so the
+        // default reflect surface stays lean. Only wraps object
+        // replies; verb errors / Null replies pass through unchanged.
+        if verb == "reflect"
+            && payload
+                .get("return_readme")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        {
+            if let Some(obj) = reply.as_object_mut() {
+                let readme = std::fs::read_to_string(target.readme_file()).ok();
+                obj.insert(
+                    "readme".to_string(),
+                    match readme {
+                        Some(s) => Value::String(s),
+                        None => Value::Null,
+                    },
+                );
+            }
+        }
 
         // State event + watcher fanout (synchronous; cheap subscribers).
         let event = json!({
@@ -113,7 +144,10 @@ impl Kernel {
             "summary": summarize_payload(&payload),
         });
         self.publish_state(&event);
-        self.fanout_to_watchers(&target, &event).await;
+        // Watchers see the RAW request payload (Python parity) — they're
+        // listening for verb dispatches, not event-metadata envelopes.
+        // State subscribers above already got the metadata envelope.
+        self.fanout_to_watchers(&target, &payload).await;
 
         reply
     }
@@ -169,7 +203,9 @@ impl Kernel {
             "bytes": blob_len,
         });
         self.publish_state(&event);
-        self.fanout_to_watchers(&target, &event).await;
+        // Watchers get the raw header (request envelope without the
+        // blob). Mirrors Python's payload-to-watchers semantics.
+        self.fanout_to_watchers(&target, &header).await;
 
         reply
     }
@@ -205,8 +241,11 @@ impl Kernel {
         self.publish_state(&event);
         // Best-effort watcher fanout — emits without a registered
         // Agent (synthetic targets) have no watcher set; skip.
+        // Watchers see the RAW payload (Python parity) — they
+        // subscribed to learn what's flowing through the target's
+        // inbox, not metadata about it.
         if let Some(target) = self.agents.get(target_id).map(|e| Arc::clone(&e)) {
-            self.fanout_to_watchers(&target, &event).await;
+            self.fanout_to_watchers(&target, &payload).await;
         }
     }
 
@@ -341,7 +380,7 @@ async fn handle_system_verb(
         }
         "create_agent" => crate::lifecycle::create_from_payload(kernel, target, payload).await,
         "delete_agent" => crate::lifecycle::delete_from_payload(kernel, target, payload).await,
-        "update_agent" => update_from_payload(kernel, target, payload),
+        "update_agent" => update_from_payload(kernel, target, payload).await,
         "get" => {
             let id = payload.get("id").and_then(Value::as_str).map(AgentId::from);
             match id.and_then(|i| kernel.agents.get(&i).map(|e| Arc::clone(&e))) {
@@ -353,7 +392,7 @@ async fn handle_system_verb(
     }
 }
 
-fn update_from_payload(kernel: &Arc<Kernel>, _caller: &Arc<Agent>, payload: &Value) -> Value {
+async fn update_from_payload(kernel: &Arc<Kernel>, caller: &Arc<Agent>, payload: &Value) -> Value {
     let id = match payload.get("id").and_then(Value::as_str) {
         Some(s) => AgentId::from(s),
         None => return json!({ "error": "update_agent requires id" }),
@@ -361,14 +400,18 @@ fn update_from_payload(kernel: &Arc<Kernel>, _caller: &Arc<Agent>, payload: &Val
     let Some(target) = kernel.agents.get(&id).map(|e| Arc::clone(&e)) else {
         return json!({ "error": format!("no agent {id}") });
     };
-    // Patch is every field in payload except `type` and `id`.
+    // Patch is every field in payload except `type` and `id`. Capture
+    // changed-field names so the lifecycle event mirrors Python's
+    // `agent_updated.changed`.
     let mut patch: Map<String, Value> = Map::new();
+    let mut changed: Vec<String> = Vec::new();
     if let Some(obj) = payload.as_object() {
         for (k, v) in obj {
             if k == "type" || k == "id" {
                 continue;
             }
             patch.insert(k.clone(), v.clone());
+            changed.push(k.clone());
         }
     }
     let rec = target.update_meta(patch);
@@ -378,7 +421,22 @@ fn update_from_payload(kernel: &Arc<Kernel>, _caller: &Arc<Agent>, payload: &Val
         "id": rec.id,
     });
     kernel.publish_state(&event);
-    serde_json::to_value(&rec).unwrap_or(Value::Null)
+    let rec_value = serde_json::to_value(&rec).unwrap_or(Value::Null);
+    // Emit `agent_updated` on the caller's inbox so watchers (canvas
+    // frame chrome, telemetry panels) refresh without polling. Mirrors
+    // Python's `await self.emit(self.id, {type:"agent_updated", ...})`.
+    kernel
+        .emit(
+            &caller.id,
+            json!({
+                "type": "agent_updated",
+                "id": rec.id,
+                "changed": changed,
+                "agent": rec_value.clone(),
+            }),
+        )
+        .await;
+    rec_value
 }
 
 #[cfg(test)]
