@@ -27,28 +27,33 @@ async def test_reflect_lists_verbs(seeded_kernel):
 
 async def test_get_gl_view_reads_record_source(seeded_kernel):
     src = "// hello"
-    aid = await _make(seeded_kernel, gl_source=src, title="hi")
+    aid = await _make(seeded_kernel, glsl_source=src, title="hi")
     r = await seeded_kernel.send(aid, {"type": "get_gl_view"})
-    assert r == {"source": src, "title": "hi"}
+    # get_gl_view now also returns default_width/default_height
+    # (cross-runtime parity with Rust's gl_agent).
+    assert r["glsl_source"] == src
+    assert r["title"] == "hi"
+    assert r["default_width"] == 800
+    assert r["default_height"] == 600
 
 
 async def test_get_gl_view_title_fallback(seeded_kernel):
     """No `title` set → fall back to display_name → id."""
-    aid = await _make(seeded_kernel, gl_source="x", display_name="MY-VIS")
+    aid = await _make(seeded_kernel, glsl_source="x", display_name="MY-VIS")
     r = await seeded_kernel.send(aid, {"type": "get_gl_view"})
     assert r["title"] == "MY-VIS"
 
-    aid2 = await _make(seeded_kernel, gl_source="x")
+    aid2 = await _make(seeded_kernel, glsl_source="x")
     r2 = await seeded_kernel.send(aid2, {"type": "get_gl_view"})
     assert r2["title"] == aid2  # id fallback
 
 
 async def test_set_gl_source_updates_record(seeded_kernel):
-    aid = await _make(seeded_kernel, gl_source="old")
-    r = await seeded_kernel.send(aid, {"type": "set_gl_source", "source": "new"})
+    aid = await _make(seeded_kernel, glsl_source="old")
+    r = await seeded_kernel.send(aid, {"type": "set_gl_source", "glsl_source": "new"})
     assert r["ok"] is True
     after = await seeded_kernel.send(aid, {"type": "get_gl_view"})
-    assert after["source"] == "new"
+    assert after["glsl_source"] == "new"
 
 
 async def test_set_gl_source_emits_gl_source_changed(seeded_kernel):
@@ -57,11 +62,11 @@ async def test_set_gl_source_emits_gl_source_changed(seeded_kernel):
     view in place. GL analogue of html_agent's set_html → reload_html.
     Captured via the tree-wide state stream (bundle-internal emits
     fan out to ctx.state_subscribers)."""
-    aid = await _make(seeded_kernel, gl_source="old")
+    aid = await _make(seeded_kernel, glsl_source="old")
     events: list[dict] = []
     unsub = seeded_kernel.add_state_subscriber(events.append)
     try:
-        await seeded_kernel.send(aid, {"type": "set_gl_source", "source": "new"})
+        await seeded_kernel.send(aid, {"type": "set_gl_source", "glsl_source": "new"})
     finally:
         unsub()
     emits_on_self = [
@@ -79,25 +84,26 @@ async def test_set_gl_source_emits_gl_source_changed(seeded_kernel):
 
 
 async def test_set_gl_source_can_update_title(seeded_kernel):
-    aid = await _make(seeded_kernel, gl_source="x", title="A")
+    aid = await _make(seeded_kernel, glsl_source="x", title="A")
     await seeded_kernel.send(
-        aid, {"type": "set_gl_source", "source": "y", "title": "B"}
+        aid, {"type": "set_gl_source", "glsl_source": "y", "title": "B"}
     )
     after = await seeded_kernel.send(aid, {"type": "get_gl_view"})
-    assert after == {"source": "y", "title": "B"}
+    assert after["glsl_source"] == "y"
+    assert after["title"] == "B"
 
 
 async def test_set_gl_source_requires_string(seeded_kernel):
     aid = await _make(seeded_kernel)
-    r = await seeded_kernel.send(aid, {"type": "set_gl_source", "source": 42})
+    r = await seeded_kernel.send(aid, {"type": "set_gl_source", "glsl_source": 42})
     assert "error" in r
 
 
 async def test_get_gl_source_returns_raw(seeded_kernel):
     """get_gl_source mirrors get_html — the raw stored body, no canvas envelope."""
-    aid = await _make(seeded_kernel, gl_source="raw-js")
+    aid = await _make(seeded_kernel, glsl_source="raw-js")
     r = await seeded_kernel.send(aid, {"type": "get_gl_source"})
-    assert r == {"source": "raw-js"}
+    assert r == {"glsl_source": "raw-js"}
 
 
 async def test_unknown_verb_errors(seeded_kernel):
@@ -122,7 +128,7 @@ async def test_canvas_backend_accepts_gl_agent(seeded_kernel):
         {
             "type": "add_agent",
             "handler_module": "gl_agent.tools",
-            "gl_source": "// scene.background = null;",
+            "glsl_source": "// scene.background = null;",
         },
     )
     assert r.get("ok") is True
