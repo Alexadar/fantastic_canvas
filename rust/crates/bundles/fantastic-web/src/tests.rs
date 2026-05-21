@@ -87,7 +87,10 @@ fn inject_transport_adds_script_before_head_close() {
 
 #[test]
 fn inject_transport_is_idempotent() {
-    let html = r#"<html><head><script src="/transport.js"></script></head><body>x</body></html>"#;
+    // `inject_transport` now also adds a default favicon `<link>`
+    // (Python parity). Idempotency requires BOTH tags to be present
+    // already.
+    let html = r#"<html><head><link rel="icon" type="image/png" href="/_assets/favicon.png"><script src="/transport.js"></script></head><body>x</body></html>"#;
     assert_eq!(inject_transport(html), html);
 }
 
@@ -95,7 +98,9 @@ fn inject_transport_is_idempotent() {
 fn inject_transport_handles_no_head() {
     let html = "<body>x</body>";
     let out = inject_transport(html);
-    assert!(out.starts_with(r#"<script src="/transport.js"></script>"#));
+    assert!(out.contains(r#"<script src="/transport.js"></script>"#));
+    assert!(out.contains(r#"<link rel="icon" type="image/png" href="/_assets/favicon.png">"#));
+    assert!(out.ends_with("<body>x</body>"));
 }
 
 #[test]
@@ -477,10 +482,15 @@ async fn single_frame_upload_dispatches_immediately() {
         .iter()
         .find(|f| f["id"] == "s1")
         .expect("expected a reply frame for id=s1");
-    // The dispatch errors because target doesn't exist — that's the
-    // round-trip we want to assert.
-    assert_eq!(reply["type"], "error", "single-frame got: {reply}");
-    assert!(reply["error"].as_str().unwrap_or("").contains("no agent"));
+    // Wire shape: WS replies are always `type:"reply"` with verb-level
+    // errors inside `data.error` (Python parity — see web/lib.rs).
+    // `type:"error"` is reserved for out-of-band frame-decode failures.
+    assert_eq!(reply["type"], "reply", "single-frame got: {reply}");
+    let err = reply["data"]["error"].as_str().unwrap_or("");
+    assert!(
+        err.contains("no agent"),
+        "expected `no agent` in data.error, got: {reply}"
+    );
 
     kernel
         .send(&AgentId::from(web_id), json!({"type": "stop"}))
@@ -525,7 +535,13 @@ async fn chunked_upload_reassembles_in_order() {
                 .iter()
                 .find(|f| f["id"] == "c1")
                 .expect("final chunk should yield a reply");
-            assert_eq!(reply["type"], "error");
+            // Python wire shape: reply frame, verb-level error in data.
+            assert_eq!(reply["type"], "reply");
+            let err = reply["data"]["error"].as_str().unwrap_or("");
+            assert!(
+                err.contains("no agent"),
+                "expected `no agent`, got: {reply}"
+            );
         } else {
             let ack = frames
                 .iter()

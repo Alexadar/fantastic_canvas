@@ -323,6 +323,8 @@ fn build_router(state: AppState) -> Router {
         .route("/", get(serve_root_index_dynamic))
         .route("/transport.js", get(serve_transport_js))
         .route("/favicon.ico", get(serve_favicon))
+        .route("/favicon.png", get(serve_favicon))
+        .route("/_assets/favicon.png", get(serve_favicon))
         .route("/:agent_id/file/*path", get(serve_file_proxy))
         .route("/:agent_id/", get(serve_agent_render))
         .with_state(state)
@@ -742,20 +744,16 @@ async fn serve_transport_js() -> impl IntoResponse {
     )
 }
 
+/// Bundled favicon — copied verbatim from Python's web bundle
+/// (`python/bundled_agents/web/host/src/web/favicon.png`) so the
+/// browser tab icon matches across runtimes.
+pub const FAVICON_PNG: &[u8] = include_bytes!("favicon.png");
+
 async fn serve_favicon() -> Response {
-    // 1x1 transparent PNG as a minimal placeholder favicon. Browsers
-    // stop spamming the kernel with 404s.
-    const FAVICON: &[u8] = &[
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
-        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
-        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00,
-        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
-        0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-    ];
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "image/png")],
-        FAVICON,
+        FAVICON_PNG,
     )
         .into_response()
 }
@@ -831,18 +829,36 @@ async fn serve_file_proxy(
         .into_response()
 }
 
-/// Inject `<script src="/transport.js"></script>` before `</head>` if
-/// present, else at the top of the body.
+/// Inject `<script src="/transport.js"></script>` + the favicon
+/// `<link>` before `</head>` if present, else at the top of the body.
+/// Mirrors Python's transport injection + `_FAVICON_TAG` so browser
+/// tabs show the bundled icon and pages get the JS runtime without
+/// each agent declaring it.
 fn inject_transport(html: &str) -> String {
-    const TAG: &str = "<script src=\"/transport.js\"></script>";
-    if html.contains(TAG) {
+    const TRANSPORT_TAG: &str = "<script src=\"/transport.js\"></script>";
+    const FAVICON_TAG: &str =
+        "<link rel=\"icon\" type=\"image/png\" href=\"/_assets/favicon.png\">";
+    let needs_transport = !html.contains(TRANSPORT_TAG);
+    // Skip favicon if the page already declares any `<link rel="icon"`
+    // (per-agent custom icons win).
+    let needs_favicon = !html.contains("rel=\"icon\"") && !html.contains("rel='icon'");
+    if !needs_transport && !needs_favicon {
         return html.to_string();
+    }
+    let mut inject = String::new();
+    if needs_favicon {
+        inject.push_str(FAVICON_TAG);
+        inject.push('\n');
+    }
+    if needs_transport {
+        inject.push_str(TRANSPORT_TAG);
+        inject.push('\n');
     }
     if let Some(idx) = html.find("</head>") {
         let (head, tail) = html.split_at(idx);
-        format!("{head}{TAG}\n{tail}")
+        format!("{head}{inject}{tail}")
     } else {
-        format!("{TAG}\n{html}")
+        format!("{inject}{html}")
     }
 }
 
