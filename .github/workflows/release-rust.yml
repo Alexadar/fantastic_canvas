@@ -1,0 +1,106 @@
+name: Release (rust)
+
+# Manual, tag-driven release of the `fantastic` binary for the Rust runtime.
+#
+# Trigger: push a tag of the form `rust-v<semver>`.
+#   git tag rust-v0.1.0 && git push origin rust-v0.1.0
+#
+# Builds 4 targets, packages each as `fantastic-rust-<triple>.tar.gz` (binary
+# at archive root for clean `tar -xzC ~/.local/bin` extract), uploads to a
+# GitHub Release at the same tag, marks it as `latest`. Future per-runtime
+# release pipelines (Python `python-v*`) live in sibling files and the
+# `rust-v*` / `python-v*` prefixes keep their namespaces disjoint.
+
+on:
+  push:
+    tags: ['rust-v*']
+
+jobs:
+  build:
+    name: build ${{ matrix.triple }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,  triple: aarch64-apple-darwin,      cross: false }
+          - { os: macos-13,      triple: x86_64-apple-darwin,       cross: false }
+          - { os: ubuntu-latest, triple: x86_64-unknown-linux-gnu,  cross: false }
+          - { os: ubuntu-latest, triple: aarch64-unknown-linux-gnu, cross: true  }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: release-${{ matrix.triple }}
+
+      # Native build for everything except linux-aarch64.
+      - name: cargo build
+        if: ${{ !matrix.cross }}
+        run: cargo build -p fantastic-cli --release --target ${{ matrix.triple }}
+
+      # Linux-aarch64 cross-compile via `cross` (containerized toolchain so
+      # GitHub's ubuntu-latest x86_64 runner can produce ARM64 binaries).
+      - name: install cross
+        if: ${{ matrix.cross }}
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: cross build
+        if: ${{ matrix.cross }}
+        run: cross build -p fantastic-cli --release --target ${{ matrix.triple }}
+
+      # Archive contents: a single `fantastic` binary at the root. That
+      # makes the ssh-bootstrap one-liner clean:
+      #   curl -fsSL <url> | tar -xzC ~/.local/bin
+      - name: package
+        run: |
+          cd target/${{ matrix.triple }}/release
+          tar -czf ../../../fantastic-rust-${{ matrix.triple }}.tar.gz fantastic
+          cd ../../..
+          ls -la fantastic-rust-${{ matrix.triple }}.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fantastic-rust-${{ matrix.triple }}
+          path: rust/fantastic-rust-${{ matrix.triple }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: list assets
+        run: ls -la dist/
+
+      - name: sha256 manifest
+        working-directory: dist
+        run: sha256sum *.tar.gz > sha256sums-rust.txt && cat sha256sums-rust.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          # `${{ github.ref_name }}` is the pushed tag (e.g. `rust-v0.1.0`).
+          # `action-gh-release` creates the release at that tag if it
+          # doesn't exist yet; uploads files; marks as latest.
+          files: |
+            dist/fantastic-rust-*.tar.gz
+            dist/sha256sums-rust.txt
+          make_latest: 'true'
+          fail_on_unmatched_files: true
+          generate_release_notes: true
