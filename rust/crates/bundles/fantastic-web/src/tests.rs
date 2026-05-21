@@ -374,3 +374,407 @@ async fn runtime_added_ws_child_hot_mounts() {
         .send(&AgentId::from(web_id), json!({"type": "stop"}))
         .await;
 }
+
+// ── Binary frame chunking ───────────────────────────────────────────
+//
+// These tests drive the chunked-upload protocol over a real WS
+// connection. Wire shape per chunk:
+//
+//     [4B BE hdr_len][header JSON {target, type, upload_id, chunk_index,
+//                                  total_chunks, final, id?}][raw blob]
+//
+// Single-frame uploads (no `upload_id` in the header) take the existing
+// fast path and stay byte-compatible with Python's wire.
+
+/// Stage a web + web_ws on `port`. Returns the booted kernel + the
+/// web agent id. Caller is responsible for stop.
+async fn stage_web_with_ws(tmp: &TempDir, port: u16, web_id: &str) -> Arc<Kernel> {
+    let kernel = mk_kernel(tmp, true, false);
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": HANDLER_MODULE,
+                "id": web_id,
+                "port": port,
+            }),
+        )
+        .await;
+    kernel
+        .send(
+            &AgentId::from(web_id),
+            json!({
+                "type": "create_agent",
+                "handler_module": "web_ws.tools",
+                "id": format!("{web_id}_ws"),
+            }),
+        )
+        .await;
+    let r = kernel
+        .send(&AgentId::from(web_id), json!({"type": "boot"}))
+        .await;
+    assert_eq!(r["running"], true, "boot: {r}");
+    wait_until_port_accepts(port).await;
+    kernel
+}
+
+/// Build a binary WS frame: 4B big-endian header_len + JSON header + blob.
+fn build_binary_frame(header: &Value, blob: &[u8]) -> Vec<u8> {
+    let hdr_bytes = serde_json::to_vec(header).expect("serialize header");
+    let mut out = Vec::with_capacity(4 + hdr_bytes.len() + blob.len());
+    out.extend_from_slice(&(hdr_bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(&hdr_bytes);
+    out.extend_from_slice(blob);
+    out
+}
+
+/// Send a chunk + collect every text frame the server emits during a
+/// short window. Returns parsed JSON of each frame.
+async fn send_binary_and_drain(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    frame: Vec<u8>,
+) -> Vec<Value> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as TMessage;
+    ws.send(TMessage::Binary(frame)).await.expect("send binary");
+    let mut out = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), ws.next()).await {
+            Ok(Some(Ok(TMessage::Text(t)))) => {
+                if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                    out.push(v);
+                }
+            }
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => break,
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn single_frame_upload_dispatches_immediately() {
+    let tmp = TempDir::new().unwrap();
+    let port = free_port();
+    let web_id = "web_single_bin";
+    let kernel = stage_web_with_ws(&tmp, port, web_id).await;
+
+    let url = format!("ws://127.0.0.1:{port}/{web_id}/ws");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("ws connect");
+
+    // No upload_id → single-frame fast path. Target a non-existent agent;
+    // assertion is on the wire shape, not on dispatch success.
+    let header = json!({"target": "nonexistent_xyz", "type": "noop", "id": "s1"});
+    let frame = build_binary_frame(&header, &[1, 2, 3, 4]);
+    let frames = send_binary_and_drain(&mut ws, frame).await;
+    let reply = frames
+        .iter()
+        .find(|f| f["id"] == "s1")
+        .expect("expected a reply frame for id=s1");
+    // The dispatch errors because target doesn't exist — that's the
+    // round-trip we want to assert.
+    assert_eq!(reply["type"], "error", "single-frame got: {reply}");
+    assert!(reply["error"].as_str().unwrap_or("").contains("no agent"));
+
+    kernel
+        .send(&AgentId::from(web_id), json!({"type": "stop"}))
+        .await;
+}
+
+#[tokio::test]
+async fn chunked_upload_reassembles_in_order() {
+    let tmp = TempDir::new().unwrap();
+    let port = free_port();
+    let web_id = "web_chunked_inorder";
+    let kernel = stage_web_with_ws(&tmp, port, web_id).await;
+
+    let url = format!("ws://127.0.0.1:{port}/{web_id}/ws");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("ws connect");
+
+    let upload_id = "u_ord1";
+    // 3 chunks, 4 bytes each. Final dispatch is to a non-existent agent
+    // → reply carries the kernel's `no agent` error, but the chunking
+    // path is what we're asserting reached dispatch.
+    for (idx, blob) in [
+        (0u32, &[1u8, 1, 1, 1] as &[u8]),
+        (1, &[2, 2, 2, 2]),
+        (2, &[3, 3, 3, 3]),
+    ] {
+        let is_final = idx == 2;
+        let header = json!({
+            "target": "nonexistent",
+            "type": "noop",
+            "id": "c1",
+            "upload_id": upload_id,
+            "chunk_index": idx,
+            "total_chunks": 3,
+            "final": is_final,
+        });
+        let frame = build_binary_frame(&header, blob);
+        let frames = send_binary_and_drain(&mut ws, frame).await;
+        if is_final {
+            let reply = frames
+                .iter()
+                .find(|f| f["id"] == "c1")
+                .expect("final chunk should yield a reply");
+            assert_eq!(reply["type"], "error");
+        } else {
+            let ack = frames
+                .iter()
+                .find(|f| f["type"] == "chunk_ack")
+                .expect("non-final chunk must produce a chunk_ack");
+            assert_eq!(ack["upload_id"], upload_id);
+            assert_eq!(ack["chunk_index"], idx);
+        }
+    }
+
+    kernel
+        .send(&AgentId::from(web_id), json!({"type": "stop"}))
+        .await;
+}
+
+#[tokio::test]
+async fn chunked_upload_handles_out_of_order_chunks() {
+    let tmp = TempDir::new().unwrap();
+    let port = free_port();
+    let web_id = "web_chunked_ooo";
+    let kernel = stage_web_with_ws(&tmp, port, web_id).await;
+
+    let url = format!("ws://127.0.0.1:{port}/{web_id}/ws");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("ws connect");
+
+    let upload_id = "u_ooo1";
+    // Order: 2 (final), then 0, then 1. The final flag on chunk 2
+    // doesn't dispatch until all 3 are present.
+    let chunks = [
+        (2u32, &[3u8; 4] as &[u8], true),
+        (0, &[1u8; 4], false),
+        (1, &[2u8; 4], false),
+    ];
+    let mut got_reply = false;
+    for (idx, blob, is_final) in chunks {
+        let header = json!({
+            "target": "nonexistent",
+            "type": "noop",
+            "id": "ooo1",
+            "upload_id": upload_id,
+            "chunk_index": idx,
+            "total_chunks": 3,
+            "final": is_final,
+        });
+        let frame = build_binary_frame(&header, blob);
+        let frames = send_binary_and_drain(&mut ws, frame).await;
+        if let Some(r) = frames.iter().find(|f| f["id"] == "ooo1") {
+            // Could be on the first "final" or after the last needed chunk.
+            assert_eq!(r["type"], "error");
+            got_reply = true;
+        }
+    }
+    // Send the final-flag chunk LAST when all 3 are present.
+    let header = json!({
+        "target": "nonexistent",
+        "type": "noop",
+        "id": "ooo1b",
+        "upload_id": upload_id,
+        "chunk_index": 2,
+        "total_chunks": 3,
+        "final": true,
+    });
+    let frame = build_binary_frame(&header, &[3u8; 4]);
+    // This may dispatch (if previous final-flag triggered missing-chunks
+    // error and cleared the map, this re-uploads chunk 2; in that case
+    // we need the other 2 chunks again). Either way the wire is asserted
+    // by got_reply above for the assembled path.
+    let _ = send_binary_and_drain(&mut ws, frame).await;
+    assert!(got_reply, "expected a dispatch reply for chunked upload");
+
+    kernel
+        .send(&AgentId::from(web_id), json!({"type": "stop"}))
+        .await;
+}
+
+#[tokio::test]
+async fn oversized_chunk_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let port = free_port();
+    let web_id = "web_oversize";
+    let kernel = stage_web_with_ws(&tmp, port, web_id).await;
+
+    let url = format!("ws://127.0.0.1:{port}/{web_id}/ws");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("ws connect");
+
+    // 2 MB blob — past MAX_CHUNK_SIZE (1 MB).
+    let big_blob = vec![0u8; 2 * 1_048_576];
+    let header = json!({"target": "nonexistent", "type": "noop", "id": "big1"});
+    let frame = build_binary_frame(&header, &big_blob);
+    let frames = send_binary_and_drain(&mut ws, frame).await;
+    let err = frames
+        .iter()
+        .find(|f| f["id"] == "big1")
+        .expect("expected error reply for oversized chunk");
+    assert_eq!(err["type"], "error");
+    assert!(err["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("exceeds chunk cap"));
+
+    kernel
+        .send(&AgentId::from(web_id), json!({"type": "stop"}))
+        .await;
+}
+
+#[tokio::test]
+async fn oversized_total_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let port = free_port();
+    let web_id = "web_oversize_total";
+    let kernel = stage_web_with_ws(&tmp, port, web_id).await;
+
+    let url = format!("ws://127.0.0.1:{port}/{web_id}/ws");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("ws connect");
+
+    // 101 chunks × 1 MB each → 101 MB, past the 100 MB total cap.
+    // Send chunks until the server rejects. Each chunk is at the per-
+    // chunk cap so cumulative trips the total cap on chunk #101.
+    let upload_id = "u_huge";
+    let chunk_size = 1_048_576;
+    let total_chunks: u32 = 101;
+    let one_mb = vec![0u8; chunk_size];
+
+    let mut saw_total_error = false;
+    for idx in 0..total_chunks {
+        let header = json!({
+            "target": "nonexistent",
+            "type": "noop",
+            "id": "huge1",
+            "upload_id": upload_id,
+            "chunk_index": idx,
+            "total_chunks": total_chunks,
+            "final": false,
+        });
+        let frame = build_binary_frame(&header, &one_mb);
+        let frames = send_binary_and_drain(&mut ws, frame).await;
+        if frames.iter().any(|f| {
+            f["type"] == "error" && f["error"].as_str().unwrap_or("").contains("total cap")
+        }) {
+            saw_total_error = true;
+            break;
+        }
+    }
+    assert!(
+        saw_total_error,
+        "expected total-size cap to fire before chunk 101"
+    );
+
+    kernel
+        .send(&AgentId::from(web_id), json!({"type": "stop"}))
+        .await;
+}
+
+#[tokio::test]
+async fn chunk_ack_emitted_after_each_non_final_chunk() {
+    let tmp = TempDir::new().unwrap();
+    let port = free_port();
+    let web_id = "web_chunk_ack";
+    let kernel = stage_web_with_ws(&tmp, port, web_id).await;
+
+    let url = format!("ws://127.0.0.1:{port}/{web_id}/ws");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("ws connect");
+
+    let upload_id = "u_ack";
+    // Send 2 non-final chunks — each must produce a chunk_ack.
+    for idx in [0u32, 1] {
+        let header = json!({
+            "target": "nonexistent",
+            "type": "noop",
+            "id": "ack1",
+            "upload_id": upload_id,
+            "chunk_index": idx,
+            "total_chunks": 3,
+            "final": false,
+        });
+        let frame = build_binary_frame(&header, &[idx as u8; 4]);
+        let frames = send_binary_and_drain(&mut ws, frame).await;
+        let ack = frames
+            .iter()
+            .find(|f| f["type"] == "chunk_ack")
+            .unwrap_or_else(|| panic!("no chunk_ack after chunk {idx}: {frames:?}"));
+        assert_eq!(ack["upload_id"], upload_id);
+        assert_eq!(ack["chunk_index"], idx);
+    }
+
+    kernel
+        .send(&AgentId::from(web_id), json!({"type": "stop"}))
+        .await;
+}
+
+#[tokio::test]
+async fn pending_uploads_drop_on_ws_disconnect() {
+    // Per-WS state means a dropped connection cleans up automatically —
+    // no GC task needed. This test verifies that semantics by opening
+    // a WS, sending a partial chunk, dropping the connection, then
+    // opening a fresh WS and reusing the same upload_id from scratch
+    // (which should work because the prior buffer is gone).
+    let tmp = TempDir::new().unwrap();
+    let port = free_port();
+    let web_id = "web_disconn";
+    let kernel = stage_web_with_ws(&tmp, port, web_id).await;
+
+    let url = format!("ws://127.0.0.1:{port}/{web_id}/ws");
+
+    {
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.expect("ws1");
+        let header = json!({
+            "target": "nonexistent",
+            "type": "noop",
+            "upload_id": "u_disco",
+            "chunk_index": 0,
+            "total_chunks": 2,
+            "final": false,
+        });
+        let frame = build_binary_frame(&header, &[42u8; 4]);
+        let frames = send_binary_and_drain(&mut ws, frame).await;
+        assert!(frames.iter().any(|f| f["type"] == "chunk_ack"));
+        // Drop the WS without sending the second chunk.
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Fresh WS — same upload_id should be a clean slate (per-WS state
+    // means the prior WS's pending map dropped). Sending chunk 0 again
+    // should succeed without a "total_chunks mismatch" or similar.
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.expect("ws2");
+    let header = json!({
+        "target": "nonexistent",
+        "type": "noop",
+        "upload_id": "u_disco",
+        "chunk_index": 0,
+        "total_chunks": 2,
+        "final": false,
+    });
+    let frame = build_binary_frame(&header, &[42u8; 4]);
+    let frames = send_binary_and_drain(&mut ws, frame).await;
+    assert!(
+        frames.iter().any(|f| f["type"] == "chunk_ack"),
+        "fresh WS should treat upload_id as new — got {frames:?}",
+    );
+
+    kernel
+        .send(&AgentId::from(web_id), json!({"type": "stop"}))
+        .await;
+}

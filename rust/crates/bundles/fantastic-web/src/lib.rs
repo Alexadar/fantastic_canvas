@@ -753,6 +753,12 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
     let n = NEXT_CLIENT_HEX.fetch_add(1, Ordering::SeqCst);
     let client_id = AgentId::from(format!("_ws_{n:06x}").as_str());
 
+    // Per-WS chunked-upload reassembly state. Lives in the ws_loop scope
+    // so it drops on disconnect — no GC task needed for the "dead client"
+    // case. Memory is bounded by MAX_CONCURRENT_UPLOADS × MAX_UPLOAD_SIZE.
+    let pending_uploads: Arc<std::sync::Mutex<std::collections::HashMap<String, ChunkBuffer>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
     let (mut sink, mut stream) = socket.split();
 
     // Spawn a watcher-drain task: pulls events from the client's
@@ -794,7 +800,7 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
         let text = match msg {
             Ok(Message::Text(t)) => t,
             Ok(Message::Binary(bytes)) => {
-                handle_binary_frame(&state, &client_id, &out_tx, bytes).await;
+                handle_binary_frame(&state, &client_id, &out_tx, &pending_uploads, bytes).await;
                 continue;
             }
             Ok(Message::Close(_)) | Err(_) => break,
@@ -881,6 +887,32 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
     send_task.abort();
 }
 
+/// Maximum size of a single binary WS frame's blob payload. Frames
+/// larger than this are rejected with an error reply.
+const MAX_CHUNK_SIZE: usize = 1_048_576; // 1 MB
+
+/// Maximum total size of a reassembled chunked upload. Sum of all
+/// chunks; chunks that would push past this cap are rejected.
+const MAX_UPLOAD_SIZE: usize = 100 * 1_048_576; // 100 MB
+
+/// Maximum concurrent in-flight chunked uploads per WS connection.
+const MAX_CONCURRENT_UPLOADS: usize = 16;
+
+/// Per-upload reassembly buffer. Lives in a per-WS map keyed by
+/// `upload_id`; drops on WS disconnect or on successful final dispatch.
+struct ChunkBuffer {
+    /// Chunks indexed by `chunk_index`. BTreeMap keeps them sorted
+    /// so concatenation is in-order regardless of arrival order.
+    chunks: std::collections::BTreeMap<u32, Vec<u8>>,
+    /// Declared total chunk count (must match across every chunk).
+    total: u32,
+    /// Cumulative byte count across all chunks received so far.
+    cumulative_bytes: usize,
+    /// First chunk's header (with chunking fields stripped) — used as
+    /// the dispatched header when the upload finalizes.
+    base_header: Value,
+}
+
 /// Decode a binary WS frame and dispatch it through
 /// [`Kernel::send_with_binary`]. Frame shape (matches Python's wire):
 ///
@@ -891,6 +923,25 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
 /// `header` must carry at least `target` (agent id); `id` (if present)
 /// rides through to the reply frame so callers can correlate.
 ///
+/// ## Chunked uploads (opt-in)
+///
+/// For payloads larger than `MAX_CHUNK_SIZE`, callers can chunk by
+/// adding these optional fields to the header:
+///
+/// - `upload_id`: stable string tying all chunks of one upload
+/// - `chunk_index`: 0-based index of this chunk
+/// - `total_chunks`: declared chunk count (must match across chunks)
+/// - `final`: `true` on the last chunk; triggers reassembly + dispatch
+///
+/// Server-side: chunks accumulate in a per-WS `pending_uploads` map.
+/// On the final chunk, the full blob is concatenated in chunk-index
+/// order, the chunking fields are stripped from the header, and the
+/// dispatch happens via `kernel.send_with_binary` exactly as if a
+/// single-frame upload had been sent.
+///
+/// Frames without `upload_id` take the single-frame fast path
+/// (current behaviour, byte-compatible with Python's wire).
+///
 /// On any decode error the frame is dropped silently (we log a debug
 /// trace) — the WS stays open. The shape is documented + a single
 /// malformed frame from a JS client shouldn't kill the channel.
@@ -898,6 +949,7 @@ async fn handle_binary_frame(
     state: &AppState,
     client_id: &AgentId,
     out_tx: &tokio::sync::mpsc::Sender<String>,
+    pending_uploads: &Arc<std::sync::Mutex<std::collections::HashMap<String, ChunkBuffer>>>,
     bytes: Vec<u8>,
 ) {
     if bytes.len() < 4 {
@@ -930,12 +982,56 @@ async fn handle_binary_frame(
         }
     };
     let blob = bytes[4 + hdr_len..].to_vec();
+    let id = header.get("id").cloned();
+
+    // Per-frame chunk size cap (applies to both single-frame uploads and
+    // individual chunks of a chunked upload).
+    if blob.len() > MAX_CHUNK_SIZE {
+        let _ = out_tx
+            .send(
+                json!({
+                    "type": "error",
+                    "id": id,
+                    "error": format!(
+                        "binary frame: blob {} bytes exceeds chunk cap {}",
+                        blob.len(),
+                        MAX_CHUNK_SIZE,
+                    ),
+                })
+                .to_string(),
+            )
+            .await;
+        return;
+    }
+
+    // Chunked upload? Check for upload_id; otherwise fall through to
+    // the single-frame fast path.
+    let upload_id = header
+        .get("upload_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    if let Some(upload_id) = upload_id {
+        handle_chunked_frame(
+            state,
+            client_id,
+            out_tx,
+            pending_uploads,
+            upload_id,
+            header,
+            id.unwrap_or(Value::Null),
+            blob,
+        )
+        .await;
+        return;
+    }
+
+    // Single-frame upload — existing dispatch path.
     let Some(target_str) = header.get("target").and_then(Value::as_str) else {
         tracing::debug!("ws binary frame: header missing target");
         return;
     };
     let target = AgentId::from(target_str);
-    let id = header.get("id").cloned();
 
     let kernel = Arc::clone(&state.kernel);
     let sender_for_scope = client_id.clone();
@@ -948,11 +1044,6 @@ async fn handle_binary_frame(
                 .await
         })
         .await;
-        // Reply over the same WS as a Text frame matching the existing
-        // shape — `id` is carried through (if present) so callers can
-        // correlate with the original frame. If the request had no
-        // `id`, the reply just omits it; the client can choose to
-        // ignore replies it didn't ask for.
         let frame = if reply.get("error").is_some() {
             json!({
                 "type": "error",
@@ -968,6 +1059,223 @@ async fn handle_binary_frame(
         };
         let _ = out.send(frame.to_string()).await;
     });
+}
+
+/// Handle one chunk of a chunked upload. Either appends to the
+/// reassembly buffer + acks (non-final), or assembles + dispatches
+/// (final). Per-WS state, no global locks.
+#[allow(clippy::too_many_arguments)]
+async fn handle_chunked_frame(
+    state: &AppState,
+    client_id: &AgentId,
+    out_tx: &tokio::sync::mpsc::Sender<String>,
+    pending_uploads: &Arc<std::sync::Mutex<std::collections::HashMap<String, ChunkBuffer>>>,
+    upload_id: String,
+    mut header: Value,
+    id: Value,
+    blob: Vec<u8>,
+) {
+    let chunk_index = match header.get("chunk_index").and_then(Value::as_u64) {
+        Some(n) if n <= u32::MAX as u64 => n as u32,
+        _ => {
+            let _ = out_tx
+                .send(
+                    json!({
+                        "type": "error",
+                        "id": id,
+                        "error": "chunked upload: chunk_index required (u32)",
+                    })
+                    .to_string(),
+                )
+                .await;
+            return;
+        }
+    };
+    let total_chunks = match header.get("total_chunks").and_then(Value::as_u64) {
+        Some(n) if n >= 1 && n <= u32::MAX as u64 => n as u32,
+        _ => {
+            let _ = out_tx
+                .send(
+                    json!({
+                        "type": "error",
+                        "id": id,
+                        "error": "chunked upload: total_chunks required (u32 ≥ 1)",
+                    })
+                    .to_string(),
+                )
+                .await;
+            return;
+        }
+    };
+    let is_final = header
+        .get("final")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    if chunk_index >= total_chunks {
+        let _ = out_tx
+            .send(
+                json!({
+                    "type": "error",
+                    "id": id,
+                    "error": format!(
+                        "chunked upload: chunk_index {chunk_index} >= total_chunks {total_chunks}",
+                    ),
+                })
+                .to_string(),
+            )
+            .await;
+        return;
+    }
+
+    // Build base_header (header with chunking fields stripped) before we
+    // borrow it for the assembled dispatch later.
+    if let Some(obj) = header.as_object_mut() {
+        obj.remove("upload_id");
+        obj.remove("chunk_index");
+        obj.remove("total_chunks");
+        obj.remove("final");
+    }
+
+    // Outcome of the locked block — either `Ok(Some(...))` (final chunk
+    // ready to dispatch), `Ok(None)` (non-final, expect ack), or
+    // `Err(msg)` (validation failure; map entry already cleaned up).
+    let outcome: Result<Option<(Value, Vec<u8>)>, String> = {
+        let mut map = pending_uploads.lock().expect("pending_uploads poisoned");
+
+        // Cap concurrent uploads BEFORE inserting a new id.
+        if !map.contains_key(&upload_id) && map.len() >= MAX_CONCURRENT_UPLOADS {
+            Err(format!(
+                "chunked upload: concurrent upload cap {MAX_CONCURRENT_UPLOADS} reached",
+            ))
+        } else {
+            // Insert if missing, then validate against any prior state.
+            let entry_existed = map.contains_key(&upload_id);
+            let buf = map.entry(upload_id.clone()).or_insert_with(|| ChunkBuffer {
+                chunks: std::collections::BTreeMap::new(),
+                total: total_chunks,
+                cumulative_bytes: 0,
+                base_header: header.clone(),
+            });
+
+            // total_chunks must agree across every chunk.
+            if entry_existed && buf.total != total_chunks {
+                let prior = buf.total;
+                map.remove(&upload_id);
+                Err(format!(
+                    "chunked upload: total_chunks mismatch (saw {prior}, now {total_chunks})",
+                ))
+            } else {
+                let projected = buf.cumulative_bytes.saturating_add(blob.len());
+                if projected > MAX_UPLOAD_SIZE {
+                    map.remove(&upload_id);
+                    Err(format!(
+                        "chunked upload: projected {projected} bytes exceeds total cap {MAX_UPLOAD_SIZE}",
+                    ))
+                } else {
+                    buf.cumulative_bytes = projected;
+                    buf.chunks.insert(chunk_index, blob);
+
+                    if is_final {
+                        let total_seen = buf.chunks.len() as u32;
+                        let total_expected = buf.total;
+                        if total_seen != total_expected {
+                            map.remove(&upload_id);
+                            Err(format!(
+                                "chunked upload: final received but {} chunk(s) missing",
+                                total_expected - total_seen,
+                            ))
+                        } else {
+                            let removed = map.remove(&upload_id).expect("entry just inserted");
+                            let mut full = Vec::with_capacity(removed.cumulative_bytes);
+                            for (_, chunk) in removed.chunks {
+                                full.extend_from_slice(&chunk);
+                            }
+                            Ok(Some((removed.base_header, full)))
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                }
+            }
+        }
+    };
+
+    let assembled: Option<(Value, Vec<u8>)> = match outcome {
+        Ok(v) => v,
+        Err(msg) => {
+            let _ = out_tx
+                .send(
+                    json!({
+                        "type": "error",
+                        "id": id,
+                        "error": msg,
+                    })
+                    .to_string(),
+                )
+                .await;
+            return;
+        }
+    };
+
+    match assembled {
+        Some((base_header, full_blob)) => {
+            // Dispatch the reassembled upload exactly like a single-frame.
+            let Some(target_str) = base_header.get("target").and_then(Value::as_str) else {
+                let _ = out_tx
+                    .send(
+                        json!({
+                            "type": "error",
+                            "id": id,
+                            "error": "chunked upload: assembled header missing target",
+                        })
+                        .to_string(),
+                    )
+                    .await;
+                return;
+            };
+            let target = AgentId::from(target_str);
+            let kernel = Arc::clone(&state.kernel);
+            let sender_for_scope = client_id.clone();
+            let out = out_tx.clone();
+            tokio::spawn(async move {
+                let reply = fantastic_kernel::send::with_sender(sender_for_scope, async {
+                    kernel
+                        .send_with_binary(&target, base_header, full_blob)
+                        .await
+                })
+                .await;
+                let frame = if reply.get("error").is_some() {
+                    json!({
+                        "type": "error",
+                        "id": id,
+                        "error": reply.get("error").and_then(Value::as_str).unwrap_or("error").to_string(),
+                    })
+                } else {
+                    json!({
+                        "type": "reply",
+                        "id": id,
+                        "data": reply,
+                    })
+                };
+                let _ = out.send(frame.to_string()).await;
+            });
+        }
+        None => {
+            // Non-final chunk — emit a chunk_ack so the client can
+            // flow-control its upload pipeline.
+            let _ = out_tx
+                .send(
+                    json!({
+                        "type": "chunk_ack",
+                        "upload_id": upload_id,
+                        "chunk_index": chunk_index,
+                    })
+                    .to_string(),
+                )
+                .await;
+        }
+    }
 }
 
 // ─── REST surface ───────────────────────────────────────────────────
