@@ -7,3 +7,16 @@ target/
 # Runtime state — tests that drive the CLI may leak this if
 # they forget to use a tempdir for their workdir.
 .fantastic/
+
+# Swift Package build artifacts — built fresh by
+# `scripts/build-xcframework.sh`. Not committed (each .a slice is
+# ~40 MB; the XCFramework totals ~160 MB which is over GitHub's
+# 100 MB single-file limit). Operators build locally OR pull from a
+# tagged GH Release.
+packaging/FantasticKernel/Fantastic.xcframework/
+packaging/FantasticKernel/.build/
+
+# UniFFI auto-generates fantastic.swift from the UDL at xcframework
+# build time. Build product, not source. The hand-written
+# `FantasticKernel.swift` wrapper IS committed.
+packaging/FantasticKernel/Sources/FantasticKernel/fantastic.swift

@@ -10,17 +10,25 @@ trigger is fully manual — there is no scheduled or auto-tag release.
 
 ## Targets
 
-Every release builds four targets:
+Every release builds four targets, named for the `(os, arch)` pair
+the consumer cares about — not the Rust triple — so URLs read
+naturally and the iOS / Mac apps can pick the right tarball with one
+`uname -m` lookup:
 
-| triple | host needs |
-|---|---|
-| `aarch64-apple-darwin` | M-series Macs |
-| `x86_64-apple-darwin` | Intel Macs |
-| `x86_64-unknown-linux-gnu` | most Linux servers (glibc ≥ 2.28) |
-| `aarch64-unknown-linux-gnu` | ARM Linux (AWS Graviton, RPi server) |
+| asset | Rust triple | host needs |
+|---|---|---|
+| `fantastic-macos-aarch64.tar.gz` | `aarch64-apple-darwin` | M-series Macs |
+| `fantastic-macos-x86_64.tar.gz` | `x86_64-apple-darwin` | Intel Macs |
+| `fantastic-linux-aarch64.tar.gz` | `aarch64-unknown-linux-musl` | ARM Linux (AWS Graviton, RPi server) — self-contained, no glibc dep |
+| `fantastic-linux-x86_64.tar.gz` | `x86_64-unknown-linux-musl` | most Linux servers — self-contained, no glibc dep |
 
-Each target is packaged as `fantastic-rust-<triple>.tar.gz` containing
-a single `fantastic` binary at the archive root. Extract directly:
+Linux targets are **musl-static**, so the SSH-bootstrap binary runs
+on any kernel ≥ 3.2 without caring what glibc version the remote host
+has. macOS targets are native (no static-link special-casing — Apple
+ships their own libc).
+
+Each tarball holds a single `fantastic` binary at the archive root.
+Extract directly:
 
 ```bash
 curl -fsSL <url> | tar -xzC ~/.local/bin
@@ -33,14 +41,14 @@ After a successful release at tag `rust-v0.1.0`:
 
 ```
 # Version-pinned (recommended for CI / reproducible installs):
-https://github.com/Alexadar/fantastic_canvas/releases/download/rust-v0.1.0/fantastic-rust-aarch64-apple-darwin.tar.gz
+https://github.com/Alexadar/fantastic_canvas/releases/download/rust-v0.1.0/fantastic-macos-aarch64.tar.gz
 
 # Floating "latest" (GitHub redirects to whatever's marked latest):
-https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-rust-aarch64-apple-darwin.tar.gz
+https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-macos-aarch64.tar.gz
 ```
 
-Also at the release page: `sha256sums-rust.txt` with checksums for
-every artifact.
+Also at the release page: `sha256sums.txt` with checksums for every
+artifact.
 
 ## How to cut a release
 
@@ -88,11 +96,16 @@ the checksums file, and marks the tag as `latest`.
 
 ```bash
 # Pinned URL works
-curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/download/rust-v0.1.0/fantastic-rust-x86_64-unknown-linux-gnu.tar.gz \
+curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/download/rust-v0.1.0/fantastic-linux-x86_64.tar.gz \
   | head -1   # → HTTP/2 302  (GH redirects to the CDN)
 
 # Floating-latest URL works
-curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-rust-aarch64-apple-darwin.tar.gz \
+curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-macos-aarch64.tar.gz \
+  | head -1
+
+# The Apple Swift Package bundle (xcframework + bindings) is also
+# attached at every release:
+curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-xcframework-apple.tar.gz \
   | head -1
 ```
 
@@ -136,23 +149,61 @@ Two reasons:
    doesn't run them. Operator has to consciously fire CI by pushing
    the tag. No "auto-release on merge" surprises.
 
-## Consuming the release (forward-looking)
+## Consuming the release
 
-The eventual `fantastic-ssh-runner` bootstrap will pull a binary onto
-a remote host:
+### SSH bootstrap (Linux + macOS server hosts)
+
+`fantastic-ssh-runner` and `fantastic_app`'s iOS SSH client use this
+one-liner to bootstrap a binary on a remote host:
 
 ```bash
-# detect platform, pull matching tarball, untar to ~/.local/bin
 arch=$(uname -m); os=$(uname -s | tr '[:upper:]' '[:lower:]')
-case "$os-$arch" in
-  linux-x86_64)  T=x86_64-unknown-linux-gnu ;;
-  linux-aarch64) T=aarch64-unknown-linux-gnu ;;
-  darwin-arm64)  T=aarch64-apple-darwin ;;
-  darwin-x86_64) T=x86_64-apple-darwin ;;
-esac
-curl -fsSL "https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-rust-$T.tar.gz" \
+[ "$arch" = "arm64" ] && arch=aarch64    # macOS reports arm64; we use aarch64
+curl -fsSL "https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-${os}-${arch}.tar.gz" \
   | tar -xzC ~/.local/bin
+~/.local/bin/fantastic --help
 ```
 
-That bootstrap is the runner's job (separate work). This document just
-ensures the URLs that bootstrap depends on are stable.
+The 4 supported `${os}-${arch}` combinations are listed in the
+"Targets" table at the top.
+
+### Swift Package consumer (fantastic_app — Apple Lite)
+
+The release also includes a `fantastic-xcframework-apple.tar.gz`
+containing the entire `FantasticKernel/` Swift Package — XCFramework
+(3 slices: iOS device, iOS sim, macOS universal), generated Swift
+bindings, the `FantasticKernel.swift` wrapper, and `Package.swift`.
+
+Two consumption paths:
+
+**(a) Local dev / iteration** — clone fantastic_canvas next to
+fantastic_app, then point the Xcode project at the local SPM dir:
+
+```swift
+// Package.swift in fantastic_app — uses path:
+.package(path: "../fantastic_canvas/rust/packaging/FantasticKernel"),
+```
+
+The xcframework is gitignored but produced fresh by:
+
+```bash
+cd fantastic_canvas/rust && ./scripts/build-xcframework.sh
+```
+
+**(b) Production / CI** — pull the tagged release bundle:
+
+```bash
+curl -fsSL "https://github.com/Alexadar/fantastic_canvas/releases/download/rust-v0.1.0/fantastic-xcframework-apple.tar.gz" \
+  | tar -xz   # extracts FantasticKernel/ in cwd
+```
+
+Then point the Xcode project at that extracted dir, or vendor it
+into the repo at a known path.
+
+### Why xcframework isn't in git
+
+It's 158 MB total (3 static-lib slices at ~40-80 MB each). GitHub's
+hard limit on a single file is 100 MB, and `fantastic.swift` is
+auto-generated from the UDL anyway — both are build products, not
+sources. Standard UniFFI / Rust convention. The release artifact +
+the local build script cover both consumption paths.
