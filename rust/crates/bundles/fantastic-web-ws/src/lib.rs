@@ -95,10 +95,17 @@ fn parent_id(agent_id: &AgentId, kernel: &Kernel) -> String {
 
 /// Compose the WS path from the parent web agent's id. Format matches
 /// Python's `/<host_id>/ws`. The parent agent id is the path's host
-/// segment; axum's matchit needs a concrete prefix (no `{host_id}`
-/// placeholder) so we substitute at mount time.
-fn ws_path(parent: &str) -> String {
-    format!("/{parent}/ws")
+/// WS route is a wildcard: `/{host_id}/ws` matches any path segment +
+/// `/ws`. This mirrors Python's web_ws — transport.js running on any
+/// served page (e.g. `/cw/`, `/chat/`, `/tw/`) connects to
+/// `/<that-page-id>/ws` and the same handler accepts it. The path
+/// param is used as a synthetic host_id label for telemetry; the
+/// underlying WS proxy doesn't care which agent the page was for.
+///
+/// `parent` argument retained so reflect can still report `mounted_on`
+/// — actual mount path is the wildcard.
+fn ws_path(_parent: &str) -> String {
+    "/{host_id}/ws".to_string()
 }
 
 #[cfg(test)]

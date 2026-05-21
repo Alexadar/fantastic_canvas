@@ -320,7 +320,7 @@ fn build_router(state: AppState) -> Router {
     // `:agent_id/file/*path` syntax so the wildcard sits at the
     // trailing position cleanly.
     Router::new()
-        .route("/", get(serve_root_index))
+        .route("/", get(serve_root_index_dynamic))
         .route("/transport.js", get(serve_transport_js))
         .route("/favicon.ico", get(serve_favicon))
         .route("/:agent_id/file/*path", get(serve_file_proxy))
@@ -599,8 +599,133 @@ async fn serve_rest_reflect_dynamic(
         .into_response()
 }
 
+/// Static fallback used by tests + by the dynamic handler when reflect
+/// fails. Kept for backwards-compat with the pre-dynamic-mount tests.
+#[allow(dead_code)]
 async fn serve_root_index() -> impl IntoResponse {
     Html(ROOT_INDEX_HTML)
+}
+
+/// Dynamic root index: walks the substrate tree, probes each agent
+/// for `render_html` / `get_webapp` in parallel, renders the same
+/// nested-tree HTML Python's `_index_page` does. Template body is
+/// the `{{tree_body}}` placeholder in `index.html`.
+async fn serve_root_index_dynamic(State(state): State<AppState>) -> impl IntoResponse {
+    let kernel = Arc::clone(&state.kernel);
+
+    // Pull the substrate primer to get the tree.
+    let primer = kernel
+        .send(&AgentId::from("kernel"), serde_json::json!({"type":"reflect"}))
+        .await;
+    let tree = primer.get("tree").cloned().unwrap_or(Value::Null);
+
+    // Collect every agent id from the tree (depth-first).
+    fn collect_ids(node: &Value, out: &mut Vec<String>) {
+        let Some(obj) = node.as_object() else { return };
+        if let Some(id) = obj.get("id").and_then(Value::as_str) {
+            out.push(id.to_string());
+        }
+        if let Some(children) = obj.get("children").and_then(Value::as_array) {
+            for c in children {
+                collect_ids(c, out);
+            }
+        }
+    }
+    let mut ids = Vec::new();
+    collect_ids(&tree, &mut ids);
+
+    // Probe each agent for render_html or get_webapp IN PARALLEL.
+    let probes = ids.iter().map(|id| {
+        let kernel = Arc::clone(&kernel);
+        let id = id.clone();
+        async move {
+            // Try render_html first.
+            let r = kernel
+                .send(
+                    &AgentId::from(id.as_str()),
+                    serde_json::json!({"type":"render_html"}),
+                )
+                .await;
+            if r.get("html").and_then(Value::as_str).is_some() {
+                return (id, true);
+            }
+            // Then get_webapp.
+            let r = kernel
+                .send(
+                    &AgentId::from(id.as_str()),
+                    serde_json::json!({"type":"get_webapp"}),
+                )
+                .await;
+            if r.get("url").is_some() && r.get("error").is_none() {
+                return (id, true);
+            }
+            (id, false)
+        }
+    });
+    let probe_results = futures_util::future::join_all(probes).await;
+    let mut has_html = std::collections::HashMap::<String, bool>::new();
+    for (id, ok) in probe_results {
+        has_html.insert(id, ok);
+    }
+
+    fn html_escape(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    }
+
+    fn render_node(node: &Value, has_html: &std::collections::HashMap<String, bool>) -> String {
+        let Some(obj) = node.as_object() else { return String::new() };
+        let aid = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let name = obj
+            .get("display_name")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&aid)
+            .to_string();
+        let hm = obj
+            .get("handler_module")
+            .and_then(Value::as_str)
+            .unwrap_or("(root)")
+            .to_string();
+        let visit = if *has_html.get(&aid).unwrap_or(&false) {
+            format!(r#"<a class="visit" href="/{}/" title="open agent UI">↗</a>"#, aid)
+        } else {
+            String::new()
+        };
+        let kids_html = if let Some(children) = obj.get("children").and_then(Value::as_array) {
+            if children.is_empty() {
+                String::new()
+            } else {
+                let inner: String = children
+                    .iter()
+                    .map(|c| render_node(c, has_html))
+                    .collect();
+                format!("<ul>{inner}</ul>")
+            }
+        } else {
+            String::new()
+        };
+        format!(
+            r#"<li><span class="id">{}</span> {} <code>{}</code> <span class="hm">{}</span>{}</li>"#,
+            html_escape(&name),
+            visit,
+            html_escape(&aid),
+            html_escape(&hm),
+            kids_html,
+        )
+    }
+
+    let body = if tree.is_object() {
+        render_node(&tree, &has_html)
+    } else {
+        "<li><em>empty tree</em></li>".to_string()
+    };
+
+    let page = ROOT_INDEX_HTML.replace("{{tree_body}}", &body);
+    Html(page).into_response()
 }
 
 async fn serve_transport_js() -> impl IntoResponse {
@@ -835,23 +960,19 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
                     })
                     .await;
                     if let Some(id) = id {
-                        let frame = if reply.get("error").is_some() {
-                            serde_json::json!({
-                                "type": "error",
-                                "id": id,
-                                "error": reply
-                                    .get("error")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("error")
-                                    .to_string(),
-                            })
-                        } else {
-                            serde_json::json!({
-                                "type": "reply",
-                                "id": id,
-                                "data": reply,
-                            })
-                        };
+                        // Always wrap as `type:"reply"` with the verb's
+                        // reply inside `data`. Verb-level errors travel
+                        // inside `data.error` (Python's wire shape). The
+                        // separate `type:"error"` frame is reserved for
+                        // out-of-band failures the caller's promise
+                        // can't resolve from data alone — those don't
+                        // exist on this path (every verb returns a
+                        // dict, even on failure).
+                        let frame = serde_json::json!({
+                            "type": "reply",
+                            "id": id,
+                            "data": reply,
+                        });
                         let _ = out.send(frame.to_string()).await;
                     }
                 });
@@ -1044,19 +1165,12 @@ async fn handle_binary_frame(
                 .await
         })
         .await;
-        let frame = if reply.get("error").is_some() {
-            json!({
-                "type": "error",
-                "id": id,
-                "error": reply.get("error").and_then(Value::as_str).unwrap_or("error").to_string(),
-            })
-        } else {
-            json!({
-                "type": "reply",
-                "id": id,
-                "data": reply,
-            })
-        };
+        // Verb-level errors live inside `data.error` (Python wire shape).
+        let frame = json!({
+            "type": "reply",
+            "id": id,
+            "data": reply,
+        });
         let _ = out.send(frame.to_string()).await;
     });
 }
@@ -1245,19 +1359,12 @@ async fn handle_chunked_frame(
                         .await
                 })
                 .await;
-                let frame = if reply.get("error").is_some() {
-                    json!({
-                        "type": "error",
-                        "id": id,
-                        "error": reply.get("error").and_then(Value::as_str).unwrap_or("error").to_string(),
-                    })
-                } else {
-                    json!({
-                        "type": "reply",
-                        "id": id,
-                        "data": reply,
-                    })
-                };
+                // Verb-level errors live inside `data.error` (Python wire shape).
+                let frame = json!({
+                    "type": "reply",
+                    "id": id,
+                    "data": reply,
+                });
                 let _ = out.send(frame.to_string()).await;
             });
         }
