@@ -150,7 +150,7 @@ Regression signal: `tunnel failed: …` → SSH key or host lookup
 problem (try `ssh $HOST 'echo ok'` first); `tunnel_pid: null` after
 boot → ServerAliveCountMax tripped early (network flaky); reflect
 returns kernel B's bridge id instead of `core` → peer_id
-mis-configured.
+misconfigured.
 
 ## Summary
 
