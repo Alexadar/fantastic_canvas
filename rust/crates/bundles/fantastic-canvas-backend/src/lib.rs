@@ -145,13 +145,26 @@ async fn add_agent_reply(canvas_id: &AgentId, payload: &Value, kernel: &Arc<Kern
         return json!({"error": "add_agent: requires handler_module or agent_id"});
     };
 
-    // Verify the new member answers get_webapp (or future get_gl_view).
-    let probe = kernel
+    // Verify the new member answers either renderable verb. Probe
+    // both `get_webapp` (DOM iframe contract: `{url, ...}`) and
+    // `get_gl_view` (WebGL contract: `{glsl_source | source, ...}`)
+    // — Python parity (`canvas_backend/tools.py:119-129`). gl_agent
+    // + telemetry_pane only answer the GL verb; without this probe
+    // they can't sit on a Rust canvas.
+    let wa = kernel
         .send(&new_member_id, json!({"type": "get_webapp"}))
         .await;
-    let answers_webapp =
-        probe.is_object() && probe.get("error").is_none() && probe.get("url").is_some();
-    if !answers_webapp {
+    let has_dom = wa.is_object() && wa.get("error").is_none() && wa.get("url").is_some();
+    let gl = kernel
+        .send(&new_member_id, json!({"type": "get_gl_view"}))
+        .await;
+    // Accept both `glsl_source` (canonical post-Tier-A-rename) and
+    // `source` (legacy spelling kept for cross-runtime workdir
+    // loading). Mirrors Python's `has_gl` check.
+    let has_gl = gl.is_object()
+        && gl.get("error").is_none()
+        && (gl.get("glsl_source").is_some() || gl.get("source").is_some());
+    if !(has_dom || has_gl) {
         // Cascade-delete the just-spawned member — canvas-eligible
         // requires a UI verb.
         kernel
@@ -162,7 +175,7 @@ async fn add_agent_reply(canvas_id: &AgentId, payload: &Value, kernel: &Arc<Kern
             .await;
         return json!({
             "error": format!(
-                "add_agent: member {} does not answer get_webapp; refused",
+                "add_agent: '{}' answers neither get_webapp nor get_gl_view; nothing to render",
                 new_member_id,
             ),
         });
@@ -193,7 +206,11 @@ async fn remove_agent_reply(canvas_id: &AgentId, payload: &Value, kernel: &Arc<K
         None => return json!({"error": format!("no canvas {canvas_id}")}),
     };
     if !canvas.has_child(&target_id) {
-        return json!({"error": format!("agent {target_id} is not a member of {canvas_id}")});
+        // Idempotent — Python parity (`canvas_backend/tools.py:150-151`).
+        // Caller can retry remove_agent safely; the second call is a
+        // no-op rather than an error.
+        let members: Vec<String> = canvas.child_ids().into_iter().map(|i| i.0).collect();
+        return json!({"removed": false, "members": members});
     }
     let del = kernel
         .send(
@@ -228,6 +245,12 @@ fn discover_reply(canvas_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>) ->
     let by = payload.get("y").and_then(Value::as_f64).unwrap_or(0.0);
     let bw = payload.get("w").and_then(Value::as_f64).unwrap_or(0.0);
     let bh = payload.get("h").and_then(Value::as_f64).unwrap_or(0.0);
+    // Python parity (`canvas_backend/tools.py:170-171`) — a zero/
+    // negative box is a caller bug, not "no hits". Returning an
+    // explicit error matches the Python selftest's Test 2 assertion.
+    if bw <= 0.0 || bh <= 0.0 {
+        return json!({"error": "discover: w and h required and > 0"});
+    }
     let mut hits: Vec<String> = Vec::new();
     for cid in canvas.child_ids() {
         let Some(child) = kernel.agents.get(&cid).map(|e| Arc::clone(&e)) else {

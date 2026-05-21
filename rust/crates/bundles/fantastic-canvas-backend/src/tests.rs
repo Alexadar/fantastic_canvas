@@ -57,11 +57,42 @@ impl Bundle for NoUiStub {
     }
 }
 
+/// A bundle that answers ONLY `get_gl_view` (no get_webapp). Mirrors
+/// real gl_agent / telemetry_pane — they're canvas-renderable via the
+/// WebGL contract, not the DOM iframe one.
+struct GlOnlyStub;
+#[async_trait]
+impl Bundle for GlOnlyStub {
+    fn name(&self) -> &str {
+        "gl_only"
+    }
+    async fn handle(
+        &self,
+        agent_id: &AgentId,
+        payload: &Value,
+        _k: &Arc<Kernel>,
+    ) -> Result<Reply, BundleError> {
+        let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
+        Ok(Some(match verb {
+            "get_gl_view" => json!({
+                "glsl_source": "// stub",
+                "default_width": 800,
+                "default_height": 600,
+                "title": "gl",
+            }),
+            "reflect" => json!({"id": agent_id.as_str(), "sentence": "gl stub"}),
+            "boot" | "shutdown" => Value::Null,
+            other => json!({"error": format!("unknown {other:?}")}),
+        }))
+    }
+}
+
 async fn mk_kernel(tmp: &TempDir) -> Arc<Kernel> {
     let mut kernel = Kernel::new();
     kernel.bundles.register(HANDLER_MODULE, CanvasBackendBundle);
     kernel.bundles.register("ui.tools", UiStub);
     kernel.bundles.register("no_ui.tools", NoUiStub);
+    kernel.bundles.register("gl_only.tools", GlOnlyStub);
     let kernel = Arc::new(kernel);
     let root = Agent::new(
         AgentId::from("core"),
@@ -125,7 +156,13 @@ async fn add_agent_with_non_ui_bundle_refused_and_rolled_back() {
             json!({"type":"add_agent","handler_module":"no_ui.tools","id":"bad1"}),
         )
         .await;
-    assert!(r["error"].as_str().unwrap().contains("does not answer"));
+    // Python parity (canvas_backend/tools.py:131-136) — error names
+    // both renderable verbs so the caller knows what shape was missing.
+    let err = r["error"].as_str().unwrap();
+    assert!(
+        err.contains("answers neither get_webapp nor get_gl_view"),
+        "expected Python-parity error, got: {err}"
+    );
     let list = kernel
         .send(&AgentId::from("canvas"), json!({"type": "list_members"}))
         .await;
@@ -179,4 +216,90 @@ async fn discover_returns_intersecting_members() {
     let ids: Vec<&str> = agents.iter().filter_map(|v| v.as_str()).collect();
     assert!(ids.contains(&"in1"));
     assert!(!ids.contains(&"out1"));
+}
+
+/// Gap 1 / Python parity: a member that answers ONLY `get_gl_view`
+/// (gl_agent, telemetry_pane) is canvas-renderable. Before the fix,
+/// canvas_backend probed `get_webapp` only and refused these.
+#[tokio::test]
+async fn add_agent_accepts_gl_view_only_member() {
+    let tmp = TempDir::new().unwrap();
+    let kernel = mk_kernel(&tmp).await;
+    let r = kernel
+        .send(
+            &AgentId::from("canvas"),
+            json!({"type":"add_agent","handler_module":"gl_only.tools","id":"gl1"}),
+        )
+        .await;
+    assert_eq!(r["ok"], true, "gl-only member rejected: {r}");
+    assert_eq!(r["member_id"], "gl1");
+    let members: Vec<&str> = r["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(members.contains(&"gl1"));
+}
+
+/// Gap 3 / Python parity: `discover` with w=0 or h=0 (or negative)
+/// returns an explicit error rather than silently returning no hits.
+#[tokio::test]
+async fn discover_refuses_zero_w_h() {
+    let tmp = TempDir::new().unwrap();
+    let kernel = mk_kernel(&tmp).await;
+    for box_ in [
+        json!({"type":"discover","x":0,"y":0,"w":0,"h":100}),
+        json!({"type":"discover","x":0,"y":0,"w":100,"h":0}),
+        json!({"type":"discover","x":0,"y":0,"w":-1,"h":100}),
+    ] {
+        let r = kernel.send(&AgentId::from("canvas"), box_).await;
+        let err = r["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("w and h required"),
+            "expected validation error, got: {r}"
+        );
+    }
+}
+
+/// Gap 4 / Python parity: `remove_agent` on an id that isn't a member
+/// is idempotent — returns `{removed: false, members: [...]}`, NOT an
+/// error. Callers can retry safely; the second call is a no-op.
+#[tokio::test]
+async fn remove_agent_idempotent_on_non_member() {
+    let tmp = TempDir::new().unwrap();
+    let kernel = mk_kernel(&tmp).await;
+    // (a) never-existed id
+    let r = kernel
+        .send(
+            &AgentId::from("canvas"),
+            json!({"type":"remove_agent","agent_id":"never_existed"}),
+        )
+        .await;
+    assert!(r.get("error").is_none(), "should not error: {r}");
+    assert_eq!(r["removed"], false);
+    assert!(r["members"].is_array());
+
+    // (b) double-remove of a real member
+    kernel
+        .send(
+            &AgentId::from("canvas"),
+            json!({"type":"add_agent","handler_module":"ui.tools","id":"twice"}),
+        )
+        .await;
+    let r1 = kernel
+        .send(
+            &AgentId::from("canvas"),
+            json!({"type":"remove_agent","agent_id":"twice"}),
+        )
+        .await;
+    assert_eq!(r1["removed"], true);
+    let r2 = kernel
+        .send(
+            &AgentId::from("canvas"),
+            json!({"type":"remove_agent","agent_id":"twice"}),
+        )
+        .await;
+    assert_eq!(r2["removed"], false);
+    assert!(r2.get("error").is_none());
 }
