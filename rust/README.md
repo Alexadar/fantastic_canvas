@@ -12,13 +12,13 @@ Production runtime — full parity with the Python reference kernel.
 |                                              | value                                   |
 |----------------------------------------------|-----------------------------------------|
 | Python bundles ported                        | **21 / 21**                             |
-| Cargo tests passing                          | **205+** (workspace, default features)  |
-| `clippy --workspace --all-targets -D warnings` | clean                                 |
-| `fmt --all -- --check`                       | clean                                   |
+| Cargo tests passing                          | **203** (workspace, default features)   |
+| `./scripts/quality.sh`                       | 8 / 8 PASS (compile, fmt, clippy, test, deny, audit, machete, tree) |
 | Feature gates                                | `full` (default) / `embedded` (iOS Lite)|
 | Embedded slice (`fantastic-uniffi` + `cli --no-default-features --features embedded`) | clean compile, subprocess-using bundles excluded |
 | Cross-runtime workdir                        | byte-identical `.fantastic/` round-trip |
 | Cold start                                   | 30 / 30 / 88 ms (virgin / hydrate / boot-to-listening) |
+| Prebuilt binaries                            | 4 targets (macOS arm64+x86_64, Linux x86_64+aarch64) via [RELEASING.md](RELEASING.md) |
 
 ## Why Rust
 
@@ -313,8 +313,22 @@ See [`selftest.md`](selftest.md) for the index + driving workflow.
 
 ## Pre-push checks
 
+Single command — `./scripts/quality.sh` runs the canonical gate
+(8 sections): `compile`, `fmt`, `clippy`, `test`, `deny`, `audit`,
+`machete`, `tree`. See the script header for what each does and
+`--install` for fetching missing tools (`cargo-deny`, `cargo-audit`,
+`cargo-machete`).
+
 ```bash
 cd rust
+./scripts/quality.sh                    # default — skip missing tools
+./scripts/quality.sh --install          # install missing tools first
+./scripts/quality.sh --section deny     # run one section only
+```
+
+The longer breakdown still works if you want to drive sections by hand:
+
+```bash
 cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
@@ -325,7 +339,10 @@ cargo check -p fantastic-uniffi --no-default-features --features embedded
 ./scripts/bench-coldstart.sh
 ```
 
-CI runs these on Linux + macOS via `.github/workflows/rust-build.yml`.
+CI runs the workspace tests on Linux + macOS via
+`.github/workflows/rust-build.yml`. Release builds (4-target tarballs)
+are driven by `.github/workflows/release-rust.yml` — see
+[`RELEASING.md`](RELEASING.md) for how to cut a release.
 
 ## License
 

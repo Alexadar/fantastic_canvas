@@ -12,8 +12,8 @@ format (`.fantastic/`) and the same HTTP + WebSocket wire protocol:
 
 ```
 fantastic_canvas/
-├── python/    reference implementation — uvicorn + FastAPI, 510+ tests
-└── rust/      drop-in port — axum + tokio, embeds into iOS/visionOS apps
+├── python/    reference implementation — uvicorn + FastAPI, 510 tests
+└── rust/      drop-in port — axum + tokio, 203 tests, ships prebuilt binaries
 ```
 
 - **Python** (`python/`) — the reference. Used today by the Pro Mac
@@ -62,16 +62,17 @@ and the bundle scoreboard.
 
 | path | content |
 |---|---|
-| [`python/`](python/) | reference kernel + 21 bundles + 530+ tests + selftests |
-| [`rust/`](rust/) | production runtime — 21-of-21 bundle port, 205+ cargo tests, iOS-safe embedded slice |
-| [`.github/workflows/`](.github/workflows/) | CI for both runtimes — `python-*.yml` (lint, tests) and `rust-*.yml` (build, xcframework, compat) |
+| [`python/`](python/) | reference kernel + 21 bundles + 510 tests + selftests |
+| [`rust/`](rust/) | production runtime — 21-of-21 bundle port, 203 cargo tests, iOS-safe embedded slice |
+| [`rust/RELEASING.md`](rust/RELEASING.md) | how to cut a Rust binary release (manual `rust-v*` tag push) |
+| [`.github/workflows/`](.github/workflows/) | CI for both runtimes — `python-*.yml` (lint, tests), `rust-*.yml` (build, xcframework, compat, release) |
 | [`.claude/`](.claude/) | working notes and plans for Claude Code sessions |
 
 ## Status
 
 |                            | Python                 | Rust                                  |
 |----------------------------|------------------------|---------------------------------------|
-| substrate                  | ✓ 530 tests            | ✓ 205+ tests                          |
+| substrate                  | ✓ 510 tests            | ✓ 203 tests                           |
 | HTTP / WS / REST surfaces  | ✓                      | ✓ (single port, dynamic mount)        |
 | WS binary frames (incl. chunked) | ✓ single-frame  | ✓ single + chunked uploads            |
 | canvas in browser          | ✓                      | ✓                                     |
@@ -81,6 +82,7 @@ and the bundle scoreboard.
 | Feature gates (full / embedded) | n/a               | ✓ subprocess bundles excluded from Lite |
 | Cross-runtime workdir loading | ✓                   | ✓ (round-trip verified)               |
 | Weak-load contract         | ✓                      | ✓ matches Python byte-for-byte        |
+| Released binaries (GH releases) | —                 | ✓ manual `rust-v*` tag push (see [RELEASING.md](rust/RELEASING.md)) |
 
 ## Contributing
 
@@ -93,4 +95,4 @@ Commits and pushes require explicit consent per project convention.
 
 ## License
 
-MIT. See [`python/LICENSE`](python/LICENSE).
+Apache-2.0. See [`LICENSE`](LICENSE) at the repo root.

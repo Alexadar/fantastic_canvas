@@ -21,7 +21,7 @@ Two separate per-arch images (no combined manifest yet) — `:dev-amd64`
 for x86_64 Linux servers, `:dev-arm64` for Apple Silicon / aarch64.
 
 Ships with the full canvas stack pre-seeded (`web` + `web_ws` +
-`web_rest` + `canvas_webapp`) and all 20+ standard bundles installed
+`web_rest` + `canvas_webapp`) and all 21 standard bundles installed
 in the image's venv. Workdir state lives in `./.fantastic/` and is
 portable to a local `fantastic` run in the same directory. Full
 operator guide: [`containerfiles/base/README.md`](containerfiles/base/README.md).
