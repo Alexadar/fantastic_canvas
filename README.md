@@ -46,36 +46,41 @@ The Swift app at
 consumes either runtime through the same HTTP + WS surface:
 
 - **FantasticPro** (macOS, unsandboxed) — spawns the kernel as a
-  subprocess. Today the Python kernel; in Phase 2 of the Rust port,
-  the Rust binary becomes a drop-in.
+  subprocess. Either runtime works as a drop-in; the app's launcher
+  resolves `fantastic` from PATH or `~/.cargo/bin`.
 - **FantasticLite** (macOS + iOS + iPadOS + visionOS, App Store
   sandboxed) — cannot spawn subprocesses, so the Python kernel is
-  unreachable. Phase 3 of the Rust port ships a Swift Package
+  unreachable. The Rust runtime ships a Swift Package
   (`FantasticKernel`) that links the Rust kernel into the app process
   and binds a loopback `127.0.0.1:0` server the existing `WKWebView`
   points at. Zero changes to canvas frontend code.
 
 See [`rust/README.md`](rust/README.md) for the SPM consumption story
-and the porting roadmap.
+and the bundle scoreboard.
 
 ## Repo layout
 
 | path | content |
 |---|---|
-| [`python/`](python/) | reference kernel + 20+ bundles + 510+ tests + selftests |
-| [`rust/`](rust/) | Rust port (Phase 1 scaffold; full impl tracked under [`.claude/plans/`](.claude/plans)) |
+| [`python/`](python/) | reference kernel + 21 bundles + 530+ tests + selftests |
+| [`rust/`](rust/) | production runtime — 21-of-21 bundle port, 205+ cargo tests, iOS-safe embedded slice |
 | [`.github/workflows/`](.github/workflows/) | CI for both runtimes — `python-*.yml` (lint, tests) and `rust-*.yml` (build, xcframework, compat) |
 | [`.claude/`](.claude/) | working notes and plans for Claude Code sessions |
 
 ## Status
 
-| | Python | Rust |
-|---|---|---|
-| substrate | ✓ 510 tests | scaffold compiles |
-| HTTP/WS surfaces | ✓ | pending Phase 1 |
-| canvas in browser | ✓ | pending Phase 2 |
-| Swift embedded (Lite) | n/a | pending Phase 3 |
-| weak-load contract | ✓ | matches Python |
+|                            | Python                 | Rust                                  |
+|----------------------------|------------------------|---------------------------------------|
+| substrate                  | ✓ 530 tests            | ✓ 205+ tests                          |
+| HTTP / WS / REST surfaces  | ✓                      | ✓ (single port, dynamic mount)        |
+| WS binary frames (incl. chunked) | ✓ single-frame  | ✓ single + chunked uploads            |
+| canvas in browser          | ✓                      | ✓                                     |
+| LLM bundles (ollama / NIM) | ✓                      | ✓                                     |
+| terminal_backend (PTY)     | ✓                      | ✓                                     |
+| Swift embedded (Lite)      | n/a                    | ✓ UniFFI XCFramework + SPM            |
+| Feature gates (full / embedded) | n/a               | ✓ subprocess bundles excluded from Lite |
+| Cross-runtime workdir loading | ✓                   | ✓ (round-trip verified)               |
+| Weak-load contract         | ✓                      | ✓ matches Python byte-for-byte        |
 
 ## Contributing
 

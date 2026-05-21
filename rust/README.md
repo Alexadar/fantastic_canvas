@@ -5,10 +5,25 @@ Recursive `Agent` nodes, one primitive (`send`), plugin-discovered
 bundles. Every agent answers `{"type":"reflect"}` — the universal
 discovery verb. No client library: the protocol IS the API.
 
+## Status
+
+Production runtime — full parity with the Python reference kernel.
+
+|                                              | value                                   |
+|----------------------------------------------|-----------------------------------------|
+| Python bundles ported                        | **21 / 21**                             |
+| Cargo tests passing                          | **205+** (workspace, default features)  |
+| `clippy --workspace --all-targets -D warnings` | clean                                 |
+| `fmt --all -- --check`                       | clean                                   |
+| Feature gates                                | `full` (default) / `embedded` (iOS Lite)|
+| Embedded slice (`fantastic-uniffi` + `cli --no-default-features --features embedded`) | clean compile, subprocess-using bundles excluded |
+| Cross-runtime workdir                        | byte-identical `.fantastic/` round-trip |
+| Cold start                                   | 30 / 30 / 88 ms (virgin / hydrate / boot-to-listening) |
+
 ## Why Rust
 
 Fits inside sandboxed iOS / iPadOS / visionOS apps, embeddable as a
-static library + Swift package. Same workdir format and HTTP/WS
+static library + Swift package. Same workdir format and HTTP / WS
 contract everywhere it runs — server, Mac desktop, iOS device.
 
 ## Architecture
@@ -24,13 +39,13 @@ contract everywhere it runs — server, Mac desktop, iOS device.
        ┌─────────────────┼─────────────────────────────┐
        ▼                 ▼                             ▼
    ┌────────┐      ┌────────────┐              ┌────────────────┐
-   │ core   │      │ web        │              │ (future)       │
-   │ cli    │      │ (axum)     │              │ canvas / ai /  │
-   │ file   │      │ HTTP + WS  │              │ terminal ...   │
-   │ ...    │      │ transport  │              │                │
+   │ core   │      │ web        │              │ canvas / ai /  │
+   │ cli    │      │ (axum)     │              │ terminal /     │
+   │ file   │      │ HTTP+WS+   │              │ scheduler /    │
+   │ ...    │      │ REST       │              │ runners / ...  │
    └────────┘      └─────┬──────┘              └────────────────┘
                          │
-                         ▼ HTTP + WS frames (text + binary)
+                         ▼ HTTP + WS frames (text + binary, chunked supported)
    ┌─────────────────────────────────────────────────────────────────────┐
    │                       BROWSER / WKWebView                           │
    │  iframe ↔ iframe bus, transport.js auto-injected on every page.     │
@@ -39,27 +54,87 @@ contract everywhere it runs — server, Mac desktop, iOS device.
 
 ## Run
 
-Phase 1 scaffold today — the binary builds and prints a status line:
-
 ```bash
 cd rust
 cargo build --release --bin fantastic
-./target/release/fantastic
-```
+BIN=$(pwd)/target/release/fantastic
 
-Once the substrate impl lands (task #228) and the Phase 1 bundles
-follow (task #229), invocation is:
+# One-shot RPCs:
+$BIN reflect                                  # reflect on root (id="core")
+$BIN reflect kernel                           # discovery primer (URLs, bundles, agents)
+$BIN core list_agents                         # every agent in this workdir
+$BIN core create_agent handler_module=web.tools id=w port=8888
 
-```bash
-fantastic                                              # boot all persisted, daemon if a web agent exists
-fantastic <id> <verb> [k=v ...]                        # one-shot RPC
-fantastic reflect [<id>]                               # shorthand: <id> reflect (default: kernel)
-fantastic core create_agent handler_module=web.tools port=8888    # persist a web record
+# Daemon mode (blocks if a `web` agent is persisted in the workdir):
+$BIN
+# → "fantastic: daemon up. N agent(s) loaded. Ctrl-C to stop."
 ```
 
 Composition rule: `fantastic` blocks only when the workdir has a
 `web` agent persisted (HTTP daemon) or `stdin` is a tty (REPL).
 Otherwise it exits silently.
+
+## Feature gates
+
+Two compile-time tiers gate which bundles ship in the binary:
+
+```toml
+default = ["full"]
+full     # CLI + server + macOS Pro + Linux unsandboxed
+embedded # iOS Lite, iPadOS, visionOS, sandboxed macOS
+```
+
+**`full`** includes every ported bundle. Subprocess-spawning bundles
+(`terminal_backend`, `python_runtime`, `local_runner`, `ssh_runner`)
+and the SSH transport in `kernel_bridge` are gated to this feature.
+
+**`embedded`** compiles without any subprocess code. iOS app sandboxes
+forbid `fork()` / `Process` / dynamic library loading; the embedded
+slice excludes anything that touches them at compile time. 17 of 21
+bundles ship under embedded — the iOS-safe ceiling.
+
+Switch with `--no-default-features --features embedded`:
+
+```bash
+cargo check  -p fantastic-cli    --no-default-features --features embedded
+cargo check  -p fantastic-uniffi --no-default-features --features embedded
+```
+
+Both pass clean — that's the contract iOS Lite ships against.
+
+## Bundle map (21 of 21)
+
+iOS-safe bundles (compile under either tier):
+
+| crate                       | role                                                          |
+|-----------------------------|---------------------------------------------------------------|
+| `fantastic-core`            | root orchestrator (id="core")                                 |
+| `fantastic-cli-bundle`      | stdout renderer (ephemeral, tty-only)                         |
+| `fantastic-file`            | filesystem-as-agent                                           |
+| `fantastic-web`             | axum HTTP host + WS + REST (dynamic mounting)                 |
+| `fantastic-web-ws`          | WS verb-channel routes (mounted onto parent web)              |
+| `fantastic-web-rest`        | REST verb-channel routes (mounted onto parent web)            |
+| `fantastic-html-agent`      | UI-as-record; html_content stored on agent.json               |
+| `fantastic-canvas-backend`  | spatial UI host (DOM iframes + GL layers)                     |
+| `fantastic-canvas-webapp`   | the canvas page itself, with transport.js + canvas.js         |
+| `fantastic-scheduler`       | tokio-tick recurring tasks via file_agent_id persistence      |
+| `fantastic-gl-agent`        | GLSL-on-a-record with set/get + get_gl_view                   |
+| `fantastic-telemetry-pane`  | embedded GL view of the kernel state stream                   |
+| `fantastic-ai-chat-webapp`  | provider-agnostic chat UI (works against any LLM backend)     |
+| `fantastic-terminal-webapp` | xterm-based terminal UI iframe (dormant without backend)      |
+| `fantastic-ollama-backend`  | local LLM via ollama; LLM contract reference impl             |
+| `fantastic-nvidia-nim-backend` | NVIDIA NIM LLM (OpenAI-compatible, api_key sidecar, 429 retry) |
+| `fantastic-kernel-bridge`   | cross-kernel comms over memory / WS / HTTP transports         |
+
+Full-tier-only bundles (subprocess; excluded from embedded slice):
+
+| crate                       | role                                                          |
+|-----------------------------|---------------------------------------------------------------|
+| `fantastic-terminal-backend`| PTY shell + flow control + UTF-8 + image-paste over binary WS |
+| `fantastic-python-runtime`  | subprocess `python -c <code>` with interpreter resolution ladder |
+| `fantastic-local-runner`    | supervises a child `fantastic` in another workdir             |
+| `fantastic-ssh-runner`      | remote `fantastic` lifecycle + canvas-iframing tunnel         |
+| `fantastic-kernel-bridge` (SSH transport) | `ssh -L` tunnel chained over WsTransport          |
 
 ## Workspace layout
 
@@ -70,77 +145,92 @@ rust/
 │   ├── fantastic-kernel/              substrate (Agent + Kernel + send/emit/watch/reflect)
 │   ├── fantastic-bundle/              plugin trait every bundle re-exports
 │   ├── fantastic-cli/                 the `fantastic` binary
-│   ├── fantastic-uniffi/              Swift binding (Phase 3)
+│   ├── fantastic-uniffi/              Swift binding (XCFramework)
 │   └── bundles/
-│       ├── fantastic-core/            root orchestrator (id="core")
-│       ├── fantastic-cli-bundle/      stdout renderer
-│       ├── fantastic-file/            fs-as-agent
-│       ├── fantastic-web/             axum HTTP host
-│       ├── fantastic-web-ws/          WS verb channel
-│       └── fantastic-web-rest/        REST verb channel
+│       ├── fantastic-core/                root orchestrator
+│       ├── fantastic-cli-bundle/          stdout renderer
+│       ├── fantastic-file/                fs-as-agent
+│       ├── fantastic-web/                 axum host + WS/REST router
+│       ├── fantastic-web-ws/              WS verb channel
+│       ├── fantastic-web-rest/            REST verb channel
+│       ├── fantastic-html-agent/          html-as-record
+│       ├── fantastic-canvas-backend/      canvas host
+│       ├── fantastic-canvas-webapp/       canvas page
+│       ├── fantastic-scheduler/           recurring tasks
+│       ├── fantastic-gl-agent/            GLSL-on-record
+│       ├── fantastic-telemetry-pane/      live kernel-state GL view
+│       ├── fantastic-ai-chat-webapp/      provider-agnostic chat UI
+│       ├── fantastic-terminal-webapp/     xterm UI
+│       ├── fantastic-ollama-backend/      local LLM
+│       ├── fantastic-nvidia-nim-backend/  NVIDIA NIM LLM
+│       ├── fantastic-kernel-bridge/       cross-kernel comms
+│       ├── fantastic-terminal-backend/    PTY  (full-tier only)
+│       ├── fantastic-python-runtime/      python -c (full-tier only)
+│       ├── fantastic-local-runner/        supervises child fantastic (full-tier)
+│       └── fantastic-ssh-runner/          remote fantastic via SSH (full-tier)
 ├── scripts/
 │   ├── build-cli.sh                   cargo build --release --bin fantastic
-│   ├── build-xcframework.sh           Phase 3 — Fantastic.xcframework for SPM
-│   └── compat-python.sh               black-box compat probes
+│   ├── build-xcframework.sh           Fantastic.xcframework for SPM
+│   ├── bench-coldstart.sh             3-metric boot benchmark
+│   └── compat-python.sh               black-box wire-protocol probes
+├── selftest.md                        index + 4 Rust-overlay specs
+├── selftest/                          Rust-specific selftest overlays
 └── packaging/
-    └── FantasticKernel/               Phase 3 — Swift package wrapping the XCFramework
+    └── FantasticKernel/               Swift package wrapping the XCFramework
 ```
-
-## Bundle map (Phase 1 set)
-
-| crate | role |
-|---|---|
-| `fantastic-core` | root orchestrator |
-| `fantastic-cli-bundle` | stdout renderer (ephemeral) |
-| `fantastic-file` | filesystem-as-agent |
-| `fantastic-web` | HTTP host (axum) |
-| `fantastic-web-ws` | WS verb channel (tokio-tungstenite) |
-| `fantastic-web-rest` | REST verb channel |
-
-Phase 2 adds `fantastic-html-agent`, `fantastic-canvas-backend`,
-`fantastic-canvas-webapp`.
 
 ## Plugin model
 
 Bundles register at **compile time** — the CLI crate links the
-default set in; the `fantastic-uniffi` crate links only what's
-allowed on the platform. iOS forbids dynamic loading in sandboxed
-apps, so the compile-time model is the only fully-portable option.
+default set; the `fantastic-uniffi` crate (iOS embedded) links the
+iOS-safe subset. iOS forbids dynamic loading in sandboxed apps, so
+the compile-time model is the only fully-portable option.
 
-Optional dynamic loading (`libloading::Library` over
-`installed_agents/*/lib*.dylib`) is gated behind a non-iOS feature
-flag — preserves the `fantastic install-bundle <git+url>` UX on
-servers + unsandboxed desktops.
+Dynamic loading (`libloading` over `installed_agents/*/lib*.dylib`)
+is intentionally NOT supported — same constraint that makes iOS Lite
+viable rules it out everywhere for consistency. If you need a third-
+party bundle, fork + rebuild.
 
 ## Wire surface
 
-The Swift app, browsers, LLM clients consume the kernel through
+The Swift app, browsers, and LLM clients consume the kernel through
 HTTP + WebSocket:
 
 - **HTTP** `/`, `/<id>/`, `/<id>/file/<path>`, `/transport.js`.
 - **WS `/<id>/ws`** — text frames: `call` / `emit` / `watch` /
-  `unwatch` / `reply` / `error` / `event`. Binary frames carry
-  byte-heavy payloads as `[4-byte BE u32 H][JSON header][raw blob]`.
+  `unwatch` / `reply` / `error` / `event`. **Binary frames** carry
+  byte-heavy payloads as `[4-byte BE u32 hdr_len][JSON header][raw blob]`.
+  Opt-in chunked uploads (`upload_id` + `chunk_index` + `total_chunks` +
+  `final` in the header) reassemble server-side; per-WS state means
+  abandoned uploads drop on disconnect.
+- **REST** `POST /<rest_id>/<target_id>` body=payload → `kernel.send` → JSON.
+  `GET /<rest_id>/_reflect[/<target_id>]` for static discovery.
 - **`.fantastic/`** — on-disk records (`agent.json` per agent,
   `lock.json` with the daemon's PID).
 
-A black-box `scripts/compat-python.sh` runs the wire-protocol probes
-against the running binary; CI fails on any divergence from the
-documented contract.
+A black-box `scripts/compat-python.sh` runs wire-protocol probes
+against the running binary; CI fails on any divergence.
 
-## Weak loading
+## Cross-runtime workdir compatibility
 
-If a persisted agent's `handler_module` isn't registered in this
-runtime's bundle set, log one line to stderr and skip the agent on
-boot:
+Same `.fantastic/` directory loads under either Python or Rust
+kernel. Records hydrate from identical JSON. Bundles missing in one
+runtime log a single skip line and the boot continues:
 
     [kernel] skipping agent <id>: bundle <module> not installed in this runtime
 
-The record stays on disk untouched. Install the bundle (or boot
-under a runtime that has it) and the agent rehydrates intact.
-Wipe-and-rebuild safe.
+Wire-identical across runtimes — AI agents grep this line so the
+exact string is contract.
 
-## Swift embedding (Phase 3)
+Python's `python_runtime` auto-fills `meta.python = sys.executable`
+on first boot if neither `python` nor `venv` is set; that's the
+durable record both runtimes hit on subsequent opens, so cross-
+runtime interpreter resolution is deterministic.
+
+See [`selftest/cross_runtime_workdir.md`](selftest/cross_runtime_workdir.md)
+for the round-trip test plan.
+
+## Swift embedding (UniFFI v0.29)
 
 The `fantastic-uniffi` crate exposes a small lifecycle API:
 
@@ -151,15 +241,22 @@ namespace fantastic {
 };
 
 interface Kernel {
-    [Async, Throws=KernelError]
+    [Async]
     string send_json(string target_id, string payload_json);
     u16 http_port();
+    u64 subscribe(StateListener listener);
+    void unsubscribe(u64 token);
     void shutdown();
+};
+
+callback interface StateListener {
+    void on_event(string event_json);
 };
 ```
 
-The canonical Swift↔kernel API stays HTTP + WS — UniFFI is only used
-for lifecycle (start/stop, port discovery). Swift code:
+The canonical Swift↔kernel API stays HTTP + WS — UniFFI is only for
+lifecycle (start/stop, port discovery, state-stream subscription for
+`@Observable` redraws). Swift code:
 
 ```swift
 let kernel = try await Fantastic.startKernel(workdir: appGroupURL.path, portHint: 0)
@@ -178,13 +275,13 @@ XCFramework + SPM distribution used by Firefox iOS in production.
 
 ## Cold start
 
-The release binary's boot budget, measured by `scripts/bench-coldstart.sh`:
+Release binary's boot budget, measured by `scripts/bench-coldstart.sh`:
 
 | metric                    | target  | latest |
 |---------------------------|---------|--------|
-| virgin-dir reflect        |  50 ms  |  36 ms |
-| 18-agent hydrate reflect  | 100 ms  |  32 ms |
-| boot-to-listening (HTTP)  | 200 ms  |  90 ms |
+| virgin-dir reflect        |  50 ms  |  30 ms |
+| 18-agent hydrate reflect  | 100 ms  |  30 ms |
+| boot-to-listening (HTTP)  | 200 ms  |  88 ms |
 
 Captured on macOS arm64 (M-series) in release mode against a fresh
 tempdir. CI runs the same script with 2× ceilings via
@@ -198,18 +295,34 @@ cargo build --release --bin fantastic
 ./scripts/bench-coldstart.sh
 ```
 
-If a measurement breaches its target, the long pole is usually one of:
-- `Kernel::new` + `DashMap` shard allocation
-- `bootstrap::load_children` disk walk (linear in agent count)
-- `axum::serve` handshake on the bound port
+## Selftests
+
+Most user-facing behaviour is identical across Python and Rust
+runtimes — Python's per-bundle selftests under
+[`../python/bundled_agents/*/selftest.md`](../python/bundled_agents/)
+drive the wire surface against either binary by swapping `PATH`.
+
+Rust-specific behaviour lives in [`selftest/`](selftest/):
+
+- `feature_gates.md` — `full` vs `embedded` compile matrix
+- `python_runtime_resolution.md` — the 8-step interpreter ladder
+- `binary_frame_chunking.md` — chunked WS uploads protocol
+- `cross_runtime_workdir.md` — round-trip workdir loading
+
+See [`selftest.md`](selftest.md) for the index + driving workflow.
 
 ## Pre-push checks
 
 ```bash
 cd rust
 cargo check --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
 cargo test --workspace
+cargo check -p fantastic-cli --no-default-features --features embedded
+cargo check -p fantastic-uniffi --no-default-features --features embedded
+./scripts/compat-python.sh
+./scripts/bench-coldstart.sh
 ```
 
 CI runs these on Linux + macOS via `.github/workflows/rust-build.yml`.
