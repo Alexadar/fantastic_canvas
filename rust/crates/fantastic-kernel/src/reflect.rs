@@ -112,6 +112,14 @@ fn primer(kernel: &Arc<Kernel>, root: &Arc<Agent>, return_readme: bool) -> Value
             "rest": {
                 "shape": "POST http://host:port/<rest_id>/<target_id> body=payload",
                 "use_when": "diagnostic CLI tools that want one-shot JSON over HTTP."
+            },
+            "cli": {
+                "shape": "fantastic <target_id> <verb> [k=v ...]  (one-shot RPC; daemon-lock-respecting)",
+                "use_when": "shell scripts, ad-hoc inspection, CI probes."
+            },
+            "in_prompt": {
+                "shape": "LLM-facing XML/structured-call envelope wrapping {target, verb, payload}",
+                "use_when": "code agents (Claude, LLM CLI) driving the kernel from a prompt without a transport client."
             }
         }),
     );

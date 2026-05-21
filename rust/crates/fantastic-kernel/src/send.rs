@@ -416,12 +416,18 @@ async fn update_from_payload(kernel: &Arc<Kernel>, caller: &Arc<Agent>, payload:
     }
     let rec = target.update_meta(patch);
     let _ = crate::persistence::persist(&target);
+    let rec_value = serde_json::to_value(&rec).unwrap_or(Value::Null);
+    // Telemetry state event — Python parity (`_agent.py:637-657`):
+    // publish the full record + the list of changed fields, not just
+    // `{type, id}`. State subscribers (telemetry pane, AI test
+    // harnesses) lean on this for diff'ing agent state across events.
     let event = json!({
         "type": "updated",
         "id": rec.id,
+        "changed": changed.clone(),
+        "agent": rec_value.clone(),
     });
     kernel.publish_state(&event);
-    let rec_value = serde_json::to_value(&rec).unwrap_or(Value::Null);
     // Emit `agent_updated` on the caller's inbox so watchers (canvas
     // frame chrome, telemetry panels) refresh without polling. Mirrors
     // Python's `await self.emit(self.id, {type:"agent_updated", ...})`.
