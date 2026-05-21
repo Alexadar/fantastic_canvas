@@ -92,7 +92,11 @@ async fn get_webapp_returns_url_with_agent_id() {
 }
 
 #[tokio::test]
-async fn boot_refuses_without_upstream_id() {
+async fn boot_auto_spawns_provider_backend_when_upstream_unset() {
+    // Python parity: when `upstream_id` is missing, boot auto-creates
+    // a provider backend (ollama by default), records its id, and
+    // boots it. Verify the auto-pair landed by inspecting the
+    // upstream_id afterwards.
     let (_tmp, kernel) = bootstrap();
     kernel
         .send(
@@ -100,23 +104,38 @@ async fn boot_refuses_without_upstream_id() {
             json!({
                 "type": "create_agent",
                 "handler_module": HANDLER_MODULE,
-                "id": "chat_no_upstream",
+                "id": "chat_auto",
             }),
         )
         .await;
+    // create_agent auto-fires boot, which spawns the backend. Reflect
+    // now to read back the bound upstream id.
     let r = kernel
-        .send(&AgentId::from("chat_no_upstream"), json!({"type": "boot"}))
+        .send(&AgentId::from("chat_auto"), json!({"type": "reflect"}))
         .await;
-    let err = r["error"].as_str().unwrap_or("");
+    let upstream = r["upstream_id"].as_str().unwrap_or("");
     assert!(
-        err.contains("upstream_id"),
-        "expected upstream_id error, got: {r:?}",
+        upstream.starts_with("ollama_backend_"),
+        "expected auto-paired ollama backend, got upstream_id={upstream:?}",
     );
 }
 
 #[tokio::test]
-async fn boot_ok_when_upstream_id_set() {
+async fn boot_noop_when_upstream_already_bound() {
+    // If `upstream_id` is set and points at a live agent, boot is a
+    // no-op — the existing binding survives.
     let (_tmp, kernel) = bootstrap();
+    // Pre-create a stand-in backend so the auto-pair branch is skipped.
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": "ollama_backend.tools",
+                "id": "existing_backend",
+            }),
+        )
+        .await;
     kernel
         .send(
             &AgentId::from("core"),
@@ -124,20 +143,32 @@ async fn boot_ok_when_upstream_id_set() {
                 "type": "create_agent",
                 "handler_module": HANDLER_MODULE,
                 "id": "chat_wired",
-                "upstream_id": "anywhere",
+                "upstream_id": "existing_backend",
             }),
         )
         .await;
     let r = kernel
-        .send(&AgentId::from("chat_wired"), json!({"type": "boot"}))
+        .send(&AgentId::from("chat_wired"), json!({"type": "reflect"}))
         .await;
-    assert_eq!(r["ok"], true);
-    assert_eq!(r["upstream_id"], "anywhere");
+    assert_eq!(r["upstream_id"], "existing_backend");
 }
 
 #[tokio::test]
 async fn reflect_includes_upstream_and_provider() {
+    // Same parity nuance: passing `upstream_id` pointing at a live
+    // agent makes boot a no-op (binding survives). Otherwise boot
+    // auto-pairs a fresh backend.
     let (_tmp, kernel) = bootstrap();
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": "nvidia_nim_backend.tools",
+                "id": "backend_x",
+            }),
+        )
+        .await;
     kernel
         .send(
             &AgentId::from("core"),
@@ -159,7 +190,18 @@ async fn reflect_includes_upstream_and_provider() {
     assert!(r["verbs"].is_object());
     assert!(r["verbs"]["render_html"].is_string());
 
-    // And when provider is unset, defaults to "ollama".
+    // Default provider when unset is "ollama". Pre-create the backend
+    // so boot's auto-pair is a no-op for this branch too.
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": "ollama_backend.tools",
+                "id": "backend_y",
+            }),
+        )
+        .await;
     kernel
         .send(
             &AgentId::from("core"),

@@ -78,7 +78,7 @@ impl Bundle for AiChatWebappBundle {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         let reply = match verb {
             "reflect" => reflect_reply(agent_id, kernel),
-            "boot" => boot_reply(agent_id, kernel),
+            "boot" => boot_reply(agent_id, kernel).await,
             "shutdown" => Value::Null,
             "render_html" => json!({"html": CHAT_HTML}),
             "get_webapp" => json!({
@@ -124,13 +124,65 @@ fn reflect_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
     })
 }
 
-fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
-    match meta_str(kernel, agent_id, "upstream_id") {
-        Some(id) if !id.is_empty() => json!({"ok": true, "upstream_id": id}),
-        _ => json!({
-            "error": "ai_chat_webapp: upstream_id required (provider auto-spawn deferred to a later port — set upstream_id manually via update_agent)"
-        }),
+/// Boot: idempotently spawn the provider backend (ollama or nvidia_nim
+/// per `record.provider`, default `ollama`), record its id as
+/// `upstream_id`, and boot it. Mirrors Python's
+/// `ai_chat_webapp/tools.py::_boot`. Cascade-delete drops the pair
+/// because the backend is wired as a child of this webapp.
+async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
+    let me = match kernel.agents.get(agent_id).map(|e| Arc::clone(&e)) {
+        Some(a) => a,
+        None => return Value::Null,
+    };
+    let provider = meta_str(kernel, agent_id, "provider").unwrap_or_else(|| "ollama".to_string());
+    let backend_hm = if provider == "ollama" {
+        "ollama_backend.tools"
+    } else {
+        "nvidia_nim_backend.tools"
+    };
+
+    // Already paired? upstream_id pointing at a live backend → no-op.
+    if let Some(up) = meta_str(kernel, agent_id, "upstream_id") {
+        if !up.is_empty() && kernel.agents.contains_key(&AgentId::from(up.as_str())) {
+            return json!({"ok": true, "upstream_id": up});
+        }
     }
+    // Or a child backend with the matching handler_module exists?
+    let has_child = me.child_ids().iter().any(|cid| {
+        kernel
+            .agents
+            .get(cid)
+            .map(|e| e.handler_module.as_deref() == Some(backend_hm))
+            .unwrap_or(false)
+    });
+    if has_child {
+        return Value::Null;
+    }
+
+    let create_reply = kernel
+        .send(
+            agent_id,
+            json!({"type": "create_agent", "handler_module": backend_hm}),
+        )
+        .await;
+    let Some(backend_id) = create_reply.get("id").and_then(Value::as_str) else {
+        return json!({"error": format!("ai_chat_webapp.boot: create backend failed: {create_reply}")});
+    };
+    let backend_id = backend_id.to_string();
+    let update_reply = kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "update_agent",
+                "id": agent_id.as_str(),
+                "upstream_id": backend_id,
+            }),
+        )
+        .await;
+    if let Some(err) = update_reply.get("error").and_then(Value::as_str) {
+        return json!({"error": format!("ai_chat_webapp.boot: write upstream_id failed: {err}")});
+    }
+    Value::Null
 }
 
 #[cfg(test)]

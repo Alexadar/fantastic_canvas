@@ -145,6 +145,24 @@ pub(crate) async fn create_from_payload(
     rec_value
 }
 
+/// DFS through `target`'s subtree looking for the first agent (including
+/// `target` itself) whose `delete_lock` meta is true. Returns the locked
+/// agent's id, or `None` if the whole subtree is clear. Mirrors Python's
+/// `Agent._find_locked_descendant`.
+fn find_locked_descendant(kernel: &Kernel, target: &Arc<Agent>) -> Option<AgentId> {
+    if target.is_delete_locked() {
+        return Some(target.id.clone());
+    }
+    for cid in target.child_ids() {
+        if let Some(child) = kernel.agents.get(&cid).map(|e| Arc::clone(&e)) {
+            if let Some(blocker) = find_locked_descendant(kernel, &child) {
+                return Some(blocker);
+            }
+        }
+    }
+    None
+}
+
 /// Implementation of the `delete_agent` system verb.
 pub(crate) async fn delete_from_payload(
     kernel: &Arc<Kernel>,
@@ -158,11 +176,21 @@ pub(crate) async fn delete_from_payload(
     let Some(target) = kernel.agents.get(&id).map(|e| Arc::clone(&e)) else {
         return json!({ "error": format!("no agent {id_str:?}") });
     };
-    if target.is_delete_locked() {
+    // Refuse the cascade if ANY agent in the subtree (including the
+    // target itself) carries `delete_lock=true`. Walking the subtree
+    // matches Python's `_find_locked_descendant` — without this, the
+    // caller learns "delete refused" but not which descendant blocks
+    // them. Returns the first locked id so the caller can clear it
+    // (`update_agent id=<blocker> delete_lock=null`) before retrying.
+    if let Some(blocker) = find_locked_descendant(kernel, &target) {
         return json!({
-            "error": "delete refused",
+            "error": format!(
+                "delete_agent: {} blocked by delete_lock on descendant {}",
+                id.0, blocker.0,
+            ),
             "locked": true,
             "id": id.0,
+            "blocked_by": blocker.0,
         });
     }
     cascade_delete(kernel, &target).await;

@@ -138,6 +138,39 @@ impl Kernel {
             .expect("state subs poisoned")
             .retain(|(t, _)| *t != token);
     }
+
+    /// Synchronous read of every loaded agent's identity + display
+    /// name. Mirrors Python's `Kernel.state_snapshot` — used by new
+    /// `state_subscribe` subscribers to bootstrap their agent view
+    /// before the first event arrives. No queue puts, no fanout.
+    ///
+    /// Each entry: `{agent_id, name, backlog: 0}`. `backlog` is the
+    /// number of in-flight handler dispatches; Rust doesn't track
+    /// this counter today, so we report 0 (consumers that rely on
+    /// it for ordering can recompute from observed traffic). Matches
+    /// Python's wire shape so existing telemetry pane consumers work.
+    pub fn state_snapshot(&self) -> Vec<Value> {
+        let mut out: Vec<Value> = self
+            .agents
+            .iter()
+            .map(|entry| {
+                let a = entry.value();
+                let name = a.display_name().unwrap_or_else(|| a.id.0.clone());
+                serde_json::json!({
+                    "agent_id": a.id.0,
+                    "name": name,
+                    "backlog": 0,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.get("agent_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .cmp(b.get("agent_id").and_then(Value::as_str).unwrap_or(""))
+        });
+        out
+    }
 }
 
 #[cfg(test)]

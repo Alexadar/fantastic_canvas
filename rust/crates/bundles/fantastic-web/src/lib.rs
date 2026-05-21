@@ -394,12 +394,14 @@ async fn build_router_from_siblings(
                             Some(
                                 Router::<AppState>::new()
                                     .route(&axum_path, get(serve_rest_reflect_root_dynamic))
+                                    .layer(axum::Extension(RestOwner(cid.clone())))
                                     .with_state(state.clone()),
                             )
                         } else if axum_path.contains("/_reflect/") {
                             Some(
                                 Router::<AppState>::new()
                                     .route(&axum_path, get(serve_rest_reflect_dynamic))
+                                    .layer(axum::Extension(RestOwner(cid.clone())))
                                     .with_state(state.clone()),
                             )
                         } else {
@@ -410,6 +412,7 @@ async fn build_router_from_siblings(
                         Some(
                             Router::<AppState>::new()
                                 .route(&axum_path, post(serve_rest_post_dynamic))
+                                .layer(axum::Extension(RestOwner(cid.clone())))
                                 .with_state(state.clone()),
                         )
                     } else {
@@ -420,6 +423,7 @@ async fn build_router_from_siblings(
                 "post" => Some(
                     Router::<AppState>::new()
                         .route(&axum_path, post(serve_rest_post_dynamic))
+                        .layer(axum::Extension(RestOwner(cid.clone())))
                         .with_state(state.clone()),
                 ),
                 other => {
@@ -516,8 +520,13 @@ impl tower::Service<Request<Body>> for DynamicRouter {
 /// `/<parent_id>/ws` — no path params. Axum's extractor framework
 /// rejects requests against handlers whose path-param arity doesn't
 /// match the mounted path, so this handler takes no `AxPath`.
-async fn serve_ws_dynamic(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {
-    upgrade.on_upgrade(move |socket| ws_loop(state, socket))
+async fn serve_ws_dynamic(
+    State(state): State<AppState>,
+    AxPath(host_id): AxPath<String>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let host = AgentId::from(host_id.as_str());
+    upgrade.on_upgrade(move |socket| ws_loop(state, socket, host))
 }
 
 /// Dynamic-mount POST endpoint. Mounted path is `/<self_id>/:target_id`
@@ -527,17 +536,30 @@ async fn serve_ws_dynamic(State(state): State<AppState>, upgrade: WebSocketUpgra
 /// sender for the dispatched verb. To attribute back to the surface
 /// agent's id we'd need to bake it into the handler via a per-route
 /// state — wired into the closure-style mount as a future improvement.
+/// Carries the route-owner agent id (the `web_rest` instance whose
+/// `get_routes` reply mounted this path). Stamped at mount time via
+/// `Extension<RestOwner>` so the handler can attribute the dispatched
+/// verb's `_current_sender` back to the real surface agent — Python
+/// parity (`web_rest/tools.py:61` uses `self_id` the same way).
+#[derive(Clone)]
+struct RestOwner(AgentId);
+
 async fn serve_rest_post_dynamic(
     State(state): State<AppState>,
+    axum::Extension(owner): axum::Extension<RestOwner>,
     AxPath(target_id): AxPath<String>,
     Json(payload): Json<Value>,
 ) -> Response {
     let target = AgentId::from(target_id.as_str());
-    let sender = AgentId::from("_rest_dyn");
-    let reply = fantastic_kernel::send::with_sender(sender, async {
+    let reply = fantastic_kernel::send::with_sender(owner.0.clone(), async {
         state.kernel.send(&target, payload).await
     })
     .await;
+    // Python parity: return 204 No Content if the verb's reply was
+    // null (some bundles signal "fire-and-forget" that way).
+    if reply.is_null() {
+        return (StatusCode::NO_CONTENT, ()).into_response();
+    }
     let status = if reply.get("error").is_some() {
         StatusCode::BAD_REQUEST
     } else {
@@ -556,15 +578,15 @@ async fn serve_rest_post_dynamic(
 /// extracted (see note on `serve_rest_post_dynamic`).
 async fn serve_rest_reflect_root_dynamic(
     State(state): State<AppState>,
+    axum::Extension(owner): axum::Extension<RestOwner>,
     Query(q): Query<ReflectQuery>,
 ) -> Response {
-    let sender = AgentId::from("_rest_dyn");
     let target = AgentId::from("kernel");
     let payload = serde_json::json!({
         "type": "reflect",
         "return_readme": q.readme.unwrap_or(0) != 0,
     });
-    let reply = fantastic_kernel::send::with_sender(sender, async {
+    let reply = fantastic_kernel::send::with_sender(owner.0.clone(), async {
         state.kernel.send(&target, payload).await
     })
     .await;
@@ -580,16 +602,16 @@ async fn serve_rest_reflect_root_dynamic(
 /// `/<self_id>/_reflect/:target_id` — one path param.
 async fn serve_rest_reflect_dynamic(
     State(state): State<AppState>,
+    axum::Extension(owner): axum::Extension<RestOwner>,
     AxPath(target_id): AxPath<String>,
     Query(q): Query<ReflectQuery>,
 ) -> Response {
-    let sender = AgentId::from("_rest_dyn");
     let target = AgentId::from(target_id.as_str());
     let payload = serde_json::json!({
         "type": "reflect",
         "return_readme": q.readme.unwrap_or(0) != 0,
     });
-    let reply = fantastic_kernel::send::with_sender(sender, async {
+    let reply = fantastic_kernel::send::with_sender(owner.0.clone(), async {
         state.kernel.send(&target, payload).await
     })
     .await;
@@ -895,7 +917,23 @@ fn guess_mime(path: &str) -> &'static str {
 //
 // Binary frames are deferred to a later milestone.
 
-async fn ws_loop(state: AppState, socket: WebSocket) {
+/// WebSocket proxy loop. 1:1 port of Python's `web/_proxy.py::run`.
+///
+/// - `host_agent_id` — the URL the browser connected to
+///   (`ws://host/<host_id>/ws`). Auto-watched on connect so events
+///   emitted on its inbox reach the page without an explicit `watch`
+///   frame. Also used as `_current_sender` for browser-driven calls
+///   so telemetry rays attribute to the visible page agent (Python
+///   uses the web_ws sub-agent's id here; Rust mounts WS routes
+///   directly from the web bundle so the host is the closest match).
+///
+/// Mirrors Python's structure: `watching` set + pending task set,
+/// inline emit/watch/unwatch handlers, `call` dispatched as a task
+/// so long-lived sends (LLM streaming, slow tools) don't block the
+/// receive loop. Disconnect cancels every pending task + unwatches
+/// every src + drops the synthetic inbox.
+async fn ws_loop(state: AppState, socket: WebSocket, host_agent_id: AgentId) {
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_CLIENT_HEX: AtomicU64 = AtomicU64::new(0);
     let n = NEXT_CLIENT_HEX.fetch_add(1, Ordering::SeqCst);
@@ -917,6 +955,28 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
     // Hook the synthetic client inbox into the kernel.
     let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::channel::<Value>(state.kernel.inbox_bound);
     state.kernel.inboxes.insert(client_id.clone(), inbox_tx);
+
+    // Auto-watch the host agent (Python parity — see web/_proxy.py:135).
+    // Track every watch so the cleanup block can unwatch them all on
+    // disconnect.
+    let watching: Arc<tokio::sync::Mutex<HashSet<AgentId>>> =
+        Arc::new(tokio::sync::Mutex::new(HashSet::from_iter([
+            host_agent_id.clone()
+        ])));
+    state.kernel.watch(&host_agent_id, client_id.clone()).await;
+
+    // Pending `call` tasks — cancelled on disconnect so long-lived
+    // sends (ollama / nvidia streaming, slow tools) release their
+    // locks immediately. Python: `pending: set[asyncio.Task]`.
+    let pending_calls: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    // State-stream subscription tokens — remove on disconnect to
+    // unregister the kernel's telemetry callback for this WS.
+    // (Python: `state_unsubs: list` of opaque unsubscribe callables.
+    // Rust uses opaque tokens that we hand back to remove_state_subscriber.)
+    let state_unsubs: Arc<std::sync::Mutex<Vec<fantastic_kernel::SubscriberToken>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let drain_task = tokio::spawn({
         let out_tx = out_tx.clone();
@@ -944,6 +1004,11 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
     });
 
     // Inbound loop: parse text + binary frames, dispatch.
+    // Browser-driven traffic uses host_agent_id as `_current_sender`
+    // so telemetry rays visually originate from the page agent —
+    // Python parity (web/_proxy.py uses web_agent_id; closest Rust
+    // equivalent is the host since we don't have a separate web_ws
+    // sub-agent on the route).
     while let Some(msg) = stream.next().await {
         let text = match msg {
             Ok(Message::Text(t)) => t,
@@ -962,7 +1027,7 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
         let payload = env.get("payload").cloned().unwrap_or(Value::Null);
         let id = env.get("id").and_then(Value::as_str).map(str::to_string);
         let kernel = Arc::clone(&state.kernel);
-        let sender_for_scope = client_id.clone();
+        let sender_for_scope = host_agent_id.clone();
         let out = out_tx.clone();
         match ty {
             "call" => {
@@ -977,7 +1042,11 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
                     }
                     continue;
                 };
-                tokio::spawn(async move {
+                // Spawn the call so a long-lived send (LLM streaming,
+                // slow tools) doesn't block the receive loop. Stash
+                // the JoinHandle so disconnect can abort it, releasing
+                // any kernel-side locks the dispatch holds.
+                let handle = tokio::spawn(async move {
                     let reply = fantastic_kernel::send::with_sender(sender_for_scope, async {
                         kernel.send(&target, payload).await
                     })
@@ -985,12 +1054,10 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
                     if let Some(id) = id {
                         // Always wrap as `type:"reply"` with the verb's
                         // reply inside `data`. Verb-level errors travel
-                        // inside `data.error` (Python's wire shape). The
+                        // inside `data.error` (Python's wire shape); the
                         // separate `type:"error"` frame is reserved for
                         // out-of-band failures the caller's promise
-                        // can't resolve from data alone — those don't
-                        // exist on this path (every verb returns a
-                        // dict, even on failure).
+                        // can't resolve from data alone.
                         let frame = serde_json::json!({
                             "type": "reply",
                             "id": id,
@@ -999,33 +1066,128 @@ async fn ws_loop(state: AppState, socket: WebSocket) {
                         let _ = out.send(frame.to_string()).await;
                     }
                 });
+                pending_calls.lock().expect("pending poisoned").push(handle);
             }
             "emit" => {
                 let Some(target) = target else { continue };
-                tokio::spawn(async move {
-                    fantastic_kernel::send::with_sender(sender_for_scope, async {
-                        kernel.emit(&target, payload).await
-                    })
-                    .await;
-                });
+                // Inline-await — emit is a state mutation, not a long
+                // round-trip; no need to spawn.
+                fantastic_kernel::send::with_sender(sender_for_scope, async {
+                    kernel.emit(&target, payload).await
+                })
+                .await;
             }
             "watch" => {
                 let Some(src) = env.get("src").and_then(Value::as_str).map(AgentId::from) else {
                     continue;
                 };
-                kernel.watch(&src, client_id.clone()).await;
+                let mut w = watching.lock().await;
+                if !w.contains(&src) {
+                    kernel.watch(&src, client_id.clone()).await;
+                    w.insert(src);
+                }
             }
             "unwatch" => {
                 let Some(src) = env.get("src").and_then(Value::as_str).map(AgentId::from) else {
                     continue;
                 };
-                kernel.unwatch(&src, &client_id).await;
+                let mut w = watching.lock().await;
+                if w.remove(&src) {
+                    kernel.unwatch(&src, &client_id).await;
+                }
+            }
+            "state_subscribe" => {
+                // Python parity (web/_proxy.py:231-256): first emit a
+                // `state_snapshot` frame carrying every agent's identity
+                // so the consumer (telemetry_pane) can bootstrap before
+                // the first event arrives, THEN register a callback
+                // pumping subsequent `state_event` frames.
+                let snapshot_frame = serde_json::json!({
+                    "type": "state_snapshot",
+                    "agents": kernel.state_snapshot(),
+                });
+                if let Ok(line) = serde_json::to_string(&snapshot_frame) {
+                    let _ = out_tx.send(line).await;
+                }
+                let out_for_cb = out_tx.clone();
+                let kernel_for_cb = Arc::clone(&kernel);
+                let token = kernel.add_state_subscriber(Arc::new(move |event: &Value| {
+                    let mut frame = match event.clone() {
+                        Value::Object(m) => m,
+                        _ => return,
+                    };
+                    // Lazy `name` fill — Python derives it from the
+                    // agent record if the state event lacks one, so the
+                    // browser always renders with a single shape. The
+                    // lookup is cheap (DashMap by id) and only fires for
+                    // events missing the field.
+                    if !frame.contains_key("name") {
+                        if let Some(aid) = frame.get("agent_id").and_then(Value::as_str) {
+                            let aid_key = AgentId::from(aid);
+                            if let Some(a) = kernel_for_cb.agents.get(&aid_key) {
+                                let name = a.display_name().unwrap_or_else(|| a.id.0.clone());
+                                frame.insert("name".into(), Value::String(name));
+                            }
+                        }
+                    }
+                    frame.insert("type".to_string(), Value::String("state_event".into()));
+                    let line = match serde_json::to_string(&Value::Object(frame)) {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+                    // Best-effort: drop if the WS drain channel is gone
+                    // (disconnected mid-fanout) — the unsubscribe will
+                    // remove this callback shortly anyway.
+                    let _ = out_for_cb.try_send(line);
+                }));
+                state_unsubs
+                    .lock()
+                    .expect("state_unsubs poisoned")
+                    .push(token);
+            }
+            "state_unsubscribe" => {
+                let tokens: Vec<_> = state_unsubs
+                    .lock()
+                    .expect("state_unsubs poisoned")
+                    .drain(..)
+                    .collect();
+                for t in tokens {
+                    kernel.remove_state_subscriber(t);
+                }
             }
             _ => {}
         }
     }
 
-    // Cleanup.
+    // ─── Cleanup on disconnect (Python: `finally` block) ──────────
+    // 1. Cancel any in-flight `call` handlers so kernel.send tasks
+    //    unwind (ollama_backend honors CancelledError, releases its
+    //    FIFO lock, emits done).
+    {
+        let mut p = pending_calls.lock().expect("pending poisoned");
+        for h in p.drain(..) {
+            h.abort();
+        }
+    }
+    // 2. Unwatch every src this WS subscribed to.
+    {
+        let srcs: Vec<AgentId> = watching.lock().await.drain().collect();
+        for src in srcs {
+            state.kernel.unwatch(&src, &client_id).await;
+        }
+    }
+    // 3. Unregister any state-stream callbacks tied to this WS.
+    {
+        let tokens: Vec<_> = state_unsubs
+            .lock()
+            .expect("state_unsubs poisoned")
+            .drain(..)
+            .collect();
+        for t in tokens {
+            state.kernel.remove_state_subscriber(t);
+        }
+    }
+    // 4. Drop the synthetic inbox + abort the drain/send tasks.
     state.kernel.inboxes.remove(&client_id);
     drain_task.abort();
     send_task.abort();

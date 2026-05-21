@@ -44,10 +44,14 @@ from __future__ import annotations
 async def _reflect(id, payload, kernel):
     """Identity + source size + title. No args."""
     rec = kernel.get(id) or {}
-    src = rec.get("gl_source") or ""
+    # Read both spellings during the deprecation window so workdirs
+    # created under the older Python kernel keep loading. Always
+    # write `glsl_source` going forward (matches Rust + the
+    # `glsl` SPDX-style spelling used everywhere else in the doc).
+    src = rec.get("glsl_source") or rec.get("gl_source") or ""
     return {
         "id": id,
-        "sentence": "GL-view-as-record. gl_source stored on agent.json; rendered by canvas hosts that probe get_gl_view.",
+        "sentence": "GL-view-as-record. glsl_source stored on agent.json; rendered by canvas hosts that probe get_gl_view.",
         "display_name": rec.get("display_name", id),
         "title": rec.get("title", ""),
         "source_bytes": len(src.encode("utf-8")),
@@ -61,17 +65,21 @@ async def _reflect(id, payload, kernel):
 
 
 async def _get_gl_source(id, payload, kernel):
-    """No args. Returns {source:str} — the raw JS body stored on the record."""
+    """No args. Returns {glsl_source:str} — the raw JS body stored on the record."""
     rec = kernel.get(id) or {}
-    return {"source": rec.get("gl_source", "")}
+    return {"glsl_source": rec.get("glsl_source") or rec.get("gl_source", "")}
 
 
 async def _set_gl_source(id, payload, kernel):
-    """args: source:str (req), title:str?. Replaces gl_source (and optionally title) on the agent record, then emits `gl_source_changed` so a canvas hosting the view reinstalls it in place (dispose the view's container + recompile) — no remove/re-add, no canvas refresh."""
-    src = payload.get("source")
+    """args: glsl_source:str (req), title:str?. Replaces glsl_source (and optionally title) on the agent record, then emits `gl_source_changed` so a canvas hosting the view reinstalls it in place (dispose the view's container + recompile) — no remove/re-add, no canvas refresh."""
+    # Accept `glsl_source` (new canonical name) OR the legacy `source`
+    # field for one release of compatibility while callers migrate.
+    src = payload.get("glsl_source")
     if not isinstance(src, str):
-        return {"error": "gl_agent: source (str) required"}
-    meta: dict = {"gl_source": src}
+        src = payload.get("source")
+    if not isinstance(src, str):
+        return {"error": "gl_agent: glsl_source (str) required"}
+    meta: dict = {"glsl_source": src}
     if isinstance(payload.get("title"), str):
         meta["title"] = payload["title"]
     rec = kernel.update(id, **meta)
@@ -85,10 +93,12 @@ async def _set_gl_source(id, payload, kernel):
 
 
 async def _get_gl_view(id, payload, kernel):
-    """No args. Returns {source:str, title:str} — what the canvas host's GL probe consumes. Source comes from agent.gl_source; title falls back to display_name then id when unset."""
+    """No args. Returns {glsl_source, default_width, default_height, title} — what the canvas host's GL probe consumes. Source comes from agent.glsl_source; defaults match Rust's gl_agent."""
     rec = kernel.get(id) or {}
     return {
-        "source": rec.get("gl_source", ""),
+        "glsl_source": rec.get("glsl_source") or rec.get("gl_source", ""),
+        "default_width": int(rec.get("width") or 800),
+        "default_height": int(rec.get("height") or 600),
         "title": rec.get("title") or rec.get("display_name") or id,
     }
 

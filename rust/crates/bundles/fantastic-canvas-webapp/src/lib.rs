@@ -77,7 +77,8 @@ impl Bundle for CanvasWebappBundle {
                     }
                 })
             }
-            "boot" | "shutdown" => Value::Null,
+            "boot" => boot_reply(agent_id, kernel).await,
+            "shutdown" => Value::Null,
             "render_html" => json!({"html": CANVAS_HTML}),
             "get_webapp" => json!({
                 "url": format!("/{}/", agent_id),
@@ -89,6 +90,74 @@ impl Bundle for CanvasWebappBundle {
         };
         Ok(Some(reply))
     }
+}
+
+/// Boot: idempotently ensure a `canvas_backend` exists as a child of
+/// this webapp + bind its id into `upstream_id` meta. Mirrors
+/// `python/bundled_agents/canvas/canvas_webapp/.../tools.py::_boot`
+/// and the symmetric `terminal_webapp::boot_reply` we already ship.
+///
+/// Without this, dropping a fresh `canvas_webapp` into a workdir
+/// gives the user a canvas page that can't accept members — `cw`'s
+/// dblclick handler routes through the missing upstream.
+async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
+    const BACKEND_HM: &str = "canvas_backend.tools";
+
+    let me = match kernel.agents.get(agent_id).map(|e| Arc::clone(&e)) {
+        Some(a) => a,
+        None => return Value::Null,
+    };
+    // Already bound? upstream_id pointing at a live canvas_backend → no-op.
+    let existing_upstream = me
+        .meta
+        .read()
+        .expect("meta poisoned")
+        .get("upstream_id")
+        .and_then(Value::as_str)
+        .map(AgentId::from);
+    if let Some(up) = existing_upstream.as_ref() {
+        if kernel.agents.contains_key(up) {
+            return Value::Null;
+        }
+    }
+    // Or a backend already attached as a child (rehydrated from disk)?
+    let has_backend_child = me.child_ids().iter().any(|cid| {
+        kernel
+            .agents
+            .get(cid)
+            .map(|e| e.handler_module.as_deref() == Some(BACKEND_HM))
+            .unwrap_or(false)
+    });
+    if has_backend_child {
+        return Value::Null;
+    }
+    // Spawn one as our child.
+    let create_reply = kernel
+        .send(
+            agent_id,
+            json!({"type": "create_agent", "handler_module": BACKEND_HM}),
+        )
+        .await;
+    let Some(backend_id) = create_reply.get("id").and_then(Value::as_str) else {
+        return json!({"error": format!("canvas_webapp.boot: create backend failed: {create_reply}")});
+    };
+    let backend_id = backend_id.to_string();
+    // Record the binding on this webapp's record so the page + canvas
+    // chrome can discover the pair without walking the children dict.
+    let update_reply = kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "update_agent",
+                "id": agent_id.as_str(),
+                "upstream_id": backend_id,
+            }),
+        )
+        .await;
+    if let Some(err) = update_reply.get("error").and_then(Value::as_str) {
+        return json!({"error": format!("canvas_webapp.boot: write upstream_id failed: {err}")});
+    }
+    Value::Null
 }
 
 #[cfg(test)]

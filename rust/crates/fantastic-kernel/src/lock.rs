@@ -79,11 +79,28 @@ pub fn acquire(workdir: &Path) -> KernelResult<PathBuf> {
     Ok(path)
 }
 
-/// Release the workdir lock if we hold it. No error on missing file.
+/// Release the workdir lock — but only if THIS process holds it.
+/// Mirrors Python's `release_lock` (`_lock.py:63-70`): reads the
+/// lock file's `pid`, compares to `std::process::id()`, and removes
+/// only on match. If a foreign pid owns it (e.g. a second daemon
+/// raced us, or our own release runs after the lock was already
+/// reclaimed), the file stays — we don't yank someone else's lock.
+/// No error on missing file (idempotent shutdown path).
 pub fn release(workdir: &Path) -> KernelResult<()> {
     let path = workdir.join(super::persistence::LOCK_PATH);
     if !path.exists() {
         return Ok(());
+    }
+    // Read the holder pid; bail if the file is malformed (don't touch).
+    let raw = fs::read_to_string(&path).map_err(|e| KernelError::LockIo {
+        path: path.clone(),
+        source: e,
+    })?;
+    if let Ok(lock) = serde_json::from_str::<LockFile>(&raw) {
+        if lock.pid != std::process::id() {
+            // Someone else owns this lock — leave it alone.
+            return Ok(());
+        }
     }
     fs::remove_file(&path).map_err(|e| KernelError::LockIo { path, source: e })?;
     Ok(())
