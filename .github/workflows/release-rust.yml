@@ -80,9 +80,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Sibling XCFramework build — produces the Apple-side artifact the
-  # fantastic_app SPM consumer needs (`Fantastic.xcframework` + Swift
-  # bindings). Bundled as a tarball next to the platform binaries.
+  # Sibling XCFramework build — produces the two Apple-side artefacts
+  # the fantastic_app SPM consumer needs. Two tiers, two tarballs:
+  #
+  #   fantastic-xcframework-embedded.tar.gz
+  #     `FantasticKernelEmbedded/` Swift Package + Fantastic-Embedded.xcframework
+  #     iOS-safe — 3 slices (ios-arm64, ios-arm64-simulator, macos-universal)
+  #
+  #   fantastic-xcframework-full.tar.gz
+  #     `FantasticKernelFull/` Swift Package + Fantastic-Full.xcframework
+  #     Pro Mac PTY tier — 1 slice (macos-universal)
   xcframework:
     name: build XCFramework
     runs-on: macos-latest
@@ -94,7 +101,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          # Same four Apple slices `build-xcframework.sh` expects.
+          # All Apple slices both variant scripts touch.
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
@@ -105,24 +112,40 @@ jobs:
       - name: install uniffi-bindgen
         run: cargo install --path crates/uniffi-bindgen --locked
 
-      - name: build XCFramework
+      - name: build both XCFramework variants
+        # The wrapper runs build-xcframework-embedded.sh then
+        # build-xcframework-full.sh.
         run: ./scripts/build-xcframework.sh
 
-      # Bundle the whole Swift Package (xcframework + Package.swift +
-      # bindings + wrapper) as ONE tarball the app can pull from a
-      # release URL and unzip directly into its `vendored/` dir.
-      - name: package
+      # Bundle each Swift Package as its own tarball — the app side
+      # pulls only the tier it ships.
+      - name: package embedded
         run: |
           cd packaging
-          tar -czf ../fantastic-xcframework-apple.tar.gz FantasticKernel
+          tar -czf ../fantastic-xcframework-embedded.tar.gz FantasticKernelEmbedded
           cd ..
-          ls -la fantastic-xcframework-apple.tar.gz
+          ls -la fantastic-xcframework-embedded.tar.gz
+
+      - name: package full
+        run: |
+          cd packaging
+          tar -czf ../fantastic-xcframework-full.tar.gz FantasticKernelFull
+          cd ..
+          ls -la fantastic-xcframework-full.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
-          name: fantastic-xcframework-apple
-          path: rust/fantastic-xcframework-apple.tar.gz
+          name: fantastic-xcframework-embedded
+          path: rust/fantastic-xcframework-embedded.tar.gz
           if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fantastic-xcframework-full
+          path: rust/fantastic-xcframework-full.tar.gz
+          if-no-files-found: error
+          retention-days: 7
           retention-days: 7
 
   release:
