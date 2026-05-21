@@ -279,7 +279,7 @@ fn read_reply(root: &Path, payload: &Value) -> Value {
     // reply's `mime`). Mime comes from the extension lookup; falls
     // back to `application/octet-stream` for the unrecognised tail.
     if IMAGE_EXT.contains(&ext_lower.as_str()) {
-        return read_binary(&target, &path_str, &ext_lower);
+        return read_binary(&target, path_str, &ext_lower);
     }
     match std::fs::read_to_string(&target) {
         Ok(content) => json!({"path": path_str, "content": content}),
@@ -288,7 +288,7 @@ fn read_reply(root: &Path, payload: &Value) -> Value {
             json!({"error": format!("read {}: {e}", target.display())})
         }
         // InvalidData = non-UTF-8 file. Fall through to binary path.
-        Err(_) => read_binary(&target, &path_str, &ext_lower),
+        Err(_) => read_binary(&target, path_str, &ext_lower),
     }
 }
 

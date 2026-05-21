@@ -146,7 +146,6 @@ jobs:
           path: rust/fantastic-xcframework-full.tar.gz
           if-no-files-found: error
           retention-days: 7
-          retention-days: 7
 
   release:
     name: publish release
