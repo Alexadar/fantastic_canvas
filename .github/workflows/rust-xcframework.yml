@@ -36,14 +36,19 @@ jobs:
         with:
           workspaces: rust
 
+      # `build-xcframework.sh` shells out to `uniffi-bindgen` to emit
+      # the Swift bindings; the GH runner doesn't have it on PATH by
+      # default. `--locked` pins to whatever version is in our deps.
+      - name: install uniffi-bindgen-cli
+        run: cargo install uniffi-bindgen-cli --locked
+
       - name: build XCFramework
-        # The script lands with task #229 / Phase 3. Until then this
-        # workflow exists as a placeholder so the CI matrix is wired up.
         run: |
           if [ -x scripts/build-xcframework.sh ]; then
             ./scripts/build-xcframework.sh
           else
-            echo "scripts/build-xcframework.sh not yet present (Phase 3 deliverable). Skipping."
+            echo "scripts/build-xcframework.sh not present"
+            exit 1
           fi
 
       - name: upload artifact

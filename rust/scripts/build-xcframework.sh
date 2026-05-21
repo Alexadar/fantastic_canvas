@@ -22,7 +22,10 @@ PKG_DIR="$RUST_ROOT/packaging/FantasticKernel"
 XCF_OUT="$PKG_DIR/Fantastic.xcframework"
 
 TARGETS_DEVICE=("aarch64-apple-ios")
-TARGETS_SIM=("aarch64-apple-ios-sim" "x86_64-apple-ios-sim")
+# `x86_64-apple-ios-sim` was removed from upstream Rust stable
+# (Intel-Mac iOS simulator has been phased out by Apple + rustc).
+# The simulator slice is Apple-Silicon-only going forward.
+TARGETS_SIM=("aarch64-apple-ios-sim")
 TARGETS_MAC=("aarch64-apple-darwin" "x86_64-apple-darwin")
 
 # Sanity checks.
@@ -67,13 +70,12 @@ module fantasticFFI {
 }
 MMAP
 
-# Combine sim slices into a fat lib (xcodebuild can't take 2 sim libs).
-echo "[xcf] lipo iOS sim slices..."
+# Stage the iOS simulator slice. Used to lipo arm64-sim + x86_64-sim,
+# but Intel-Mac iOS simulator was removed from rustc stable; just
+# rename the arm64-sim lib for xcodebuild.
+echo "[xcf] iOS sim slice (Apple Silicon only)..."
 SIM_FAT="$BINDINGS_DIR/libfantastic_uniffi-iossim.a"
-lipo -create \
-    "$RUST_ROOT/target/aarch64-apple-ios-sim/release/libfantastic_uniffi.a" \
-    "$RUST_ROOT/target/x86_64-apple-ios-sim/release/libfantastic_uniffi.a" \
-    -output "$SIM_FAT"
+cp "$RUST_ROOT/target/aarch64-apple-ios-sim/release/libfantastic_uniffi.a" "$SIM_FAT"
 
 echo "[xcf] lipo macOS slices..."
 MAC_FAT="$BINDINGS_DIR/libfantastic_uniffi-macos.a"
