@@ -115,6 +115,14 @@ async fn main() -> std::process::ExitCode {
 async fn dispatch(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let workdir = std::env::current_dir()?;
 
+    // Seed `.fantastic/readme.md` if missing, regardless of which mode
+    // we're about to run. Python's bootstrap does this universally —
+    // an LLM that walks into a workdir's `.fantastic/` always finds
+    // the substrate primer next to `agent.json`/`lock.json`. Idempotent
+    // (preserves user-edited content). Best-effort: if the workdir
+    // can't be written to, the verb may still work.
+    let _ = fantastic_core::seed_root_readme(&workdir);
+
     // Mode 2: `reflect [<id>]`
     if args.first().map(String::as_str) == Some("reflect") {
         let opts = BootstrapOptions::one_shot(&workdir);
