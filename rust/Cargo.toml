@@ -47,7 +47,11 @@ async-trait = "0.1"
 
 # JSON record encoding + WS frames + reflect payloads.
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` so `serde_json::Map` round-trips JSON object key
+# order — matches Python's `dict` insertion-order semantics. Without
+# it, agent.json fields shuffle to alphabetical (BTreeMap), making
+# cross-runtime byte-for-byte parity flaky.
+serde_json = { version = "1", features = ["preserve_order"] }
 
 # Concurrent maps for kernel.agents + kernel.inboxes.
 dashmap = "6"

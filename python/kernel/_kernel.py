@@ -79,7 +79,10 @@ def _summarize_payload(payload: Any, max_len: int = _SUMMARY_MAX_LEN) -> str:
 
 # Substrate constants — filesystem + entry-point conventions every
 # Agent shares.
-INBOX_BOUND = 500
+# Aligned with Rust's `DEFAULT_INBOX_BOUND = 256` (kernel/kernel.rs).
+# Smaller-than-historical (was 500) to bound per-agent memory under
+# bursty TUI output; drop-oldest still keeps the freshest events.
+INBOX_BOUND = 256
 BUNDLE_ENTRY_GROUP = "fantastic.bundles"
 
 

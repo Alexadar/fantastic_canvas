@@ -41,7 +41,12 @@ pub enum KernelError {
     },
 
     /// Another daemon holds the lock file in this workdir.
-    #[error("workdir is locked by pid {pid}")]
+    /// Mirrors Python's friendlier message — name the pid AND tell
+    /// the user how to recover (stop the daemon or route through the
+    /// daemon's WS surface).
+    #[error(
+        "fantastic: another fantastic owns this dir (pid={pid}). Stop it, or forward your call over the WS bridge served by the running daemon."
+    )]
     LockHeld {
         /// PID of the owning daemon.
         pid: u32,
