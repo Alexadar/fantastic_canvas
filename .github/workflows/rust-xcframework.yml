@@ -22,8 +22,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          # All five Apple slices Lite/Pro need.
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios-sim,aarch64-apple-darwin,x86_64-apple-darwin
+          # Apple slices Lite/Pro need. `x86_64-apple-ios-sim` was
+          # removed from upstream Rust stable (Intel-Mac iOS simulator
+          # has been phased out by both Apple and rustc). Drop it; the
+          # remaining four cover every shipping configuration:
+          #   - aarch64-apple-ios       — iOS / iPadOS / visionOS device
+          #   - aarch64-apple-ios-sim   — iOS simulator on Apple Silicon
+          #   - aarch64-apple-darwin    — macOS Apple Silicon
+          #   - x86_64-apple-darwin     — macOS Intel (still alive)
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
