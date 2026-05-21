@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-html-agent"
 version.workspace = true
 edition.workspace = true
@@ -6,7 +7,6 @@ license.workspace = true
 description = "UI-as-a-record bundle — agent stores its HTML body next to agent.json."
 
 [dependencies]
-fantastic-bundle = { path = "../../fantastic-bundle" }
 fantastic-kernel = { path = "../../fantastic-kernel" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }

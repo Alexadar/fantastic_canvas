@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-local-runner"
 version.workspace = true
 edition.workspace = true
@@ -9,10 +10,8 @@ description = "Local `fantastic` lifecycle — start/stop/restart/status a child
 fantastic-bundle = { path = "../../fantastic-bundle" }
 fantastic-kernel = { path = "../../fantastic-kernel" }
 async-trait = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 which = "6"
 nix = { version = "0.29", features = ["signal"] }
 

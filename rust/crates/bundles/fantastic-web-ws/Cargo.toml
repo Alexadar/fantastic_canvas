@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-web-ws"
 version.workspace = true
 edition.workspace = true
@@ -6,7 +7,6 @@ license.workspace = true
 description = "WebSocket verb channel — mounts ws://host/<agent_id>/ws on a parent web agent."
 
 [dependencies]
-fantastic-bundle = { path = "../../fantastic-bundle" }
 fantastic-kernel = { path = "../../fantastic-kernel" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }

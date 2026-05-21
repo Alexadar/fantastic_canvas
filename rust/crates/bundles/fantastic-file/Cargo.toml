@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-file"
 version.workspace = true
 edition.workspace = true
@@ -8,8 +9,6 @@ description = "Filesystem-as-agent — read/write/list/delete/rename/mkdir roote
 [dependencies]
 fantastic-bundle = { path = "../../fantastic-bundle" }
 fantastic-kernel = { path = "../../fantastic-kernel" }
-tokio = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 base64 = "0.22"

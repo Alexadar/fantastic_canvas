@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-canvas-backend"
 version.workspace = true
 edition.workspace = true
@@ -6,7 +7,6 @@ license.workspace = true
 description = "Spatial UI host as an agent — membership + add/remove/discover + get_webapp probing."
 
 [dependencies]
-fantastic-bundle = { path = "../../fantastic-bundle" }
 fantastic-kernel = { path = "../../fantastic-kernel" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }

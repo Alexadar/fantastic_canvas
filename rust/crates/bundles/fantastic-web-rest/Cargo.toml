@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-web-rest"
 version.workspace = true
 edition.workspace = true
@@ -6,7 +7,6 @@ license.workspace = true
 description = "REST verb channel — POST /<self_id>/<target_id> body=payload → kernel.send → JSON."
 
 [dependencies]
-fantastic-bundle = { path = "../../fantastic-bundle" }
 fantastic-kernel = { path = "../../fantastic-kernel" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }

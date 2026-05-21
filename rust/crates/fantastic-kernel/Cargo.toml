@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-kernel"
 version.workspace = true
 edition.workspace = true
@@ -6,7 +7,6 @@ license.workspace = true
 description = "Recursive Agent substrate + Kernel shared context for the fantastic_canvas medium."
 
 [dependencies]
-fantastic-bundle = { path = "../fantastic-bundle" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -14,7 +14,6 @@ serde_json = { workspace = true }
 dashmap = { workspace = true }
 arc-swap = { workspace = true }
 libc = { workspace = true }
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 base64 = "0.22"

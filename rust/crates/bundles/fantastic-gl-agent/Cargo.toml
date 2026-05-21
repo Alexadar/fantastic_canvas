@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-gl-agent"
 version.workspace = true
 edition.workspace = true
@@ -6,7 +7,6 @@ license.workspace = true
 description = "GL-view-as-a-record bundle — agent stores its glsl_source on agent.json; canvas hosts probe get_gl_view."
 
 [dependencies]
-fantastic-bundle = { path = "../../fantastic-bundle" }
 fantastic-kernel = { path = "../../fantastic-kernel" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }

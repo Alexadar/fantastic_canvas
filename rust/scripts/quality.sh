@@ -34,6 +34,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUST_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$RUST_DIR"
 
+# `cargo install` drops binaries into `~/.cargo/bin/`. Many shells
+# (especially non-login zsh on macOS) don't include that on PATH by
+# default. Prepend it so freshly-installed tools are visible without
+# requiring a `rustup-init` PATH-edit. Idempotent: contains-check
+# avoids ballooning PATH on repeated invocations.
+if [ -d "$HOME/.cargo/bin" ] && ! echo ":$PATH:" | grep -q ":$HOME/.cargo/bin:"; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
 INSTALL=0
 STRICT=0
 ONLY_SECTION=""

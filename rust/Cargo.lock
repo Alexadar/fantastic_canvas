@@ -406,7 +406,6 @@ name = "fantastic-ai-chat-webapp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
  "tempfile",
@@ -416,17 +415,12 @@ dependencies = [
 [[package]]
 name = "fantastic-bundle"
 version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde_json",
-]
 
 [[package]]
 name = "fantastic-canvas-backend"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
  "tempfile",
@@ -438,7 +432,6 @@ name = "fantastic-canvas-webapp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
  "tempfile",
@@ -449,11 +442,9 @@ dependencies = [
 name = "fantastic-cli"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "fantastic-ai-chat-webapp",
  "fantastic-canvas-backend",
  "fantastic-canvas-webapp",
- "fantastic-cli-bundle",
  "fantastic-core",
  "fantastic-file",
  "fantastic-gl-agent",
@@ -483,7 +474,6 @@ dependencies = [
 name = "fantastic-cli-bundle"
 version = "0.1.0"
 dependencies = [
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
  "tokio",
@@ -493,8 +483,6 @@ dependencies = [
 name = "fantastic-core"
 version = "0.1.0"
 dependencies = [
- "fantastic-bundle",
- "fantastic-kernel",
  "tempfile",
 ]
 
@@ -506,10 +494,8 @@ dependencies = [
  "base64",
  "fantastic-bundle",
  "fantastic-kernel",
- "serde",
  "serde_json",
  "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -517,7 +503,6 @@ name = "fantastic-gl-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
  "tempfile",
@@ -529,7 +514,6 @@ name = "fantastic-html-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
  "tempfile",
@@ -540,12 +524,10 @@ dependencies = [
 name = "fantastic-kernel"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "arc-swap",
  "async-trait",
  "base64",
  "dashmap",
- "fantastic-bundle",
  "libc",
  "serde",
  "serde_json",
@@ -560,18 +542,15 @@ name = "fantastic-kernel-bridge"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-file",
  "fantastic-kernel",
  "futures-util",
  "nix 0.29.0",
  "reqwest",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
- "tracing",
  "which",
 ]
 
@@ -583,11 +562,9 @@ dependencies = [
  "fantastic-bundle",
  "fantastic-kernel",
  "nix 0.29.0",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
  "which",
 ]
 
@@ -601,11 +578,9 @@ dependencies = [
  "fantastic-kernel",
  "futures-util",
  "reqwest",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
  "wiremock",
 ]
 
@@ -614,16 +589,13 @@ name = "fantastic-ollama-backend"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-file",
  "fantastic-kernel",
  "futures-util",
  "reqwest",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
  "wiremock",
 ]
 
@@ -635,11 +607,9 @@ dependencies = [
  "fantastic-bundle",
  "fantastic-kernel",
  "nix 0.29.0",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
  "which",
 ]
 
@@ -648,7 +618,6 @@ name = "fantastic-scheduler"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-file",
  "fantastic-kernel",
  "serde_json",
@@ -665,11 +634,9 @@ dependencies = [
  "fantastic-bundle",
  "fantastic-kernel",
  "nix 0.29.0",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
  "which",
 ]
 
@@ -678,7 +645,6 @@ name = "fantastic-telemetry-pane"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
  "tempfile",
@@ -692,11 +658,9 @@ dependencies = [
  "async-trait",
  "base64",
  "encoding_rs",
- "fantastic-bundle",
  "fantastic-kernel",
  "libc",
  "portable-pty",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -708,7 +672,6 @@ name = "fantastic-terminal-webapp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
  "tempfile",
@@ -736,12 +699,10 @@ dependencies = [
  "fantastic-web",
  "fantastic-web-rest",
  "fantastic-web-ws",
- "once_cell",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
  "uniffi",
 ]
 
@@ -752,7 +713,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
- "fantastic-bundle",
  "fantastic-kernel",
  "fantastic-web-rest",
  "fantastic-web-ws",
@@ -772,7 +732,6 @@ name = "fantastic-web-rest"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
 ]
@@ -782,7 +741,6 @@ name = "fantastic-web-ws"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fantastic-bundle",
  "fantastic-kernel",
  "serde_json",
 ]

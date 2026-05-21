@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-nvidia-nim-backend"
 version.workspace = true
 edition.workspace = true
@@ -9,10 +10,8 @@ description = "NVIDIA NIM (OpenAI-compatible) LLM bundle — same surface as oll
 fantastic-bundle = { path = "../../fantastic-bundle" }
 fantastic-kernel = { path = "../../fantastic-kernel" }
 async-trait = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
 

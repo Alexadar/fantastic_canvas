@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-terminal-webapp"
 version.workspace = true
 edition.workspace = true
@@ -6,7 +7,6 @@ license.workspace = true
 description = "xterm UI front-end as an agent — serves the terminal HTML at /<id>/, fronting a terminal_backend."
 
 [dependencies]
-fantastic-bundle = { path = "../../fantastic-bundle" }
 fantastic-kernel = { path = "../../fantastic-kernel" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }

@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "fantastic-cli"
 version.workspace = true
 edition.workspace = true
@@ -12,7 +13,6 @@ path = "src/main.rs"
 [dependencies]
 fantastic-kernel = { path = "../fantastic-kernel" }
 fantastic-core = { path = "../bundles/fantastic-core" }
-fantastic-cli-bundle = { path = "../bundles/fantastic-cli-bundle" }
 fantastic-file = { path = "../bundles/fantastic-file" }
 fantastic-web = { path = "../bundles/fantastic-web" }
 fantastic-web-ws = { path = "../bundles/fantastic-web-ws" }
@@ -35,7 +35,6 @@ fantastic-python-runtime = { path = "../bundles/fantastic-python-runtime", optio
 fantastic-local-runner = { path = "../bundles/fantastic-local-runner", optional = true }
 fantastic-ssh-runner = { path = "../bundles/fantastic-ssh-runner", optional = true }
 tokio = { workspace = true }
-anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
