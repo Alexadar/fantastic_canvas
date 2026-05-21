@@ -54,17 +54,58 @@ can't see live in-memory state.
 
 ## Index
 
+The Rust runtime ships the same 21 bundles as Python and serves the
+same user-facing wire surfaces (CLI, HTTP, WS, REST, PTY, browser).
+Two kinds of specs apply:
+
+### Cross-runtime — drive Python's per-bundle specs against `./target/release/fantastic`
+
+The Python `selftest.md` index ([`../python/selftest.md`](../python/selftest.md))
+points at 19 per-bundle specs. They describe user-facing behaviour
+(verb shapes, persisted file layout, WS frames). Run them against
+the Rust binary by substituting the binary path:
+
+```bash
+# Build the Rust binary once:
+cd rust && cargo build --release --bin fantastic
+
+# Then run Python selftests as written, but with the Rust binary:
+export PATH="$(pwd)/target/release:$PATH"
+which fantastic    # → /<your-repo>/rust/target/release/fantastic
+fantastic --version 2>&1 | head -1
+
+# Drive each Python per-bundle spec as written.
+cd ../python
+cat bundled_agents/file/selftest.md     # ← read; run the bash blocks
+cat bundled_agents/web/host/selftest.md
+# ...etc, for every bundle you want to exercise
+```
+
+Specs that work cross-runtime without modification: file, web, web_ws,
+web_rest, html_agent, canvas_backend, canvas_webapp, gl_agent,
+telemetry_pane, ai_chat_webapp, ollama_backend (needs running ollama),
+nvidia_nim_backend (needs api_key), terminal_webapp, scheduler,
+kernel_bridge (memory + WS + HTTP transports), local_runner, ssh_runner.
+
+Specs with Rust-specific deltas worth noting (verbs match; only the
+binary path + a few env vars differ): python_runtime
+(uses `FANTASTIC_PYTHON` env on Rust — see overlay spec), terminal_backend
+(image-paste via WS binary frame channel, also covered in overlay).
+
+### Rust-specific overlay specs
+
+These cover behaviour that exists ONLY in the Rust runtime, has no
+Python equivalent, or differs in ways the cross-runtime specs don't
+exercise:
+
 | File | Scopes | Requires |
 |---|---|---|
-| [`crates/fantastic-kernel/selftest.md`](crates/fantastic-kernel/selftest.md) | substrate, persistence | `cargo build --release` |
-| [`crates/bundles/fantastic-core/selftest.md`](crates/bundles/fantastic-core/selftest.md) | substrate | running daemon |
-| [`crates/bundles/fantastic-cli-bundle/selftest.md`](crates/bundles/fantastic-cli-bundle/selftest.md) | cli, rendering | tty |
-| [`crates/bundles/fantastic-file/selftest.md`](crates/bundles/fantastic-file/selftest.md) | persistence, fs | running daemon |
-| [`crates/bundles/fantastic-web/selftest.md`](crates/bundles/fantastic-web/selftest.md) | HTTP, rendering | free port |
-| [`crates/bundles/fantastic-web-ws/selftest.md`](crates/bundles/fantastic-web-ws/selftest.md) | WS, transport | `fantastic-web` parent |
-| [`crates/bundles/fantastic-web-rest/selftest.md`](crates/bundles/fantastic-web-rest/selftest.md) | HTTP, REST | `fantastic-web` parent |
+| [`selftest/feature_gates.md`](selftest/feature_gates.md) | build, packaging | `cargo` |
+| [`selftest/python_runtime_resolution.md`](selftest/python_runtime_resolution.md) | python_runtime, env, PATH | Rust `fantastic` binary, optional Python on PATH |
+| [`selftest/binary_frame_chunking.md`](selftest/binary_frame_chunking.md) | WS, transport, multi-modal | Rust `fantastic` binary, websocket client |
+| [`selftest/cross_runtime_workdir.md`](selftest/cross_runtime_workdir.md) | persistence, cross-runtime | Both Python `uv sync` and Rust binary |
 
-Phase 1 selftests are CONTRACTS — they describe what each crate
-must verify when its impl lands. The `compat.yml` CI workflow runs
-the same set of probes against both the binary and the documented
-spec; any drift fails the build.
+These four specs run only against the Rust runtime — they assert
+things the Python kernel doesn't expose (the `FANTASTIC_PYTHON` env,
+the chunked WS binary frame protocol, the feature-gate compile
+matrix, and round-trip workdir loading across both kernels).
