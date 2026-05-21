@@ -31,6 +31,7 @@ members = [
     "crates/bundles/fantastic-python-runtime",
     "crates/bundles/fantastic-local-runner",
     "crates/bundles/fantastic-ssh-runner",
+    "crates/uniffi-bindgen",
 ]
 
 [workspace.package]

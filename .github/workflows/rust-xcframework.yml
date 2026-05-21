@@ -37,10 +37,13 @@ jobs:
           workspaces: rust
 
       # `build-xcframework.sh` shells out to `uniffi-bindgen` to emit
-      # the Swift bindings; the GH runner doesn't have it on PATH by
-      # default. `--locked` pins to whatever version is in our deps.
-      - name: install uniffi-bindgen-cli
-        run: cargo install uniffi-bindgen-cli --locked
+      # the Swift bindings. `uniffi-bindgen-cli` isn't on crates.io
+      # for the 0.29.x line — we ship a tiny workspace member
+      # (`crates/uniffi-bindgen`) that re-exports uniffi's CLI pinned
+      # to our exact uniffi version. `cargo install --path` builds it.
+      - name: install uniffi-bindgen
+        working-directory: rust
+        run: cargo install --path crates/uniffi-bindgen --locked
 
       - name: build XCFramework
         run: |
