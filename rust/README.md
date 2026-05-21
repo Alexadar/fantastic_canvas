@@ -344,6 +344,16 @@ See [`selftest.md`](selftest.md) for the index + driving workflow.
 
 ## Pre-push checks
 
+> **Working with Claude on this repo?** Run `./scripts/quality.sh`
+> (or its individual sections) before every commit you ask Claude
+> to make. Claude SHOULD pick the strictest tools available — clippy
+> with `-D warnings`, `cargo fmt --check`, `cargo deny`, strict YAML
+> parsing on workflow edits — so CI doesn't surface lint issues
+> the local toolchain quietly accepted (Rust toolchain version
+> skew has burned us twice). No git hooks installed by design;
+> the gate is operator-driven via the script + Claude's own
+> pre-commit sweep.
+
 Single command — `./scripts/quality.sh` runs the canonical gate
 (8 sections): `compile`, `fmt`, `clippy`, `test`, `deny`, `audit`,
 `machete`, `tree`. See the script header for what each does and
