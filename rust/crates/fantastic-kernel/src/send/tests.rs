@@ -82,14 +82,16 @@ async fn watch_then_emit_fans_payload_to_watcher() {
     kernel
         .emit(&AgentId::from("src"), json!({"type": "hello", "k": 1}))
         .await;
-    // Watcher receives the state event (type=emit, target=src, ...).
+    // Watcher receives the RAW emit payload (Python parity — see
+    // Kernel::fanout_to_watchers). State subscribers above got the
+    // metadata envelope ({type:"emit", sender, target, verb, summary});
+    // watchers see what was actually emitted.
     let got = tokio::time::timeout(std::time::Duration::from_millis(100), rx_watcher.recv())
         .await
         .expect("watcher receive within 100ms")
         .expect("channel still open");
-    assert_eq!(got["type"], "emit");
-    assert_eq!(got["target"], "src");
-    assert_eq!(got["verb"], "hello");
+    assert_eq!(got["type"], "hello");
+    assert_eq!(got["k"], 1);
 }
 
 #[tokio::test]

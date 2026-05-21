@@ -815,8 +815,6 @@ async fn reader_loop(
     // xterm UI calls `t.watch(upstream)` where upstream = this agent's
     // id, so watchers see the events. Mirrors Python's design.
     let emit_target = agent_id.clone();
-    // `parent` kept for cleanup_on_exit signature only.
-    let parent = parent_of(&agent_id, &kernel).unwrap_or_else(|| agent_id.clone());
     loop {
         // Flow control: if we're past the threshold, wait for a resume.
         let paused = state.flow.lock().expect("flow poisoned").paused;
@@ -868,7 +866,7 @@ async fn reader_loop(
         };
         if chunk.is_empty() {
             // EOF — child exited.
-            cleanup_on_exit(&agent_id, &kernel, &parent, &state).await;
+            cleanup_on_exit(&agent_id, &kernel, &emit_target, &state).await;
             return;
         }
         // Incremental UTF-8 decode. `encoding_rs::Decoder::decode_to_string`
@@ -946,11 +944,6 @@ async fn cleanup_on_exit(
 }
 
 // ── meta + helpers ───────────────────────────────────────────────────
-
-fn parent_of(agent_id: &AgentId, kernel: &Kernel) -> Option<AgentId> {
-    let agent = kernel.agents.get(agent_id).map(|e| Arc::clone(&e))?;
-    agent.parent_id.clone()
-}
 
 fn meta_string(agent_id: &AgentId, kernel: &Kernel, key: &str) -> Option<String> {
     let agent = kernel.agents.get(agent_id).map(|e| Arc::clone(&e))?;

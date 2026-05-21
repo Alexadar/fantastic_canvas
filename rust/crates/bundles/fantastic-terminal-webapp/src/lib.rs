@@ -128,7 +128,7 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
         .expect("meta poisoned")
         .get("upstream_id")
         .and_then(Value::as_str)
-        .map(|s| AgentId::from(s));
+        .map(AgentId::from);
     if let Some(up) = existing_upstream.as_ref() {
         if kernel.agents.contains_key(up) {
             return Value::Null;

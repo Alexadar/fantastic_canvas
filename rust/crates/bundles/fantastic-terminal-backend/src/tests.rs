@@ -63,22 +63,21 @@ async fn mk_term(
     parent_payload.insert("type".to_string(), json!("create_agent"));
     parent_payload.insert("handler_module".to_string(), json!(HANDLER_MODULE)); // any
     parent_payload.insert("id".to_string(), json!(parent_id_str));
-    // The parent shouldn't actually serve verbs in these tests — we
-    // only need it as an emit target — but create_agent requires
-    // handler_module. Using the terminal_backend handler is fine
-    // because the parent is never `boot`ed.
+    // `auto_start=false` is critical here. create_agent now auto-fires
+    // boot (Python parity — see lifecycle::create_from_payload), and
+    // the parent's handler_module is terminal_backend.tools, so without
+    // this its boot would default-spawn a PTY. We don't want that — the
+    // parent agent is only a routing placeholder. Setting auto_start=false
+    // makes its boot a no-op.
+    parent_payload.insert("auto_start".to_string(), json!(false));
     kernel
         .send(&AgentId::from("core"), Value::Object(parent_payload))
         .await;
 
-    // Replace the parent's inbox sender with one whose rx we own,
-    // BEFORE the backend boots — emits from the reader land here.
-    let (tx, rx) = mpsc::channel(kernel.inbox_bound);
-    kernel
-        .inboxes
-        .insert(AgentId::from(parent_id_str.as_str()), tx);
-
-    // Backend agent as a child of the parent.
+    // Backend agent as a child of the parent. Create FIRST so the
+    // backend's id exists; we then replace ITS inbox tx with one
+    // whose rx we own. Reader emits to self (Python parity — see
+    // reader_loop), so the rx must be bound to the backend's id.
     let mut term_payload = Map::new();
     term_payload.insert("type".to_string(), json!("create_agent"));
     term_payload.insert("handler_module".to_string(), json!(HANDLER_MODULE));
@@ -96,6 +95,15 @@ async fn mk_term(
             Value::Object(term_payload),
         )
         .await;
+
+    // Replace the BACKEND's inbox sender so we can observe the
+    // emits the reader fires to self. (Done after create_agent +
+    // its auto-boot — neither calls back into our rx, and the
+    // reader hasn't started yet because `auto_start=false`.)
+    let (tx, rx) = mpsc::channel(kernel.inbox_bound);
+    kernel
+        .inboxes
+        .insert(AgentId::from(term_id_str.as_str()), tx);
 
     (
         kernel,
@@ -141,8 +149,9 @@ async fn collect_events(
 fn concat_text(events: &[Value]) -> String {
     let mut s = String::new();
     for e in events {
-        if e.get("type").and_then(Value::as_str) == Some("data") {
-            if let Some(t) = e.get("text").and_then(Value::as_str) {
+        // Wire shape: `{type:"output", data:str}` (Python parity).
+        if e.get("type").and_then(Value::as_str) == Some("output") {
+            if let Some(t) = e.get("data").and_then(Value::as_str) {
                 s.push_str(t);
             }
         }
@@ -197,7 +206,7 @@ async fn spawn_runs_echo_command_and_emits_data() {
     assert_eq!(r["spawned"], true, "spawn failed: {r:?}");
     let events = collect_events(&mut rx, Duration::from_secs(3), |evs| {
         evs.iter()
-            .any(|e| e.get("type").and_then(Value::as_str) == Some("exited"))
+            .any(|e| e.get("type").and_then(Value::as_str) == Some("closed"))
     })
     .await;
     let text = concat_text(&events);
@@ -208,7 +217,7 @@ async fn spawn_runs_echo_command_and_emits_data() {
     assert!(
         events
             .iter()
-            .any(|e| e.get("type").and_then(Value::as_str) == Some("exited")),
+            .any(|e| e.get("type").and_then(Value::as_str) == Some("closed")),
         "expected exited event, got: {events:?}"
     );
     let _ = kernel.send(&term, json!({"type": "stop"})).await;
@@ -355,7 +364,7 @@ async fn utf8_chunk_boundary_safe() {
     assert_eq!(r["spawned"], true);
     let events = collect_events(&mut rx, Duration::from_secs(3), |evs| {
         evs.iter()
-            .any(|e| e.get("type").and_then(Value::as_str) == Some("exited"))
+            .any(|e| e.get("type").and_then(Value::as_str) == Some("closed"))
     })
     .await;
     let text = concat_text(&events);
@@ -416,12 +425,12 @@ async fn stop_kills_child_and_emits_exited() {
     // is reaped. Allow up to 3 s.
     let events = collect_events(&mut rx, Duration::from_secs(3), |evs| {
         evs.iter()
-            .any(|e| e.get("type").and_then(Value::as_str) == Some("exited"))
+            .any(|e| e.get("type").and_then(Value::as_str) == Some("closed"))
     })
     .await;
     let saw_exit = events
         .iter()
-        .any(|e| e.get("type").and_then(Value::as_str) == Some("exited"));
+        .any(|e| e.get("type").and_then(Value::as_str) == Some("closed"));
     // The reader task is also aborted on stop, so emit may not land
     // if abort wins the race. Either path is acceptable; assert the
     // child is no longer in the TERMINALS map.

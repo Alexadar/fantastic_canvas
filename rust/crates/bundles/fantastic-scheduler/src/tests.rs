@@ -86,7 +86,11 @@ async fn reflect_reports_state() {
     let expected_ff = format!("ff_{}", sch.as_str());
     assert_eq!(r["file_agent_id"], expected_ff);
     assert_eq!(r["paused"], false);
-    assert_eq!(r["running"], false);
+    // `create_agent` auto-fires boot (Python parity — see
+    // lifecycle::create_from_payload). Scheduler.boot with
+    // file_agent_id + tick_sec set starts the tick loop, so
+    // running is true by reflect time.
+    assert_eq!(r["running"], true);
 }
 
 #[tokio::test]

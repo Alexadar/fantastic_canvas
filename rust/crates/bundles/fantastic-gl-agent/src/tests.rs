@@ -92,13 +92,13 @@ async fn set_gl_source_persists_and_emits() {
     assert_eq!(r["id"], "g2");
     assert_eq!(r["bytes"], 6);
 
-    // The watcher's inbox should now contain a state-event envelope
-    // describing the emit (fanout_to_watchers delivers the event, not
-    // the raw payload — see Kernel::emit in fantastic-kernel/send.rs).
+    // Watcher's inbox receives the RAW payload (Python parity — see
+    // Kernel::fanout_to_watchers in fantastic-kernel/src/send.rs).
+    // State subscribers above already got the metadata envelope
+    // ({type:"emit", sender, target, verb, summary}); watchers see
+    // what was emitted, not metadata about it.
     let event = rx.try_recv().expect("watcher should receive the emit");
-    assert_eq!(event["type"], "emit");
-    assert_eq!(event["target"], "g2");
-    assert_eq!(event["verb"], "gl_source_changed");
+    assert_eq!(event["type"], "gl_source_changed");
 
     // Persistence: agent.json holds glsl_source.
     let path = tmp.path().join(".fantastic/agents/g2/agent.json");

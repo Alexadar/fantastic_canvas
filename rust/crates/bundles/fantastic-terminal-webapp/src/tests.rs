@@ -109,6 +109,22 @@ async fn reflect_includes_upstream_id() {
     );
     let _rx = kernel.register(Arc::clone(&root));
     kernel.set_root(Arc::clone(&root));
+    // Pre-create the upstream backend the webapp will be bound to.
+    // Without this, the webapp's auto-fired boot would refuse to
+    // recognise the stale `upstream_id` and auto-pair a fresh
+    // backend, replacing it (matches Python parity — see
+    // terminal_webapp::boot_reply). The realistic test is: bound to
+    // an EXISTING backend, boot is a no-op, upstream_id survives.
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type":"create_agent",
+                "handler_module":"terminal_backend.tools",
+                "id":"tb3",
+            }),
+        )
+        .await;
     kernel
         .send(
             &AgentId::from("core"),

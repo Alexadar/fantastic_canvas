@@ -83,15 +83,20 @@ async fn boot_migrates_html_field_into_index_html() {
             json!({"type":"create_agent","handler_module":HANDLER_MODULE,"id":"h3","html":"<p>seed</p>"}),
         )
         .await;
-    // After create the html field is on meta, no index.html yet.
+    // `create_agent` auto-fires boot (Python parity — see
+    // lifecycle::create_from_payload), so by this point boot has
+    // already migrated the `html` meta field into `index.html` and
+    // stripped it from the record. Verify the migration happened in
+    // the single combined create+boot pass.
     let agent_dir = tmp.path().join(".fantastic/agents/h3");
-    assert!(!agent_dir.join("index.html").exists());
-    // Boot migrates.
+    let body = std::fs::read_to_string(agent_dir.join("index.html"))
+        .expect("create_agent should auto-fire boot which writes index.html");
+    assert_eq!(body, "<p>seed</p>");
+    // Idempotent re-boot — should be a no-op (the field's already
+    // stripped from meta + the file's already written).
     let _ = kernel
         .send(&AgentId::from("h3"), json!({"type": "boot"}))
         .await;
-    let body = std::fs::read_to_string(agent_dir.join("index.html")).unwrap();
-    assert_eq!(body, "<p>seed</p>");
     // render_html now returns the body.
     let r = kernel
         .send(&AgentId::from("h3"), json!({"type": "render_html"}))
