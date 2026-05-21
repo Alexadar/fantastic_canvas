@@ -42,20 +42,35 @@
     }
     return null;
   }
+  // Block dotted-path segments that would touch Object.prototype.
+  // Defense-in-depth against prototype pollution: even though
+  // _binary_path strings come from the kernel today, treating the
+  // wire as untrusted protects against future code paths or proxies.
+  // Flagged by CodeQL (Prototype-polluting assignment / function).
+  function isUnsafePathPart(part) {
+    return part === '__proto__' || part === 'prototype' || part === 'constructor';
+  }
   function getPath(obj, path) {
     var parts = path.split('.');
     var cur = obj;
     for (var i = 0; i < parts.length; i++) {
+      if (isUnsafePathPart(parts[i])) return undefined;
+      if (cur === null || typeof cur !== 'object') return undefined;
       cur = Array.isArray(cur) ? cur[parseInt(parts[i], 10)] : cur[parts[i]];
     }
     return cur;
   }
   function setPath(obj, path, value) {
     var parts = path.split('.');
+    for (var j = 0; j < parts.length; j++) {
+      if (isUnsafePathPart(parts[j])) return;
+    }
     var cur = obj;
     for (var i = 0; i < parts.length - 1; i++) {
+      if (cur === null || typeof cur !== 'object') return;
       cur = Array.isArray(cur) ? cur[parseInt(parts[i], 10)] : cur[parts[i]];
     }
+    if (cur === null || typeof cur !== 'object') return;
     var last = parts[parts.length - 1];
     if (Array.isArray(cur)) cur[parseInt(last, 10)] = value;
     else cur[last] = value;
