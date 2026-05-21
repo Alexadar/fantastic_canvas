@@ -36,8 +36,11 @@ grep -q "fantastic" /tmp/fw_test/root.html
 
 ```bash
 curl -sf http://localhost:$PORT/transport.js | grep -q "fantastic_transport"
-# Page render also injects transport.js automatically:
-curl -sf http://localhost:$PORT/w/ | grep -q "transport.js"
+# Page render also injects transport.js automatically — at the root
+# index (`/`) and at every renderable agent's path (`/<id>/`). The
+# `web` agent itself does NOT answer `render_html` (it's the host,
+# not a renderable), so `/w/` 404s by design. Test the root index:
+curl -sf http://localhost:$PORT/ | grep -q "transport.js"
 ```
 
 ### Test 3: per-agent render_html

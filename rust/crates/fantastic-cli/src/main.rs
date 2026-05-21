@@ -168,6 +168,20 @@ async fn dispatch(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let _ = fantastic_core::seed_root_readme(&workdir);
     let kernel = Arc::clone(&booted.kernel);
 
+    // Attach the stdout renderer BEFORE the boot loop so its state
+    // subscriber observes the boot events (created/send/emit). Without
+    // an early attach, the renderer comes online after boot completes
+    // and a quiet daemon shows nothing until the first external event.
+    // Python parity — `core.run()` composes the cli renderer before
+    // running its boot phase when stdin.isatty().
+    use std::io::IsTerminal;
+    let has_tty = std::io::stdin().is_terminal();
+    let _cli_token = if has_tty {
+        Some(fantastic_cli_bundle::attach(&kernel))
+    } else {
+        None
+    };
+
     // `boot` every loaded agent. The web bundle uses this to spawn its
     // axum listener; other bundles use it for whatever lazy init they
     // need. Failures are logged + skipped — boot must never abort the
@@ -179,14 +193,13 @@ async fn dispatch(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Composition decision: block ONLY if at least one agent is a web
-    // host (or if stdin is a tty — REPL mode in a later phase). Else
-    // exit silently, matching the python kernel's compose semantics.
+    // Composition decision: block on a web daemon OR on an attached
+    // tty. Else exit silently.
     let has_web = kernel
         .agents
         .iter()
         .any(|e| e.value().handler_module.as_deref() == Some("web.tools"));
-    if !has_web {
+    if !has_web && !has_tty {
         bootstrap::shutdown(&workdir)?;
         return Ok(());
     }

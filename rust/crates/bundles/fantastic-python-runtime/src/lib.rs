@@ -159,12 +159,21 @@ fn snapshot_meta(agent_id: &AgentId, kernel: &Kernel) -> Map<String, Value> {
     }
 }
 
+/// Read a string field, treating empty strings as absent. Callers
+/// (`update_agent id=py python=""`) pass `""` to unset — without this
+/// filter the resolver picks up the empty path and spawn fails with
+/// ENOENT. Discovered by `python_runtime_resolution.md` Tests 4/5/6/8.
 fn meta_str<'a>(meta: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
-    meta.get(key).and_then(Value::as_str)
+    meta.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 
 fn payload_str<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
-    payload.get(key).and_then(Value::as_str)
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 
 // ── interpreter resolution ──────────────────────────────────────────

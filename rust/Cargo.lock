@@ -445,6 +445,7 @@ dependencies = [
  "fantastic-ai-chat-webapp",
  "fantastic-canvas-backend",
  "fantastic-canvas-webapp",
+ "fantastic-cli-bundle",
  "fantastic-core",
  "fantastic-file",
  "fantastic-gl-agent",

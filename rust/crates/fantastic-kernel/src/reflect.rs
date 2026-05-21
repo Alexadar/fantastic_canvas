@@ -82,6 +82,11 @@ fn primer(kernel: &Arc<Kernel>, root: &Arc<Agent>, return_readme: bool) -> Value
         })
         .collect();
     let mut obj = Map::new();
+    // Top-level `id` so the primer shape uniformly carries id alongside
+    // per-agent reflects (`{id, sentence, verbs, ...}`). Callers can
+    // `.id == "core"` on either form without special-casing the
+    // primer. Mirrors how Python's reflect-on-root surfaces it.
+    obj.insert("id".to_string(), json!(root.id.0));
     obj.insert(
         "sentence".to_string(),
         json!("Fantastic kernel. Everything is reachable by sending messages to agents."),

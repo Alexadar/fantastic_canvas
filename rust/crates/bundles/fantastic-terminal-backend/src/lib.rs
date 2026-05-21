@@ -652,6 +652,25 @@ fn output_reply(agent_id: &AgentId, payload: &Value) -> Value {
     } else {
         full
     };
+    // Reset flow-control state. Frontends call `output` on connect to
+    // populate their xterm buffer from scrollback — the act of fetching
+    // it IS an implicit ack of every prior byte. Without this reset,
+    // a closed browser tab leaves the backend's `unacked` counter near
+    // the 100K cap, the reader stays paused, and the next browser
+    // session can't get echoes (terminal appears hung). Discovered
+    // empirically: type 3 chars, term hangs; manual ack drains and
+    // unsticks. This makes the unstick automatic.
+    {
+        let mut flow = state.flow.lock().expect("flow poisoned");
+        if flow.unacked_bytes > 0 {
+            flow.unacked_bytes = 0;
+            if flow.paused {
+                flow.paused = false;
+                state.resume_notify.notify_one();
+            }
+        }
+    }
+    state.unacked_atomic.store(0, Ordering::Relaxed);
     json!({"output": trimmed})
 }
 

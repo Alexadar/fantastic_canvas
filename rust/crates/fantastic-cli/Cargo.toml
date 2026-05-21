@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 fantastic-kernel = { path = "../fantastic-kernel" }
 fantastic-core = { path = "../bundles/fantastic-core" }
+fantastic-cli-bundle = { path = "../bundles/fantastic-cli-bundle" }
 fantastic-file = { path = "../bundles/fantastic-file" }
 fantastic-web = { path = "../bundles/fantastic-web" }
 fantastic-web-ws = { path = "../bundles/fantastic-web-ws" }
