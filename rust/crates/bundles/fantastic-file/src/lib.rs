@@ -267,30 +267,75 @@ fn read_reply(root: &Path, payload: &Value) -> Value {
         .and_then(|e| e.to_str())
         .map(|e| format!(".{}", e.to_lowercase()))
         .unwrap_or_default();
+    // Three return shapes (Python parity, file/tools.py:122):
+    //   1. image extension      → {path, image_base64, mime}
+    //   2. UTF-8-readable file  → {path, content}
+    //   3. any other binary     → {path, image_base64, mime}
+    //
+    // The third branch handles videos (.mp4), PDFs, fonts, archives —
+    // anything that isn't text. Reusing `image_base64` as the carry
+    // field keeps the wire compatible with the existing web proxy
+    // (which already base64-decodes that field and serves with the
+    // reply's `mime`). Mime comes from the extension lookup; falls
+    // back to `application/octet-stream` for the unrecognised tail.
     if IMAGE_EXT.contains(&ext_lower.as_str()) {
-        match std::fs::read(&target) {
-            Ok(bytes) => {
-                let mime = match ext_lower.as_str() {
-                    ".png" => "image/png",
-                    ".jpg" | ".jpeg" => "image/jpeg",
-                    ".gif" => "image/gif",
-                    ".webp" => "image/webp",
-                    ".svg" => "image/svg+xml",
-                    _ => "application/octet-stream",
-                };
-                json!({
-                    "path": path_str,
-                    "image_base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
-                    "mime": mime,
-                })
-            }
-            Err(e) => json!({"error": format!("read {}: {e}", target.display())}),
+        return read_binary(&target, &path_str, &ext_lower);
+    }
+    match std::fs::read_to_string(&target) {
+        Ok(content) => json!({"path": path_str, "content": content}),
+        // ENOENT / EACCES / etc. genuinely failed — propagate.
+        Err(e) if e.kind() != std::io::ErrorKind::InvalidData => {
+            json!({"error": format!("read {}: {e}", target.display())})
         }
-    } else {
-        match std::fs::read_to_string(&target) {
-            Ok(content) => json!({"path": path_str, "content": content}),
-            Err(e) => json!({"error": format!("read {}: {e}", target.display())}),
+        // InvalidData = non-UTF-8 file. Fall through to binary path.
+        Err(_) => read_binary(&target, &path_str, &ext_lower),
+    }
+}
+
+/// Read `target` as raw bytes + return base64 + mime. Used for any
+/// non-UTF-8 file (videos, PDFs, fonts, archives) and explicitly for
+/// known image extensions. Mime guess comes from the extension; falls
+/// back to `application/octet-stream` for unknown extensions.
+fn read_binary(target: &Path, path_str: &str, ext_lower: &str) -> Value {
+    match std::fs::read(target) {
+        Ok(bytes) => {
+            let mime = mime_for_ext(ext_lower);
+            json!({
+                "path": path_str,
+                "image_base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                "mime": mime,
+            })
         }
+        Err(e) => json!({"error": format!("read {}: {e}", target.display())}),
+    }
+}
+
+/// Mime lookup for the (small) set of extensions consumers actually
+/// see. Goal: enough coverage that the web proxy serves the correct
+/// `Content-Type` for `<img>` / `<video>` / `<audio>` / `<embed>`
+/// elements without the browser sniffing.
+fn mime_for_ext(ext_lower: &str) -> &'static str {
+    match ext_lower {
+        ".png" => "image/png",
+        ".jpg" | ".jpeg" => "image/jpeg",
+        ".gif" => "image/gif",
+        ".webp" => "image/webp",
+        ".svg" => "image/svg+xml",
+        ".mp4" => "video/mp4",
+        ".webm" => "video/webm",
+        ".mov" => "video/quicktime",
+        ".m4v" => "video/x-m4v",
+        ".mp3" => "audio/mpeg",
+        ".wav" => "audio/wav",
+        ".ogg" => "audio/ogg",
+        ".m4a" => "audio/mp4",
+        ".pdf" => "application/pdf",
+        ".woff" => "font/woff",
+        ".woff2" => "font/woff2",
+        ".ttf" => "font/ttf",
+        ".otf" => "font/otf",
+        ".zip" => "application/zip",
+        _ => "application/octet-stream",
     }
 }
 
