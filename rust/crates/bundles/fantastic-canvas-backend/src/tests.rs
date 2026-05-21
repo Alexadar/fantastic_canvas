@@ -75,9 +75,7 @@ impl Bundle for GlOnlyStub {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         Ok(Some(match verb {
             "get_gl_view" => json!({
-                "glsl_source": "// stub",
-                "default_width": 800,
-                "default_height": 600,
+                "source": "// stub",
                 "title": "gl",
             }),
             "reflect" => json!({"id": agent_id.as_str(), "sentence": "gl stub"}),

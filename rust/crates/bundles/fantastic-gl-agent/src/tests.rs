@@ -53,7 +53,7 @@ async fn reflect_reports_has_source_flag() {
     kernel
         .send(
             &AgentId::from("g1"),
-            json!({"type": "set_gl_source", "glsl_source": "// hi", "title": "T"}),
+            json!({"type": "set_gl_source", "source": "// hi", "title": "T"}),
         )
         .await;
     let r2 = kernel
@@ -85,7 +85,7 @@ async fn set_gl_source_persists_and_emits() {
     let r = kernel
         .send(
             &AgentId::from("g2"),
-            json!({"type": "set_gl_source", "glsl_source": "// new"}),
+            json!({"type": "set_gl_source", "source": "// new"}),
         )
         .await;
     assert_eq!(r["ok"], true);
@@ -100,11 +100,11 @@ async fn set_gl_source_persists_and_emits() {
     let event = rx.try_recv().expect("watcher should receive the emit");
     assert_eq!(event["type"], "gl_source_changed");
 
-    // Persistence: agent.json holds glsl_source.
+    // Persistence: agent.json holds gl_source.
     let path = tmp.path().join(".fantastic/agents/g2/agent.json");
     let raw = std::fs::read_to_string(&path).expect("agent.json written");
     let rec: Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(rec["glsl_source"], "// new");
+    assert_eq!(rec["gl_source"], "// new");
 }
 
 #[tokio::test]
@@ -120,16 +120,14 @@ async fn get_gl_view_returns_iframe_payload() {
     kernel
         .send(
             &AgentId::from("g3"),
-            json!({"type": "set_gl_source", "glsl_source": "// body"}),
+            json!({"type": "set_gl_source", "source": "// body"}),
         )
         .await;
     let r = kernel
         .send(&AgentId::from("g3"), json!({"type": "get_gl_view"}))
         .await;
-    assert_eq!(r["glsl_source"], "// body");
-    assert_eq!(r["default_width"], 800);
-    assert_eq!(r["default_height"], 600);
-    // No explicit title set → falls back to display_name.
+    // Python parity: get_gl_view returns {source, title} only.
+    assert_eq!(r["source"], "// body");
     assert_eq!(r["title"], "DN");
 }
 
@@ -146,7 +144,7 @@ async fn get_gl_source_returns_stub_when_missing() {
     let r = kernel
         .send(&AgentId::from("g4"), json!({"type": "get_gl_source"}))
         .await;
-    let src = r["glsl_source"].as_str().unwrap();
+    let src = r["source"].as_str().unwrap();
     assert!(src.contains("no source set"));
 }
 

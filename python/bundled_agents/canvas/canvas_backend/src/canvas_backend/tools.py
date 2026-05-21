@@ -120,13 +120,7 @@ async def _add_agent(id, payload, agent):
     wa = await agent.send(member_id, {"type": "get_webapp"})
     has_dom = isinstance(wa, dict) and wa.get("url") and not wa.get("error")
     gl = await agent.send(member_id, {"type": "get_gl_view"})
-    # Accept both `glsl_source` (cross-runtime canonical, matches Rust)
-    # and the legacy `source` field name during the deprecation window.
-    has_gl = (
-        isinstance(gl, dict)
-        and (gl.get("glsl_source") or gl.get("source"))
-        and not gl.get("error")
-    )
+    has_gl = isinstance(gl, dict) and gl.get("source") and not gl.get("error")
     if not (has_dom or has_gl):
         # Roll back via cascade delete — kills the spawned agent's
         # subtree along with it.

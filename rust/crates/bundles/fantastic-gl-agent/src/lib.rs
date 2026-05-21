@@ -1,10 +1,9 @@
 //! GL-view-as-a-record bundle.
 //!
-//! Mirror of `html_agent` for WebGL content. The agent's
-//! `glsl_source` field IS the GL-view JS body; a canvas host
-//! (`canvas_webapp`) probes [`get_gl_view`](#verbs) and compiles the
-//! returned source via
-//! `new Function('THREE','scene','t','onFrame','cleanup', source)`,
+//! Mirror of `html_agent` for WebGL content. The agent's `gl_source`
+//! field IS the GL-view JS body; a canvas host (`canvas_webapp`)
+//! probes [`get_gl_view`](#verbs) and compiles the returned source
+//! via `new Function('THREE','scene','t','onFrame','cleanup', source)`,
 //! running it inside its own per-view `THREE.Group` container — the
 //! scene-graph analogue of an `html_agent` iframe.
 //!
@@ -13,7 +12,7 @@
 //! {"type":"call","target":"core","payload":{
 //!   "type":"create_agent",
 //!   "handler_module":"gl_agent.tools",
-//!   "glsl_source":"...JS body...",
+//!   "gl_source":"...JS body...",
 //!   "title":"AVS",
 //!   "display_name":"AVS bg"
 //! },"id":"1"}
@@ -22,14 +21,14 @@
 //! ## Verbs
 //!
 //! - `reflect` → `{id, sentence, has_source, title, verbs}`
-//! - `get_gl_source` → `{glsl_source}` (the JS body stored on the
+//! - `get_gl_source` → `{source}` (the JS body stored on the
 //!   record, or a stub if missing).
-//! - `set_gl_source` args `{glsl_source:str}` → replaces the source
-//!   on the record + emits `gl_source_changed` on self so a canvas
-//!   hosting the view reinstalls it in place (dispose the group +
-//!   recompile) — same agent id, no canvas refresh.
-//! - `get_gl_view` → `{glsl_source, default_width, default_height,
-//!   title}` — the iframe-eligible payload canvas hosts consume.
+//! - `set_gl_source` args `{source:str}` → replaces the source on the
+//!   record + emits `gl_source_changed` on self so a canvas hosting
+//!   the view reinstalls it in place (dispose the group + recompile)
+//!   — same agent id, no canvas refresh.
+//! - `get_gl_view` → `{source, title}` — the canvas-host renderable
+//!   payload. Byte-identical to Python's.
 //! - `boot` / `shutdown` → no-op.
 
 #![deny(missing_docs)]
@@ -47,8 +46,8 @@ pub const HANDLER_MODULE: &str = "gl_agent.tools";
 pub const README: &str = include_str!("readme.md");
 
 /// Stub source returned by `get_gl_source` when the record has no
-/// `glsl_source` set yet.
-pub const STUB_GLSL: &str = "// gl_agent — no source set. Use set_gl_source to install one.";
+/// `gl_source` set yet.
+pub const STUB_GL_SOURCE: &str = "// gl_agent — no source set. Use set_gl_source to install one.";
 
 /// Default viewport width served via `get_gl_view`.
 pub const DEFAULT_WIDTH: u32 = 800;
@@ -88,7 +87,7 @@ impl Bundle for GlAgentBundle {
             "reflect" => {
                 let meta = agent.meta.read().expect("meta poisoned");
                 let has_source = meta
-                    .get("glsl_source")
+                    .get("gl_source")
                     .and_then(Value::as_str)
                     .map(|s| !s.is_empty())
                     .unwrap_or(false);
@@ -100,14 +99,14 @@ impl Bundle for GlAgentBundle {
                 drop(meta);
                 json!({
                     "id": agent_id.as_str(),
-                    "sentence": "GL-view-as-record. glsl_source stored on agent.json; rendered by canvas hosts that probe get_gl_view.",
+                    "sentence": "GL-view-as-record. gl_source stored on agent.json; rendered by canvas hosts that probe get_gl_view.",
                     "has_source": has_source,
                     "title": title,
                     "verbs": {
                         "reflect": "Identity + has_source flag + title. No args.",
-                        "get_gl_source": "Return {glsl_source: <stored body>} or a stub.",
-                        "set_gl_source": "args: glsl_source:str (req), title:str?. Patches the record + emits gl_source_changed on self.",
-                        "get_gl_view": "Iframe-eligible payload: {glsl_source, default_width, default_height, title}.",
+                        "get_gl_source": "Return {source: <stored body>} or a stub.",
+                        "set_gl_source": "args: source:str (req), title:str?. Patches the record + emits gl_source_changed on self.",
+                        "get_gl_view": "Canvas-host renderable payload: {source, title}.",
                         "boot": "No-op.",
                         "shutdown": "No-op.",
                     }
@@ -115,23 +114,22 @@ impl Bundle for GlAgentBundle {
             }
             "boot" | "shutdown" => Value::Null,
             "get_gl_source" => {
-                let src = agent
-                    .meta
-                    .read()
-                    .expect("meta poisoned")
-                    .get("glsl_source")
+                let meta = agent.meta.read().expect("meta poisoned");
+                let src = meta
+                    .get("gl_source")
                     .and_then(Value::as_str)
                     .map(str::to_string)
-                    .unwrap_or_else(|| STUB_GLSL.to_string());
-                json!({ "glsl_source": src })
+                    .unwrap_or_else(|| STUB_GL_SOURCE.to_string());
+                drop(meta);
+                json!({ "source": src })
             }
             "set_gl_source" => {
-                let Some(src) = payload.get("glsl_source").and_then(Value::as_str) else {
-                    return Ok(Some(json!({"error": "set_gl_source requires glsl_source"})));
+                let Some(src) = payload.get("source").and_then(Value::as_str) else {
+                    return Ok(Some(json!({"error": "gl_agent: source (str) required"})));
                 };
                 {
                     let mut guard = agent.meta.write().expect("meta poisoned");
-                    guard.insert("glsl_source".to_string(), Value::String(src.to_string()));
+                    guard.insert("gl_source".to_string(), Value::String(src.to_string()));
                     if let Some(title) = payload.get("title").and_then(Value::as_str) {
                         guard.insert("title".to_string(), Value::String(title.to_string()));
                     }
@@ -152,7 +150,7 @@ impl Bundle for GlAgentBundle {
             "get_gl_view" => {
                 let meta = agent.meta.read().expect("meta poisoned");
                 let src = meta
-                    .get("glsl_source")
+                    .get("gl_source")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
@@ -163,10 +161,11 @@ impl Bundle for GlAgentBundle {
                     .unwrap_or(agent_id.as_str())
                     .to_string();
                 drop(meta);
+                // Python parity: {source, title} only — no width/height
+                // fields. The canvas.html frontend reads `view.source`
+                // and uses the canvas's own sizing.
                 json!({
-                    "glsl_source": src,
-                    "default_width": DEFAULT_WIDTH,
-                    "default_height": DEFAULT_HEIGHT,
+                    "source": src,
                     "title": title,
                 })
             }

@@ -147,7 +147,7 @@ async fn add_agent_reply(canvas_id: &AgentId, payload: &Value, kernel: &Arc<Kern
 
     // Verify the new member answers either renderable verb. Probe
     // both `get_webapp` (DOM iframe contract: `{url, ...}`) and
-    // `get_gl_view` (WebGL contract: `{glsl_source | source, ...}`)
+    // `get_gl_view` (WebGL contract: `{source, ...}`)
     // — Python parity (`canvas_backend/tools.py:119-129`). gl_agent
     // + telemetry_pane only answer the GL verb; without this probe
     // they can't sit on a Rust canvas.
@@ -158,12 +158,10 @@ async fn add_agent_reply(canvas_id: &AgentId, payload: &Value, kernel: &Arc<Kern
     let gl = kernel
         .send(&new_member_id, json!({"type": "get_gl_view"}))
         .await;
-    // Accept both `glsl_source` (canonical post-Tier-A-rename) and
-    // `source` (legacy spelling kept for cross-runtime workdir
-    // loading). Mirrors Python's `has_gl` check.
-    let has_gl = gl.is_object()
-        && gl.get("error").is_none()
-        && (gl.get("glsl_source").is_some() || gl.get("source").is_some());
+    // Python parity (`canvas_backend/tools.py:123`): `has_gl` checks
+    // `gl.get("source")`. Match exactly so cross-runtime workdirs
+    // route the same.
+    let has_gl = gl.is_object() && gl.get("error").is_none() && gl.get("source").is_some();
     if !(has_dom || has_gl) {
         // Cascade-delete the just-spawned member — canvas-eligible
         // requires a UI verb.
