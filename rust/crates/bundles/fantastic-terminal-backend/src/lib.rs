@@ -1013,18 +1013,32 @@ fn meta_env(agent_id: &AgentId, kernel: &Kernel) -> Vec<(String, String)> {
 /// Detect the user's login shell. Mirrors Python's `_detect_shell`:
 /// honour `$SHELL` if it points at an existing file, otherwise probe
 /// the standard locations. Falls back to `/bin/sh` as a last resort.
+///
+/// Pass `-l` (login flag) so the spawned shell sources the user's
+/// profile (`.zprofile` / `.bash_profile` / `.profile`). The shell is
+/// already interactive (attached to a PTY), so `.zshrc` / `.bashrc`
+/// also load via the shell's normal interactive-detection path.
+/// Without `-l`, opening a fantastic terminal would have a barebones
+/// PATH and no aliases — surprising compared to Terminal.app, which
+/// always spawns its shell as a login shell.
+///
+/// `/bin/sh` doesn't need `-l` since it has no profile (and POSIX sh
+/// doesn't accept `-l` anyway), so it's the one branch without the flag.
 fn default_cmd() -> Vec<String> {
     if cfg!(windows) {
         return vec!["powershell".to_string()];
     }
     if let Ok(sh) = std::env::var("SHELL") {
         if !sh.is_empty() && std::path::Path::new(&sh).is_file() {
-            return vec![sh];
+            if sh.ends_with("/sh") {
+                return vec![sh];
+            }
+            return vec![sh, "-l".to_string()];
         }
     }
-    for cand in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+    for cand in ["/bin/zsh", "/bin/bash"] {
         if std::path::Path::new(cand).is_file() {
-            return vec![cand.to_string()];
+            return vec![cand.to_string(), "-l".to_string()];
         }
     }
     vec!["/bin/sh".to_string()]

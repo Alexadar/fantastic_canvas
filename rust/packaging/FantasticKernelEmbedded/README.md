@@ -1,29 +1,36 @@
-# FantasticKernel — Swift Package
+# FantasticKernelEmbedded — Swift Package
 
-A Swift Package wrapping the Rust kernel as `Fantastic.xcframework`.
-Consume from an Xcode project to embed the kernel inside a sandboxed
-iOS / iPadOS / visionOS / macOS app where spawning a subprocess
-isn't an option (App Sandbox, App Store).
+The **sandboxed / iOS-safe** tier of the Rust kernel as a Swift Package.
+Wraps `Fantastic-Embedded.xcframework`.
+
+Compile-time excludes every PTY / subprocess / dynamic-loading bundle:
+`terminal_backend`, `local_runner`, `python_runtime`, `ssh_runner`.
+What's left is App-Sandbox safe and App-Store-compliant.
+
+Use this from iOS / iPadOS / sandboxed-macOS Lite builds. For
+unsandboxed Pro Mac use the sister package
+[`FantasticKernelFull`](../FantasticKernelFull/).
 
 ## Build the XCFramework
 
 ```bash
 cd ../..             # back to rust/
-./scripts/build-xcframework.sh
+./scripts/build-xcframework-embedded.sh
 ```
 
 Produces:
-- `Fantastic.xcframework/` — universal binary (arm64 + x86_64
-  device, simulator, and macOS slices)
-- `Sources/FantasticKernel/fantastic.swift` — auto-generated UniFFI
-  bindings
+- `Fantastic-Embedded.xcframework/` — ios-arm64 + ios-arm64-simulator + macos-arm64_x86_64
+- `Sources/FantasticKernelEmbedded/fantastic.swift` — auto-generated UniFFI bindings
+
+The convenience wrapper `./scripts/build-xcframework.sh` builds both
+embedded + full variants in one go.
 
 ## Consume from Swift
 
 ```swift
-import FantasticKernel
+import FantasticKernelEmbedded
 
-let kernel = try await Fantastic.startKernel(
+let kernel = try await startKernel(
     workdir: appGroupURL.path,
     portHint: 0
 )
@@ -53,4 +60,4 @@ Same as the standalone CLI:
 
 ## License
 
-MIT.
+AGPL-3.0-or-later (matches the parent crate).

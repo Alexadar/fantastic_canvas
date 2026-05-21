@@ -17,13 +17,19 @@
  *     // ...
  *     kernel.shutdown()
  */
-namespace fantastic {
-    /// Bootstrap a kernel against `workdir` and bring up the axum
-    /// HTTP/WS/REST listener. `portHint=0` means the kernel picks an
-    /// ephemeral port; query `httpPort()` afterwards to learn it.
-    [Async, Throws=KernelError]
-    Kernel start_kernel(string workdir, u16 port_hint);
-};
+// Free functions are declared via proc-macro in `src/lib.rs` (see
+// `#[uniffi::export(async_runtime = "tokio")] pub async fn
+// start_kernel`). Keeping them out of the UDL is the only way to
+// attach a Tokio runtime to the Rust-side async scaffolding in
+// uniffi 0.29 — UDL `[Async]` defers to UniFFI's no-reactor default
+// executor, which panics the first time the future touches a tokio
+// primitive (axum::serve / tokio::spawn / tokio::net).
+//
+// What this UDL still owns: type declarations (the `Kernel` opaque
+// interface, the `KernelError` enum, the `StateListener` callback
+// interface). Methods on `Kernel` are declared via proc-macro too,
+// in the matching `#[uniffi::export]` impl blocks in lib.rs.
+namespace fantastic { };
 
 [Error]
 enum KernelError {
@@ -34,35 +40,13 @@ enum KernelError {
     "Internal",
 };
 
-interface Kernel {
-    /// The port the axum listener bound to. Equal to `portHint` if
-    /// non-zero, otherwise the OS-assigned ephemeral port.
-    u16 http_port();
-
-    /// One-shot JSON-in, JSON-out RPC. Equivalent to the WS `call`
-    /// frame: `kernel.send(target_id, payload_json)` returns the
-    /// reply as a JSON string (or `{"error": "..."}`).
-    [Async]
-    string send_json(string target_id, string payload_json);
-
-    /// Register a Swift listener for the kernel's state-event stream.
-    /// Fires for every send/emit/created/removed/updated event,
-    /// JSON-serialized as a single line per call.
-    ///
-    /// Returns an opaque token. Pass it to [`unsubscribe`] to detach.
-    /// Subscribing inside the embedding app is the right pattern for
-    /// canvas UIs that need to redraw on agent lifecycle changes —
-    /// it avoids polling `reflect` and avoids opening a WebSocket
-    /// against the bundled axum server.
-    u64 subscribe(StateListener listener);
-
-    /// Detach a previously-registered listener. No-op if `token`
-    /// isn't (or no longer is) registered.
-    void unsubscribe(u64 token);
-
-    /// Stop the listener and release the workdir lock. Idempotent.
-    void shutdown();
-};
+// `Kernel` is declared as an opaque interface here — methods on it
+// (http_port, send_json, subscribe, unsubscribe, shutdown) are
+// defined in Rust via `#[uniffi::export] impl Kernel { ... }` blocks
+// in src/lib.rs. The async `send_json` lives in a dedicated
+// `#[uniffi::export(async_runtime = "tokio")]` block so its
+// Rust-side scaffolding runs the future in a Tokio context.
+interface Kernel { };
 
 /// Callback bridge for the kernel's state stream. Implement in Swift,
 /// hand to [`Kernel::subscribe`].

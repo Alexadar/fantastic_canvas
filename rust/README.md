@@ -169,14 +169,18 @@ rust/
 │       ├── fantastic-local-runner/        supervises child fantastic (full-tier)
 │       └── fantastic-ssh-runner/          remote fantastic via SSH (full-tier)
 ├── scripts/
-│   ├── build-cli.sh                   cargo build --release --bin fantastic
-│   ├── build-xcframework.sh           Fantastic.xcframework for SPM
-│   ├── bench-coldstart.sh             3-metric boot benchmark
-│   └── compat-python.sh               black-box wire-protocol probes
-├── selftest.md                        index + 4 Rust-overlay specs
-├── selftest/                          Rust-specific selftest overlays
+│   ├── build-cli.sh                       cargo build --release --bin fantastic
+│   ├── build-xcframework.sh               convenience: build both variants below
+│   ├── build-xcframework.lib.sh           shared helpers (sourced, not run)
+│   ├── build-xcframework-embedded.sh      Fantastic-Embedded.xcframework (iOS-safe)
+│   ├── build-xcframework-full.sh          Fantastic-Full.xcframework (Pro Mac + PTY)
+│   ├── bench-coldstart.sh                 3-metric boot benchmark
+│   └── compat-python.sh                   black-box wire-protocol probes
+├── selftest.md                            index + 4 Rust-overlay specs
+├── selftest/                              Rust-specific selftest overlays
 └── packaging/
-    └── FantasticKernel/               Swift package wrapping the XCFramework
+    ├── FantasticKernelEmbedded/           Swift package — iOS-safe XCFramework
+    └── FantasticKernelFull/               Swift package — Pro Mac (+ PTY bundles)
 ```
 
 ## Plugin model
@@ -259,19 +263,46 @@ lifecycle (start/stop, port discovery, state-stream subscription for
 `@Observable` redraws). Swift code:
 
 ```swift
-let kernel = try await Fantastic.startKernel(workdir: appGroupURL.path, portHint: 0)
+// iOS / Lite macOS — sandboxed tier (no PTY, no subprocess):
+import FantasticKernelEmbedded
+let kernel = try await startKernel(workdir: appGroupURL.path, portHint: 0)
+
+// Pro Mac — desktop tier (PTY + python + local_runner + ssh_runner):
+import FantasticKernelFull
+let kernel = try await startKernel(workdir: projectURL.path, portHint: 0)
+
 let port = kernel.httpPort()
 // open WKWebView at http://127.0.0.1:\(port)/<canvas_id>/
+defer { kernel.shutdown() }
 ```
 
-Built via `cargo build --target …` for each Apple slice
-(`aarch64-apple-ios`, `aarch64-apple-ios-sim`,
-`x86_64-apple-ios-sim`, `aarch64-apple-darwin`, `x86_64-apple-darwin`)
-plus `xcodebuild -create-xcframework`. Distributed as the SPM package
-at `packaging/FantasticKernel/`.
+Two SPM packages, two XCFrameworks:
+
+- `packaging/FantasticKernelEmbedded/` — `Fantastic-Embedded.xcframework`,
+  iOS arm64 + iOS arm64 sim + macOS universal slices. Compiled with
+  `--no-default-features --features embedded`. Subprocess-using bundles
+  (`terminal_backend`, `local_runner`, `python_runtime`, `ssh_runner`)
+  are NOT linked — sandbox-compatible.
+- `packaging/FantasticKernelFull/` — `Fantastic-Full.xcframework`,
+  macOS universal slice only. Compiled with `--features full`. Adds the
+  four PTY / subprocess bundles. iOS slices are deliberately absent
+  (those features are sandbox-incompatible; linking from iOS = build error).
+
+Built via `cargo build --target …` per Apple slice plus
+`xcodebuild -create-xcframework`. Run `./scripts/build-xcframework.sh`
+to build both variants in one shot, or invoke each variant script
+individually.
 
 UniFFI v0.29 — async-native, `Result<T, E>` → Swift `throws`,
 XCFramework + SPM distribution used by Firefox iOS in production.
+Async functions tagged `#[uniffi::export(async_runtime = "tokio")]`
+in `fantastic-uniffi/src/lib.rs` so the Rust scaffolding runs them
+on a Tokio runtime (UDL's plain `[Async]` defers to UniFFI's no-Tokio
+default executor — panics on the first `axum::serve` / `tokio::spawn`).
+Bindings are generated in LIBRARY mode against the built `.a` so
+proc-macro-exported methods on `Kernel` appear in the Swift surface;
+UDL-mode bindgen would emit an empty class because the UDL declares
+`interface Kernel { };` as an opaque type.
 
 ## Cold start
 

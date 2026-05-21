@@ -103,9 +103,11 @@ curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/download/rust-v
 curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-macos-aarch64.tar.gz \
   | head -1
 
-# The Apple Swift Package bundle (xcframework + bindings) is also
-# attached at every release:
-curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-xcframework-apple.tar.gz \
+# The Apple Swift Package bundles (xcframework + bindings) are also
+# attached — one per tier:
+curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-xcframework-embedded.tar.gz \
+  | head -1
+curl -fIsS https://github.com/Alexadar/fantastic_canvas/releases/latest/download/fantastic-xcframework-full.tar.gz \
   | head -1
 ```
 
@@ -167,34 +169,49 @@ curl -fsSL "https://github.com/Alexadar/fantastic_canvas/releases/latest/downloa
 The 4 supported `${os}-${arch}` combinations are listed in the
 "Targets" table at the top.
 
-### Swift Package consumer (fantastic_app — Apple Lite)
+### Swift Package consumer (fantastic_app — Apple Pro + Lite)
 
-The release also includes a `fantastic-xcframework-apple.tar.gz`
-containing the entire `FantasticKernel/` Swift Package — XCFramework
-(3 slices: iOS device, iOS sim, macOS universal), generated Swift
-bindings, the `FantasticKernel.swift` wrapper, and `Package.swift`.
+The release attaches TWO XCFramework bundles, one per consumer tier:
+
+| asset | wraps | for |
+|---|---|---|
+| `fantastic-xcframework-embedded.tar.gz` | `FantasticKernelEmbedded/` Swift Package + `Fantastic-Embedded.xcframework` (3 slices: ios-arm64, ios-arm64-simulator, macos-universal) | FantasticLite — sandboxed iOS / Mac App Store builds. PTY / subprocess bundles excluded. |
+| `fantastic-xcframework-full.tar.gz` | `FantasticKernelFull/` Swift Package + `Fantastic-Full.xcframework` (1 slice: macos-universal) | FantasticPro — unsandboxed macOS. Adds `terminal_backend`, `local_runner`, `python_runtime`, `ssh_runner`. |
+
+Each tarball includes the matching `Package.swift`, hand-written
+`FantasticKernel.swift` wrapper, and the auto-generated UniFFI
+`fantastic.swift` bindings.
 
 Two consumption paths:
 
 **(a) Local dev / iteration** — clone fantastic_canvas next to
-fantastic_app, then point the Xcode project at the local SPM dir:
+fantastic_app, then point the Xcode project at the local SPM dirs:
 
 ```swift
-// Package.swift in fantastic_app — uses path:
-.package(path: "../fantastic_canvas/rust/packaging/FantasticKernel"),
+// Package.swift in fantastic_app:
+.package(path: "../fantastic_canvas/rust/packaging/FantasticKernelEmbedded"),
+.package(path: "../fantastic_canvas/rust/packaging/FantasticKernelFull"),
 ```
 
-The xcframework is gitignored but produced fresh by:
+The xcframeworks are gitignored but produced fresh by:
 
 ```bash
 cd fantastic_canvas/rust && ./scripts/build-xcframework.sh
+# (or build a single variant: build-xcframework-embedded.sh /
+#  build-xcframework-full.sh)
 ```
 
-**(b) Production / CI** — pull the tagged release bundle:
+**(b) Production / CI** — pull the tagged release bundle for
+whichever tier you're shipping:
 
 ```bash
-curl -fsSL "https://github.com/Alexadar/fantastic_canvas/releases/download/rust-v0.1.0/fantastic-xcframework-apple.tar.gz" \
-  | tar -xz   # extracts FantasticKernel/ in cwd
+# Lite tier
+curl -fsSL "https://github.com/Alexadar/fantastic_canvas/releases/download/rust-v0.1.0/fantastic-xcframework-embedded.tar.gz" \
+  | tar -xz   # extracts FantasticKernelEmbedded/ in cwd
+
+# Pro tier
+curl -fsSL "https://github.com/Alexadar/fantastic_canvas/releases/download/rust-v0.1.0/fantastic-xcframework-full.tar.gz" \
+  | tar -xz   # extracts FantasticKernelFull/ in cwd
 ```
 
 Then point the Xcode project at that extracted dir, or vendor it

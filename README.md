@@ -45,15 +45,20 @@ The Swift app at
 [`Alexadar/fantastic_app`](https://github.com/Alexadar/fantastic_app)
 consumes either runtime through the same HTTP + WS surface:
 
-- **FantasticPro** (macOS, unsandboxed) — spawns the kernel as a
-  subprocess. Either runtime works as a drop-in; the app's launcher
-  resolves `fantastic` from PATH or `~/.cargo/bin`.
+- **FantasticPro** (macOS, unsandboxed) — links the Rust kernel
+  in-process via the `FantasticKernelFull` Swift Package
+  (`Fantastic-Full.xcframework` — macOS universal). Full bundle set
+  including PTY / subprocess / python_runtime / ssh_runner. Can also
+  spawn the standalone `fantastic` CLI binary as a subprocess for
+  the "subprocess kernel" fallback path.
 - **FantasticLite** (macOS + iOS + iPadOS + visionOS, App Store
-  sandboxed) — cannot spawn subprocesses, so the Python kernel is
-  unreachable. The Rust runtime ships a Swift Package
-  (`FantasticKernel`) that links the Rust kernel into the app process
-  and binds a loopback `127.0.0.1:0` server the existing `WKWebView`
-  points at. Zero changes to canvas frontend code.
+  sandboxed) — cannot spawn subprocesses. Links the Rust kernel
+  in-process via the `FantasticKernelEmbedded` Swift Package
+  (`Fantastic-Embedded.xcframework` — iOS device + iOS sim + macOS
+  universal). Subprocess / PTY bundles are compile-time excluded,
+  so the binary is App Sandbox compliant. Binds a loopback
+  `127.0.0.1:0` server the existing `WKWebView` points at; zero
+  changes to canvas frontend code.
 
 See [`rust/README.md`](rust/README.md) for the SPM consumption story
 and the bundle scoreboard.

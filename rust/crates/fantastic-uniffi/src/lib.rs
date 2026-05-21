@@ -115,7 +115,26 @@ fn register_default_bundles() -> BundleRegistry {
     // call here on `feature = "full"`.
     #[cfg(feature = "full")]
     {
-        // (placeholder — populate when desktop-only bundles land)
+        // Desktop / unsandboxed bundles. PTY + subprocess + dynamic
+        // loading; iOS sandbox forbids these so they're feature-gated.
+        // Pro Mac links the `full` XCFramework and gets the registrations
+        // below; Lite (any platform) compiles without these crates at all.
+        reg.register(
+            "terminal_backend.tools",
+            fantastic_terminal_backend::TerminalBackendBundle,
+        );
+        reg.register(
+            "local_runner.tools",
+            fantastic_local_runner::LocalRunnerBundle,
+        );
+        reg.register(
+            "python_runtime.tools",
+            fantastic_python_runtime::PythonRuntimeBundle,
+        );
+        reg.register(
+            "ssh_runner.tools",
+            fantastic_ssh_runner::SshRunnerBundle,
+        );
     }
 
     reg
@@ -124,6 +143,20 @@ fn register_default_bundles() -> BundleRegistry {
 /// Public bootstrap function. Constructs a kernel, hydrates persisted
 /// agents (weak-load skip+log for unknown bundles), spins up the
 /// axum listener via the web bundle's `boot` verb.
+///
+/// `async_runtime = "tokio"` is critical — without it, UniFFI's
+/// Rust-side scaffolding polls this future on its default executor
+/// which has no Tokio reactor. The first internal `tokio::spawn` /
+/// `tokio::net::TcpListener::bind` / `axum::serve` then panics with
+/// "there is no reactor running, must be called from the context of
+/// a Tokio 1.x runtime". The proc-macro form is the only way to set
+/// `async_runtime` per-function — uniffi 0.29's UDL grammar doesn't
+/// support `[Async=tokio]`, and the `uniffi.toml [bindings.swift]
+/// async_runtime` knob only configures the FOREIGN-language bindgen,
+/// not the Rust scaffolding poll loop.
+///
+/// Docs: https://mozilla.github.io/uniffi-rs/latest/futures.html
+#[uniffi::export(async_runtime = "tokio")]
 pub async fn start_kernel(workdir: String, port_hint: u16) -> Result<Arc<Kernel>, KernelError> {
     let workdir_path = PathBuf::from(&workdir);
     if !workdir_path.exists() {
@@ -204,6 +237,8 @@ pub struct Kernel {
     stopped: Mutex<bool>,
 }
 
+/// Private impl block — methods NOT exported to Swift. The exported
+/// surface lives in the two `#[uniffi::export]` blocks below.
 impl Kernel {
     /// Wrap a freshly-booted substrate. Used by [`start_kernel`].
     fn new_inner(
@@ -220,23 +255,18 @@ impl Kernel {
             stopped: Mutex::new(false),
         }
     }
+}
 
+/// Sync methods exposed to Swift. Declared via proc-macro so the
+/// UDL stays type-only — see the matching `interface Kernel` block
+/// in `fantastic.udl` which only declares the type, not its methods.
+#[uniffi::export]
+impl Kernel {
     /// The bound port. Calling this before [`start_kernel`] finishes
     /// is a bug; the async bootstrap guarantees the port is known by
     /// the time the future resolves.
     pub fn http_port(&self) -> u16 {
         self.port
-    }
-
-    /// JSON-in, JSON-out shortcut. Equivalent to the WS `call` frame.
-    pub async fn send_json(&self, target_id: String, payload_json: String) -> String {
-        let payload: Value = serde_json::from_str(&payload_json)
-            .unwrap_or_else(|_| json!({"error": "send_json: payload not valid JSON"}));
-        let reply = self
-            .inner
-            .send(&AgentId::from(target_id.as_str()), payload)
-            .await;
-        serde_json::to_string(&reply).unwrap_or_else(|_| "null".to_string())
     }
 
     /// Register a [`StateListener`] for the kernel's state stream.
@@ -286,6 +316,27 @@ impl Kernel {
         .ok();
         // Release the workdir lock.
         let _ = bootstrap::shutdown(&self.workdir);
+    }
+}
+
+/// Async method — needs its OWN proc-macro impl block with
+/// `async_runtime = "tokio"` so UniFFI wraps the Rust-side
+/// scaffolding's `.poll()` in a Tokio runtime context. Without this
+/// the future panics on its first internal `tokio::spawn` /
+/// `tokio::mpsc` op (kernel.send awaits both). uniffi 0.29 doesn't
+/// support per-method runtime tagging inside a shared impl block,
+/// so the async fn lives here alone.
+#[uniffi::export(async_runtime = "tokio")]
+impl Kernel {
+    /// JSON-in, JSON-out shortcut. Equivalent to the WS `call` frame.
+    pub async fn send_json(&self, target_id: String, payload_json: String) -> String {
+        let payload: Value = serde_json::from_str(&payload_json)
+            .unwrap_or_else(|_| json!({"error": "send_json: payload not valid JSON"}));
+        let reply = self
+            .inner
+            .send(&AgentId::from(target_id.as_str()), payload)
+            .await;
+        serde_json::to_string(&reply).unwrap_or_else(|_| "null".to_string())
     }
 }
 
