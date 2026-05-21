@@ -41,7 +41,7 @@ use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
 use fantastic_kernel::{AgentId, Kernel};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -120,7 +120,26 @@ struct PtyState {
     env: Vec<(String, String)>,
     /// Handle to the spawned reader task. Aborted on `stop`/`on_delete`.
     reader_task: Mutex<Option<JoinHandle<()>>>,
+    /// PTY writer (taken once from the master at spawn time; reused for
+    /// every `write` / `paste_image` since `take_writer` errors on
+    /// second call).
+    writer: Mutex<Box<dyn std::io::Write + Send>>,
+    /// Scrollback ring — the xterm UI calls `output` on connect to
+    /// fetch what was emitted before the WS opened. Ring-trimmed to
+    /// `MAX_SCROLLBACK_BYTES` to bound memory.
+    scrollback: StdMutex<VecDeque<String>>,
+    /// Sum of UTF-8-encoded byte counts of all chunks in `scrollback`.
+    /// Tracked separately so the ring-trim doesn't recompute every push.
+    scrollback_bytes: AtomicUsize,
+    /// Set true by `cleanup_on_exit` after the child has died. The
+    /// state stays in `TERMINALS` so `output` can still return the
+    /// scrollback; `reflect` reports `running:false`. Cleared only by
+    /// a fresh `spawn` (which replaces the entry) or by agent delete.
+    exited: std::sync::atomic::AtomicBool,
 }
+
+/// Scrollback ring size cap (matches Python's MAX_SCROLLBACK).
+pub const MAX_SCROLLBACK_BYTES: usize = 256 * 1024;
 
 /// Flow-control accounting. Mutated under a sync `Mutex` because the
 /// critical section is microseconds and the reader/ack paths must not
@@ -186,6 +205,7 @@ impl Bundle for TerminalBackendBundle {
             "interrupt" => signal_reply(agent_id, libc::SIGINT),
             "signal" => signal_verb_reply(agent_id, payload),
             "stop" => stop_reply(agent_id).await,
+            "output" => output_reply(agent_id, payload),
             other => json!({"error": format!("unknown verb {other:?}")}),
         };
         Ok(Some(reply))
@@ -232,13 +252,27 @@ impl Bundle for TerminalBackendBundle {
 
 // ── verb implementations ────────────────────────────────────────────
 
+/// `true` iff a live (non-exited) PtyState exists for this agent.
+/// Used by `reflect`, `boot`, and `spawn` to decide whether to start a
+/// fresh PTY or refuse the duplicate.
+fn is_running(agent_id: &AgentId) -> bool {
+    TERMINALS
+        .lock()
+        .get(agent_id)
+        .map(|s| !s.exited.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
 fn reflect_reply(agent_id: &AgentId, kernel: &Kernel) -> Value {
     let state = TERMINALS.lock().get(agent_id).cloned();
     let rec_cmd = meta_string_array(agent_id, kernel, "cmd");
     let rec_cwd = meta_string(agent_id, kernel, "cwd");
     let rec_cols = meta_u64(agent_id, kernel, "cols").unwrap_or(DEFAULT_COLS as u64) as u16;
     let rec_rows = meta_u64(agent_id, kernel, "rows").unwrap_or(DEFAULT_ROWS as u64) as u16;
-    let running = state.is_some();
+    let running = state
+        .as_ref()
+        .map(|s| !s.exited.load(Ordering::Relaxed))
+        .unwrap_or(false);
     let (cmd, cwd, env, cols, rows, unacked, paste_dir) = if let Some(st) = state.as_ref() {
         let paste = st
             .paste_dir
@@ -286,6 +320,16 @@ fn reflect_reply(agent_id: &AgentId, kernel: &Kernel) -> Value {
     obj.insert("running".to_string(), json!(running));
     obj.insert("in_flight_bytes".to_string(), json!(unacked));
     obj.insert("unacked".to_string(), json!(unacked));
+    let scrollback_bytes = state
+        .as_ref()
+        .map(|s| s.scrollback_bytes.load(Ordering::Relaxed))
+        .unwrap_or(0);
+    obj.insert("scrollback_bytes".to_string(), json!(scrollback_bytes));
+    if let Some(s) = state.as_ref() {
+        if let Some(p) = s.pid {
+            obj.insert("pid".to_string(), json!(p));
+        }
+    }
     if let Some(p) = paste_dir {
         obj.insert("paste_dir".to_string(), json!(p));
     }
@@ -302,7 +346,8 @@ fn reflect_reply(agent_id: &AgentId, kernel: &Kernel) -> Value {
         "stop": "SIGKILL the child; close master; remove from TERMINALS map.",
     }));
     obj.insert("emits".to_string(), json!({
-        "data": "{type:'data', text:str} — every decoded read chunk emitted to parent_id's inbox",
+        "output": "{type:'output', data:str} — every decoded read chunk emitted to this agent's OWN inbox; xterm UI watches it",
+        "closed": "{type:'closed'} — child process exited (EOF on PTY)",
         "exited": "{type:'exited', exit_code:i32} — child died (EOF on the PTY master)",
         "error": "{type:'error', error:str} — read or write failure",
     }));
@@ -314,8 +359,12 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
     if !auto_start {
         return json!({"running": false, "auto_start": false});
     }
-    if TERMINALS.lock().contains_key(agent_id) {
+    if is_running(agent_id) {
         return json!({"running": true, "already_booted": true});
+    }
+    // Existing-but-dead state? Drop it before spawn replaces.
+    if TERMINALS.lock().contains_key(agent_id) {
+        TERMINALS.lock().remove(agent_id);
     }
     let cmd = meta_string_array(agent_id, kernel, "cmd").unwrap_or_else(default_cmd);
     let cwd = meta_string(agent_id, kernel, "cwd");
@@ -329,8 +378,13 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
 }
 
 async fn spawn_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>) -> Value {
-    if TERMINALS.lock().contains_key(agent_id) {
+    if is_running(agent_id) {
         return json!({"error": "already running; call stop first"});
+    }
+    // Existing-but-dead state (scrollback retention). Drop it so spawn
+    // can install a fresh PtyState.
+    if TERMINALS.lock().contains_key(agent_id) {
+        TERMINALS.lock().remove(agent_id);
     }
     let cmd = payload
         .get("cmd")
@@ -381,20 +435,15 @@ async fn write_reply(agent_id: &AgentId, payload: &Value) -> Value {
     // Serialize concurrent writes per-agent so a bracketed-paste
     // sequence can't be interleaved with another write.
     let _w = state.write_lock.lock().await;
-    let master = state.master.lock().await;
-    let mut writer = match master.take_writer() {
-        Ok(w) => w,
-        Err(e) => return json!({"error": format!("take_writer: {e}")}),
-    };
-    // `take_writer` returns an owned writer that writes to the PTY
-    // master FD. Drop the master guard before we block on the writer
-    // so other tasks (resize) can grab it.
-    drop(master);
-    let res = tokio::task::spawn_blocking(move || writer.write_all(&bytes)).await;
+    let mut writer_guard = state.writer.lock().await;
+    // write_all blocks while the PTY pipe drains. The writer is owned
+    // by the state's Mutex; we can't move it across spawn_blocking
+    // without giving up the lock. Inline blocking write is OK here —
+    // PTY master buffers are kilobyte-sized, so writes don't sit long.
+    let res = writer_guard.write_all(&bytes).and_then(|_| writer_guard.flush());
     match res {
-        Ok(Ok(())) => json!({"written": n}),
-        Ok(Err(e)) => json!({"error": format!("write: {e}")}),
-        Err(e) => json!({"error": format!("write join: {e}")}),
+        Ok(()) => json!({"written": n}),
+        Err(e) => json!({"error": format!("write: {e}")}),
     }
 }
 
@@ -402,7 +451,12 @@ fn ack_reply(agent_id: &AgentId, payload: &Value) -> Value {
     let Some(state) = TERMINALS.lock().get(agent_id).cloned() else {
         return json!({"error": "not running"});
     };
-    let count = payload.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
+    // Python's wire uses `chars`; older callers may pass `count`. Accept either.
+    let count = payload
+        .get("chars")
+        .and_then(Value::as_u64)
+        .or_else(|| payload.get("count").and_then(Value::as_u64))
+        .unwrap_or(0) as usize;
     let (unacked, paused) = {
         let mut flow = state.flow.lock().expect("flow poisoned");
         flow.unacked_bytes = flow.unacked_bytes.saturating_sub(count);
@@ -511,14 +565,12 @@ async fn paste_image_impl(agent_id: &AgentId, bytes: Vec<u8>, mime: String) -> V
     let inject = format!("{} ", path_str);
     let inject_bytes = inject.into_bytes();
     let _w = state.write_lock.lock().await;
-    let master = state.master.lock().await;
-    let mut writer = match master.take_writer() {
-        Ok(w) => w,
-        Err(e) => return json!({"error": format!("paste_image: take_writer: {e}")}),
-    };
-    drop(master);
-    if let Err(e) = tokio::task::spawn_blocking(move || writer.write_all(&inject_bytes)).await {
-        return json!({"error": format!("paste_image: write join: {e}")});
+    let mut writer_guard = state.writer.lock().await;
+    if let Err(e) = writer_guard
+        .write_all(&inject_bytes)
+        .and_then(|_| writer_guard.flush())
+    {
+        return json!({"error": format!("paste_image: write: {e}")});
     }
     json!({"path": path_str, "bytes": bytes.len()})
 }
@@ -569,6 +621,36 @@ fn signal_reply(agent_id: &AgentId, sig: i32) -> Value {
         let _ = pid;
         json!({"error": "signal: unsupported on this platform"})
     }
+}
+
+/// `output` verb — returns the rolling scrollback buffer's tail as a
+/// single string. The xterm UI calls this on connect so a late client
+/// sees what was written before it opened the WS. Optional `max_bytes`
+/// argument trims the returned tail (default = full ring).
+fn output_reply(agent_id: &AgentId, payload: &Value) -> Value {
+    let max_bytes = payload
+        .get("max_bytes")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(MAX_SCROLLBACK_BYTES);
+    let Some(state) = TERMINALS.lock().get(agent_id).cloned() else {
+        return json!({"output": ""});
+    };
+    let sb = state.scrollback.lock().expect("scrollback poisoned");
+    let full: String = sb.iter().cloned().collect();
+    drop(sb);
+    let trimmed = if full.len() > max_bytes {
+        // Trim from the START (keep the tail) — match Python's `text[-max_bytes:]`.
+        // UTF-8-safe: walk back to a char boundary.
+        let start = full.len() - max_bytes;
+        let start = (start..full.len())
+            .find(|&i| full.is_char_boundary(i))
+            .unwrap_or(full.len());
+        full[start..].to_string()
+    } else {
+        full
+    };
+    json!({"output": trimmed})
 }
 
 async fn stop_reply(agent_id: &AgentId) -> Value {
@@ -623,10 +705,31 @@ async fn spawn_pty(
     for arg in cmd.iter().skip(1) {
         builder.arg(arg);
     }
-    if let Some(cwd_str) = cwd.as_ref() {
-        builder.cwd(cwd_str);
+    // PTY cwd: record-level override wins; otherwise default to the
+    // daemon's current working directory. Python uses
+    // `rec.get("cwd") or os.getcwd()`. Without this fallback,
+    // portable-pty defaults to HOME and the user sees `~/` when they
+    // `pwd` in the terminal — surprising when the daemon was started
+    // from a project dir.
+    match cwd.as_ref() {
+        Some(cwd_str) => builder.cwd(cwd_str),
+        None => {
+            if let Ok(d) = std::env::current_dir() {
+                builder.cwd(d);
+            }
+        }
+    }
+    // Inherit the parent process's env so the shell sees HOME, PATH,
+    // USER, SHELL, etc. and reads the user's rcfile (~/.zshrc /
+    // ~/.bashrc). Python's `os.environ.copy()` does the same. Without
+    // this, portable-pty starts the shell in a near-empty env and bash
+    // falls back to defaults (no PATH customizations, the
+    // "default shell now zsh" macOS nag fires because $SHELL is unset).
+    for (k, v) in std::env::vars() {
+        builder.env(k, v);
     }
     builder.env("TERM", "xterm-256color");
+    // Record-level env overrides win over inherited.
     for (k, v) in env.iter() {
         builder.env(k, v);
     }
@@ -640,6 +743,12 @@ async fn spawn_pty(
     let pid = child.process_id();
     let killer = child.clone_killer();
     let master = pair.master;
+    // Take the writer ONCE here — portable-pty's `take_writer` errors
+    // on second call. Stash in PtyState so every `write` / `paste_image`
+    // can reuse it without re-taking.
+    let writer = master
+        .take_writer()
+        .map_err(|e| format!("take_writer: {e}"))?;
     let decoder = UTF_8.new_decoder();
     let flow = Arc::new(StdMutex::new(FlowControl {
         unacked_bytes: 0,
@@ -663,6 +772,10 @@ async fn spawn_pty(
         cwd: cwd.clone(),
         env: env.clone(),
         reader_task: Mutex::new(None),
+        writer: Mutex::new(writer),
+        scrollback: StdMutex::new(VecDeque::new()),
+        scrollback_bytes: AtomicUsize::new(0),
+        exited: std::sync::atomic::AtomicBool::new(false),
     });
     TERMINALS
         .lock()
@@ -696,6 +809,11 @@ async fn reader_loop(
     state: Arc<PtyState>,
     mut reader: Box<dyn std::io::Read + Send>,
 ) {
+    // Events emit to SELF (the terminal_backend's own inbox). The
+    // xterm UI calls `t.watch(upstream)` where upstream = this agent's
+    // id, so watchers see the events. Mirrors Python's design.
+    let emit_target = agent_id.clone();
+    // `parent` kept for cleanup_on_exit signature only.
     let parent = parent_of(&agent_id, &kernel).unwrap_or_else(|| agent_id.clone());
     loop {
         // Flow control: if we're past the threshold, wait for a resume.
@@ -727,11 +845,11 @@ async fn reader_loop(
             Err(e) => {
                 kernel
                     .emit(
-                        &parent,
+                        &emit_target,
                         json!({"type": "error", "error": format!("read join: {e}")}),
                     )
                     .await;
-                cleanup_on_exit(&agent_id, &kernel, &parent, &state).await;
+                cleanup_on_exit(&agent_id, &kernel, &emit_target, &state).await;
                 return;
             }
         };
@@ -742,7 +860,7 @@ async fn reader_loop(
                 // EIO on a closed PTY is the normal "child exited" path
                 // on Linux; treat any read error as EOF.
                 tracing::debug!(?e, "terminal_backend: reader EOF/error");
-                cleanup_on_exit(&agent_id, &kernel, &parent, &state).await;
+                cleanup_on_exit(&agent_id, &kernel, &emit_target, &state).await;
                 return;
             }
         };
@@ -759,8 +877,27 @@ async fn reader_loop(
         drop(decoder);
         if !out.is_empty() {
             let nbytes = out.len();
+            // Append to scrollback ring + trim past MAX_SCROLLBACK_BYTES.
+            // The xterm UI calls `output` on connect to fetch this so
+            // late-arriving clients see context, not just live tail.
+            {
+                let mut sb = state.scrollback.lock().expect("scrollback poisoned");
+                sb.push_back(out.clone());
+                let mut total = state
+                    .scrollback_bytes
+                    .fetch_add(nbytes, Ordering::Relaxed)
+                    + nbytes;
+                while total > MAX_SCROLLBACK_BYTES {
+                    let Some(old) = sb.pop_front() else { break };
+                    let drop_bytes = old.len();
+                    total = total.saturating_sub(drop_bytes);
+                    state
+                        .scrollback_bytes
+                        .fetch_sub(drop_bytes, Ordering::Relaxed);
+                }
+            }
             kernel
-                .emit(&parent, json!({"type": "data", "text": out}))
+                .emit(&emit_target, json!({"type": "output", "data": out}))
                 .await;
             let (new_unacked, became_paused) = {
                 let mut flow = state.flow.lock().expect("flow poisoned");
@@ -778,7 +915,7 @@ async fn reader_loop(
 }
 
 async fn cleanup_on_exit(
-    agent_id: &AgentId,
+    _agent_id: &AgentId,
     kernel: &Arc<Kernel>,
     parent: &AgentId,
     state: &Arc<PtyState>,
@@ -796,10 +933,16 @@ async fn cleanup_on_exit(
             },
         }
     };
-    TERMINALS.lock().remove(agent_id);
-    kernel
-        .emit(parent, json!({"type": "exited", "exit_code": code}))
-        .await;
+    // Mark the state as exited but keep it in TERMINALS so the
+    // scrollback ring survives for `output` queries. A subsequent
+    // `spawn` will replace the entry with a fresh PtyState.
+    state.exited.store(true, Ordering::Relaxed);
+    // `parent` here is actually the emit_target (= self, the
+    // terminal_backend's own id). Mirrors Python's `{type:"closed"}`
+    // on the agent's own inbox; the xterm UI's `t.on('closed', ...)`
+    // listener catches it.
+    kernel.emit(parent, json!({"type": "closed"})).await;
+    let _ = code;
 }
 
 // ── meta + helpers ───────────────────────────────────────────────────
@@ -855,12 +998,24 @@ fn meta_env(agent_id: &AgentId, kernel: &Kernel) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Detect the user's login shell. Mirrors Python's `_detect_shell`:
+/// honour `$SHELL` if it points at an existing file, otherwise probe
+/// the standard locations. Falls back to `/bin/sh` as a last resort.
 fn default_cmd() -> Vec<String> {
     if cfg!(windows) {
-        vec!["powershell".to_string()]
-    } else {
-        vec!["bash".to_string()]
+        return vec!["powershell".to_string()];
     }
+    if let Ok(sh) = std::env::var("SHELL") {
+        if !sh.is_empty() && std::path::Path::new(&sh).is_file() {
+            return vec![sh];
+        }
+    }
+    for cand in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+        if std::path::Path::new(cand).is_file() {
+            return vec![cand.to_string()];
+        }
+    }
+    vec!["/bin/sh".to_string()]
 }
 
 /// Mint a short hex token from a mix of clock + stack + pid. Good

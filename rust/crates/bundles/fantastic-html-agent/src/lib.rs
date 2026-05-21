@@ -86,6 +86,7 @@ impl Bundle for HtmlAgentBundle {
                         "reflect": "Identity + has_html flag. No args.",
                         "render_html": "Return {html: <stored body>}.",
                         "set_html": "args: html:str (req). Writes index.html + emits reload_html.",
+                        "get_webapp": "Canvas-renderable descriptor: {url, default_width, default_height, title}.",
                         "boot": "No-op.",
                         "shutdown": "No-op.",
                     }
@@ -132,6 +133,30 @@ impl Bundle for HtmlAgentBundle {
                 // refresh.
                 kernel.emit(agent_id, json!({"type": "reload_html"})).await;
                 json!({"id": agent_id.as_str(), "html_bytes": html.len()})
+            }
+            // Canvas-renderable descriptor (Python parity). Without
+            // this, canvas_backend.add_agent refuses html_agent because
+            // it can't iframe a member that doesn't answer get_webapp.
+            "get_webapp" => {
+                let meta = agent.meta.read().expect("meta poisoned");
+                let default_width = meta
+                    .get("width")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(480);
+                let default_height = meta
+                    .get("height")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(360);
+                let display_name = agent
+                    .display_name()
+                    .unwrap_or_else(|| "html".to_string());
+                drop(meta);
+                json!({
+                    "url": format!("/{}/", agent_id.as_str()),
+                    "default_width": default_width,
+                    "default_height": default_height,
+                    "title": display_name,
+                })
             }
             other => json!({"error": format!("unknown verb {other:?}")}),
         };

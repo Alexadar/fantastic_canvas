@@ -82,7 +82,8 @@ impl Bundle for TerminalWebappBundle {
                     }
                 })
             }
-            "boot" | "shutdown" => Value::Null,
+            "boot" => boot_reply(agent_id, kernel).await,
+            "shutdown" => Value::Null,
             "render_html" => json!({"html": TERMINAL_HTML}),
             "get_webapp" => json!({
                 "url": format!("/{}/", agent_id),
@@ -102,6 +103,76 @@ impl Bundle for TerminalWebappBundle {
         };
         Ok(Some(reply))
     }
+}
+
+/// Boot: idempotently ensure a `terminal_backend` exists as a child of
+/// this webapp. If one is already attached (rehydrated from disk after
+/// a kernel restart, or created in a prior boot), no-op. Otherwise
+/// `create_agent` a fresh backend + record its id in this webapp's
+/// `upstream_id` meta field so the page + canvas chrome can locate the
+/// pair without traversing the children dict.
+///
+/// Mirrors Python's terminal_webapp._boot (paired-backend wiring).
+async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
+    const BACKEND_HM: &str = "terminal_backend.tools";
+
+    // Already paired? Either via meta.upstream_id pointing at a live
+    // backend, OR a direct child whose handler_module matches.
+    let me = match kernel.agents.get(agent_id).map(|e| Arc::clone(&e)) {
+        Some(a) => a,
+        None => return Value::Null,
+    };
+    let existing_upstream = me
+        .meta
+        .read()
+        .expect("meta poisoned")
+        .get("upstream_id")
+        .and_then(Value::as_str)
+        .map(|s| AgentId::from(s));
+    if let Some(up) = existing_upstream.as_ref() {
+        if kernel.agents.contains_key(up) {
+            return Value::Null;
+        }
+    }
+    let has_backend_child = me.child_ids().iter().any(|cid| {
+        kernel
+            .agents
+            .get(cid)
+            .map(|e| e.handler_module.as_deref() == Some(BACKEND_HM))
+            .unwrap_or(false)
+    });
+    if has_backend_child {
+        return Value::Null;
+    }
+
+    // Create the backend as a child of this webapp.
+    let create_reply = kernel
+        .send(
+            agent_id,
+            json!({"type": "create_agent", "handler_module": BACKEND_HM}),
+        )
+        .await;
+    let Some(backend_id) = create_reply.get("id").and_then(Value::as_str) else {
+        return json!({"error": format!("terminal_webapp.boot: create backend failed: {create_reply}")});
+    };
+    let backend_id = backend_id.to_string();
+
+    // Record the pair on this webapp's record.
+    let update_reply = kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "update_agent",
+                "id": agent_id.as_str(),
+                "upstream_id": backend_id,
+            }),
+        )
+        .await;
+    if let Some(err) = update_reply.get("error").and_then(Value::as_str) {
+        return json!({"error": format!("terminal_webapp.boot: write upstream_id failed: {err}")});
+    }
+
+    Value::Null
 }
 
 #[cfg(test)]
