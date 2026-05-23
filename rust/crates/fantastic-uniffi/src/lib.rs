@@ -112,6 +112,10 @@ fn register_default_bundles() -> BundleRegistry {
         "nvidia_nim_backend.tools",
         fantastic_nvidia_nim_backend::NvidiaNimBundle,
     );
+    reg.register(
+        fantastic_proxy_agent::HANDLER_MODULE,
+        fantastic_proxy_agent::ProxyAgentBundle::new(),
+    );
 
     // ── Full-tier-only (subprocess / fork / dynamic loading).
     //
@@ -577,6 +581,136 @@ impl Kernel {
     /// Mark the stream failed. Emits a `done` event with the error.
     pub async fn fm_error(&self, stream_id: String, message: String) {
         fantastic_foundation_models_backend::error(&self.inner, &stream_id, &message).await;
+    }
+}
+
+// ── ProxyAgent bridge (host-implemented agents) ────────────────────
+//
+// The `proxy_agent.tools` bundle forwards every verb to a host
+// implementation keyed by agent_id. Swift implements `ProxyAgent`;
+// the kernel routes verbs to it. Two-way: hosts handle inbound
+// verbs synchronously (returning JSON acks/replies); outbound
+// SwiftUI-originated sends use `send_json_as` for sender
+// attribution; outbound async events use `proxy_emit` to fan out
+// on the agent's own inbox.
+//
+// Generic — ships on every platform (no cfg gate). Linux / Windows
+// builds get it too since a Rust host (egui, slint, tests) is just
+// as valid as a Swift host.
+
+/// Apple-side / Swift / any-host trait. Hosts implement this and
+/// register an instance per agent_id via
+/// [`Kernel::register_proxy_agent`].
+///
+/// Methods are sync because UniFFI 0.29 callback interfaces don't
+/// support `async`. Swift impls that need async (SwiftUI updates,
+/// network calls) should kick off a `Task { @MainActor in … }`
+/// inside `handle` and return immediately with a sync ack.
+#[uniffi::export(callback_interface)]
+pub trait ProxyAgent: Send + Sync {
+    /// Verb dispatch. JSON in, JSON out. Reply can be a real
+    /// response or a fire-and-forget ack like `{"ok":true}`.
+    fn handle(&self, payload_json: String) -> String;
+
+    /// Fired when the agent's `boot` verb dispatches. Default: noop.
+    fn on_boot(&self) {}
+
+    /// Fired during cascade-delete (before the agent unregisters).
+    /// Default: noop. The bundle drops the host from its registry
+    /// after this — no `unregister_proxy_agent` call needed.
+    fn on_delete(&self) {}
+}
+
+/// Bridge — implements the bundle-crate's [`ProxyAgentHost`] trait
+/// by forwarding to the UniFFI callback. One per registered host.
+struct SwiftProxyHostAdapter {
+    inner: Arc<dyn ProxyAgent>,
+}
+
+impl SwiftProxyHostAdapter {
+    fn new(inner: Box<dyn ProxyAgent>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Arc::from(inner),
+        })
+    }
+}
+
+impl fantastic_proxy_agent::ProxyAgentHost for SwiftProxyHostAdapter {
+    fn handle(&self, payload_json: String) -> String {
+        self.inner.handle(payload_json)
+    }
+    fn on_boot(&self) {
+        self.inner.on_boot();
+    }
+    fn on_delete(&self) {
+        self.inner.on_delete();
+    }
+}
+
+/// Sync methods on the `Kernel` handle that manage proxy_agent
+/// host registration. Registration is sync — just slots an entry
+/// into the bundle's process-global host map.
+#[uniffi::export]
+impl Kernel {
+    /// Install a Swift host for the given proxy_agent. Replaces any
+    /// previously-registered host for the same id. Best practice is
+    /// to call this BEFORE creating the agent so the first verb
+    /// dispatch finds the host; the bundle gracefully degrades to
+    /// `{error, reason:"no_host"}` until registration completes.
+    pub fn register_proxy_agent(&self, agent_id: String, host: Box<dyn ProxyAgent>) {
+        let adapter = SwiftProxyHostAdapter::new(host);
+        fantastic_proxy_agent::register_host(AgentId::from(agent_id.as_str()), adapter);
+    }
+
+    /// Drop the host for the given proxy_agent. Returns whether a
+    /// host was registered. No-op if nothing was installed.
+    /// Standard cascade-delete also clears the host (`Bundle::on_delete`
+    /// hook on the bundle), so explicit unregister is rarely needed.
+    pub fn unregister_proxy_agent(&self, agent_id: String) -> bool {
+        let id = AgentId::from(agent_id.as_str());
+        let had = fantastic_proxy_agent::host_for(&id).is_some();
+        fantastic_proxy_agent::unregister_host(&id);
+        had
+    }
+}
+
+/// Async methods on the `Kernel` handle that the UI uses for
+/// outbound traffic (`send_json_as` with sender attribution +
+/// `proxy_emit` for fan-out on the agent's own inbox).
+#[uniffi::export(async_runtime = "tokio")]
+impl Kernel {
+    /// JSON-in, JSON-out RPC like `send_json` — but tags the
+    /// dispatch with `sender_id` so state events attribute correctly.
+    /// SwiftUI's input handlers call this to send AS the UI agent
+    /// rather than as an untagged external client.
+    pub async fn send_json_as(
+        &self,
+        sender_id: String,
+        target_id: String,
+        payload_json: String,
+    ) -> String {
+        let payload: Value = serde_json::from_str(&payload_json)
+            .unwrap_or_else(|_| json!({"error": "send_json_as: payload not valid JSON"}));
+        let target = AgentId::from(target_id.as_str());
+        let sender = AgentId::from(sender_id.as_str());
+        let kernel = Arc::clone(&self.inner);
+        let reply = fantastic_kernel::send::with_sender(sender, async move {
+            kernel.send(&target, payload).await
+        })
+        .await;
+        serde_json::to_string(&reply).unwrap_or_else(|_| "null".to_string())
+    }
+
+    /// Fire an event on `agent_id`'s own inbox. Watchers receive
+    /// via the standard `kernel.emit` fan-out. The UI uses this to
+    /// broadcast state changes ("focus_changed", "selection_set",
+    /// streaming tokens, etc.) without driving an RPC.
+    pub async fn proxy_emit(&self, agent_id: String, event_json: String) {
+        let event: Value = serde_json::from_str(&event_json)
+            .unwrap_or_else(|_| json!({"error": "proxy_emit: event not valid JSON"}));
+        self.inner
+            .emit(&AgentId::from(agent_id.as_str()), event)
+            .await;
     }
 }
 

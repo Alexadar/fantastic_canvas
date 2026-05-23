@@ -32,6 +32,7 @@ members = [
     "crates/bundles/fantastic-local-runner",
     "crates/bundles/fantastic-ssh-runner",
     "crates/bundles/fantastic-foundation-models-backend",
+    "crates/bundles/fantastic-proxy-agent",
     "crates/uniffi-bindgen",
 ]
 
