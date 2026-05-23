@@ -493,6 +493,7 @@ dependencies = [
  "fantastic-cli-bundle",
  "fantastic-core",
  "fantastic-file",
+ "fantastic-foundation-models-backend",
  "fantastic-gl-agent",
  "fantastic-html-agent",
  "fantastic-kernel",
@@ -542,6 +543,17 @@ dependencies = [
  "fantastic-kernel",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "fantastic-foundation-models-backend"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-kernel",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -728,11 +740,13 @@ dependencies = [
 name = "fantastic-uniffi"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "fantastic-ai-chat-webapp",
  "fantastic-canvas-backend",
  "fantastic-canvas-webapp",
  "fantastic-core",
  "fantastic-file",
+ "fantastic-foundation-models-backend",
  "fantastic-gl-agent",
  "fantastic-html-agent",
  "fantastic-kernel",

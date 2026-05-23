@@ -1,0 +1,17 @@
+[package]
+publish = false
+name = "fantastic-foundation-models-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Apple Foundation Models backend bundle — answers the chat backend verb surface (send/history/interrupt/backend_state) by forwarding generation requests to a host-provided implementation (Swift via UniFFI callback)."
+
+[dependencies]
+fantastic-kernel = { path = "../../fantastic-kernel" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util", "macros"] }

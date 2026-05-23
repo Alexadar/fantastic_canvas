@@ -139,6 +139,24 @@ fn register_default_bundles() -> BundleRegistry {
         reg.register("ssh_runner.tools", fantastic_ssh_runner::SshRunnerBundle);
     }
 
+    // ── Apple-only bundle.
+    //
+    // `foundation_models_backend` forwards chat to a Swift host that
+    // wraps Apple's `LanguageModelSession`. The host is registered
+    // via `Kernel::set_foundation_models_backend` (UniFFI-exposed) at
+    // brain-kernel boot. The bundle is iOS-sandbox-safe — pure Rust,
+    // no subprocess / PTY — so it ships in BOTH the embedded and full
+    // XCFramework variants. Linux + Windows builds skip the bundle
+    // entirely (no Swift host can register; the bundle would be dead
+    // code).
+    #[cfg(target_vendor = "apple")]
+    {
+        reg.register(
+            fantastic_foundation_models_backend::HANDLER_MODULE,
+            fantastic_foundation_models_backend::FoundationModelsBackendBundle::new(),
+        );
+    }
+
     reg
 }
 
@@ -433,6 +451,132 @@ impl Kernel {
 impl Drop for Kernel {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+// ── Apple Foundation Models bridge ─────────────────────────────────
+//
+// Cfg-gated on `target_vendor = "apple"`. Linux + Windows builds skip
+// this module entirely; the callback trait + the four FM methods on
+// `Kernel` simply don't exist on those targets. UDL stays unchanged
+// — we declare the callback interface via proc-macro for per-target
+// granularity.
+
+#[cfg(target_vendor = "apple")]
+mod fm_bridge {
+    use super::*;
+    use fantastic_foundation_models_backend as fmb;
+
+    /// Apple Foundation Models host. Swift implements this via UniFFI;
+    /// the Swift impl wraps `FoundationModels.LanguageModelSession`.
+    ///
+    /// All methods are sync — UniFFI 0.29 callback-interface methods
+    /// can't be async. Swift implementations that need async (the
+    /// `LanguageModelSession.streamResponse` loop) kick off a `Task`
+    /// inside `stream_response` and report back via the kernel's
+    /// `fm_push_token` / `fm_complete` / `fm_error` methods.
+    #[uniffi::export(callback_interface)]
+    pub trait FoundationModelsBackend: Send + Sync {
+        /// True iff Apple Intelligence is enabled + the user opted in.
+        fn is_available(&self) -> bool;
+
+        /// True iff the on-device model is downloaded + ready.
+        fn model_available(&self) -> bool;
+
+        /// Begin a generation. Returns immediately; the implementation
+        /// runs the streaming loop in its own task + reports tokens
+        /// via `kernel.fm_push_token(stream_id, delta)`, finalizes via
+        /// `kernel.fm_complete(stream_id)`, and surfaces failures via
+        /// `kernel.fm_error(stream_id, message)`.
+        fn stream_response(
+            &self,
+            stream_id: String,
+            system_prompt: String,
+            history_json: String,
+            user_message: String,
+        );
+
+        /// Cancel an in-flight stream by id. Idempotent.
+        fn cancel(&self, stream_id: String);
+    }
+
+    /// Bridge struct — implements the bundle-crate's
+    /// [`fmb::FoundationModelsHost`] trait by forwarding to the
+    /// UniFFI callback. Constructed once per
+    /// `Kernel::set_foundation_models_backend` call.
+    pub(super) struct SwiftHostAdapter {
+        inner: Arc<dyn FoundationModelsBackend>,
+    }
+
+    impl SwiftHostAdapter {
+        pub(super) fn new(inner: Box<dyn FoundationModelsBackend>) -> Arc<Self> {
+            Arc::new(Self {
+                inner: Arc::from(inner),
+            })
+        }
+    }
+
+    impl fmb::FoundationModelsHost for SwiftHostAdapter {
+        fn is_available(&self) -> bool {
+            self.inner.is_available()
+        }
+        fn model_available(&self) -> bool {
+            self.inner.model_available()
+        }
+        fn stream_response(
+            &self,
+            stream_id: String,
+            system_prompt: String,
+            history_json: String,
+            user_message: String,
+        ) {
+            self.inner
+                .stream_response(stream_id, system_prompt, history_json, user_message);
+        }
+        fn cancel(&self, stream_id: String) {
+            self.inner.cancel(stream_id);
+        }
+    }
+}
+
+/// Apple-only Kernel methods that bridge to the
+/// `foundation_models_backend` bundle. Swift consumers register a
+/// host via `set_foundation_models_backend`, then feed tokens back
+/// via `fm_push_token` / `fm_complete` / `fm_error` (keyed by the
+/// `stream_id` the bundle handed out from its `send` reply).
+///
+/// Bridge async because `fm_push_token` / `fm_complete` / `fm_error`
+/// internally `kernel.send` / `kernel.emit` (Tokio mpsc) to fan out
+/// `token` / `done` events to caller inboxes — same `async_runtime
+/// = "tokio"` reason as the other async exports.
+#[cfg(target_vendor = "apple")]
+#[uniffi::export(async_runtime = "tokio")]
+impl Kernel {
+    /// Register a Foundation Models host. Replaces any previously-
+    /// registered host (single global slot). Returns immediately.
+    pub fn set_foundation_models_backend(
+        &self,
+        backend: Box<dyn fm_bridge::FoundationModelsBackend>,
+    ) {
+        let adapter = fm_bridge::SwiftHostAdapter::new(backend);
+        fantastic_foundation_models_backend::register_host(adapter);
+    }
+
+    /// Append a token to the in-flight assistant message identified
+    /// by `stream_id`. Emits a `token` event to the caller.
+    pub async fn fm_push_token(&self, stream_id: String, delta: String) {
+        fantastic_foundation_models_backend::push_token(&self.inner, &stream_id, &delta).await;
+    }
+
+    /// Mark the stream complete + persist the final assistant
+    /// message. Emits a `done` event.
+    pub async fn fm_complete(&self, stream_id: String) {
+        fantastic_foundation_models_backend::complete(&self.inner, &stream_id).await;
+    }
+
+    /// Mark the stream failed. Emits a `done` event with the error.
+    pub async fn fm_error(&self, stream_id: String, message: String) {
+        fantastic_foundation_models_backend::error(&self.inner, &stream_id, &message).await;
     }
 }
 

@@ -69,7 +69,10 @@ async fn main() {
     let kernel = Arc::clone(&booted.kernel);
     println!("  bootstrap mode: {:?}", kernel.storage);
     println!("  cwd (sandboxed tempdir): {}", cwd.display());
-    assert_or_die(kernel.storage == StorageMode::InMemory, "kernel.storage == InMemory");
+    assert_or_die(
+        kernel.storage == StorageMode::InMemory,
+        "kernel.storage == InMemory",
+    );
     assert_or_die(
         !cwd.join(".fantastic").exists(),
         "no .fantastic/ dir in cwd",
@@ -110,9 +113,15 @@ async fn main() {
     banner("Step 4: spin a FRESH in-memory kernel + kernel.load_json(snapshot)");
     let booted2 = bootstrap(registry(), BootstrapOptions::in_memory()).expect("boot 2");
     let kernel2 = Arc::clone(&booted2.kernel);
-    println!("  fresh kernel agents before load: {:?}", agent_ids(&kernel2));
+    println!(
+        "  fresh kernel agents before load: {:?}",
+        agent_ids(&kernel2)
+    );
     kernel2.load_json(&snapshot).expect("load");
-    println!("  fresh kernel agents after load:  {:?}", agent_ids(&kernel2));
+    println!(
+        "  fresh kernel agents after load:  {:?}",
+        agent_ids(&kernel2)
+    );
     for id in ["core", "alpha", "beta", "gamma"] {
         assert_or_die(
             kernel2.agents.contains_key(&AgentId::from(id)),
@@ -171,7 +180,10 @@ async fn main() {
     .to_string();
     let err2 = kernel2.load_json(&bad2).unwrap_err();
     println!("  missing-root snapshot → {err2}");
-    assert_or_die(format!("{err2}").contains("no root"), "missing root rejected");
+    assert_or_die(
+        format!("{err2}").contains("no root"),
+        "missing root rejected",
+    );
 
     banner("ALL 15 ASSERTIONS GREEN — in-memory save/load surface healthy");
     if let Some(p) = prev_cwd {
