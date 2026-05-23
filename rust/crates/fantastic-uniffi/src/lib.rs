@@ -51,6 +51,11 @@ pub enum KernelError {
     /// without an intervening `shutdown()`.
     #[error("already running")]
     AlreadyRunning,
+    /// A `Kernel::load` call received a snapshot that was malformed,
+    /// missing a root, had a duplicate id, dangling parent_id, or a
+    /// schema version this kernel doesn't understand.
+    #[error("invalid snapshot: {0}")]
+    InvalidSnapshot(String),
     /// Catch-all for unexpected failures.
     #[error("internal: {0}")]
     Internal(String),
@@ -193,6 +198,44 @@ pub async fn start_kernel(workdir: String, port_hint: u16) -> Result<Arc<Kernel>
     )))
 }
 
+/// Boot a brain-tier kernel — no workdir, no lock file, no on-disk
+/// state. Everything lives in process memory; the consumer extracts
+/// state via [`Kernel::save`] (returns JSON) and restores it via
+/// [`Kernel::load`].
+///
+/// Mode parity with [`start_kernel`]: ensures a web agent and boots
+/// it, so the brain still serves HTTP / WS on `127.0.0.1:<port>` the
+/// embedding app can point a WebView at. The wire surface is
+/// identical to a disk-backed kernel after boot — Swift consumers
+/// treat both kernel handles the same way (`sendJson`, `subscribe`,
+/// etc.).
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn start_kernel_in_memory(port_hint: u16) -> Result<Arc<Kernel>, KernelError> {
+    let opts = BootstrapOptions::in_memory();
+    let booted = bootstrap::bootstrap(register_default_bundles(), opts)
+        .map_err(|e| KernelError::BootFailed(format!("{e}")))?;
+    let kernel_arc = Arc::clone(&booted.kernel);
+    let web_id = ensure_web_agent(&kernel_arc, port_hint).await?;
+    let boot_reply = kernel_arc.send(&web_id, json!({"type": "boot"})).await;
+    if let Some(err) = boot_reply.get("error").and_then(Value::as_str) {
+        return Err(KernelError::PortBindFailed(err.to_string()));
+    }
+    let actual_port = boot_reply
+        .get("port")
+        .and_then(Value::as_u64)
+        .map(|p| p as u16)
+        .unwrap_or(port_hint);
+    // Workdir field is a never-read sentinel — Kernel::new_inner
+    // requires one but the shutdown path skips lock release when the
+    // underlying storage is InMemory.
+    Ok(Arc::new(Kernel::new_inner(
+        booted.kernel,
+        PathBuf::new(),
+        web_id,
+        actual_port,
+    )))
+}
+
 async fn ensure_web_agent(
     kernel: &Arc<fantastic_kernel::Kernel>,
     port_hint: u16,
@@ -285,6 +328,56 @@ impl Kernel {
     pub fn unsubscribe(&self, token: u64) {
         self.inner
             .remove_state_subscriber(fantastic_kernel::kernel::SubscriberToken(token));
+    }
+
+    /// Snapshot the kernel's current state as a JSON string.
+    ///
+    /// Both storage modes answer this — Disk-mode callers usually
+    /// don't need it (state.json is already on disk), but it's useful
+    /// for cross-process inspection and "export this workdir" UX.
+    /// InMemory consumers (Swift brain kernel) call this to persist
+    /// state externally (UserDefaults, CloudKit, file) and
+    /// `kernel.load(json)` later to restore.
+    ///
+    /// Output is byte-deterministic for equal in-memory state —
+    /// agents are sorted by id (ASCII) inside the snapshot.
+    pub fn save(&self) -> String {
+        self.inner.save_json()
+    }
+
+    /// Replace the kernel's agent tree with the snapshot in `json`.
+    ///
+    /// Drops every currently-registered agent + closes their inboxes,
+    /// then rebuilds the tree from the snapshot. Weak-load: agents
+    /// whose `handler_module` isn't in this kernel's bundle registry
+    /// are logged + skipped along with their subtree.
+    ///
+    /// In Disk mode the new state is also flushed to
+    /// `<workdir>/.fantastic/state.json` so subsequent boots see the
+    /// loaded state.
+    ///
+    /// Errors:
+    /// - [`KernelError::InvalidSnapshot`] if the JSON doesn't parse,
+    ///   if the snapshot's schema version is too new, if it has no
+    ///   root, has duplicate ids, or has dangling parent references.
+    pub fn load(&self, json: String) -> Result<(), KernelError> {
+        self.inner.load_json(&json).map_err(|e| match e {
+            fantastic_kernel::KernelError::InvalidSnapshot(msg) => {
+                KernelError::InvalidSnapshot(msg)
+            }
+            other => KernelError::Internal(format!("{other}")),
+        })?;
+        // For Disk mode, persist each loaded agent to its on-disk
+        // dir. The merge-only `persist` won't delete dirs of agents
+        // that USED to be in this kernel but aren't in the new
+        // snapshot — those stay on disk per the dirty-binding
+        // contract ("agents will reconcile when they next touch
+        // them"). The brain kernel use case is InMemory, which
+        // no-ops here.
+        for entry in self.inner.agents.iter() {
+            let _ = fantastic_kernel::persistence::persist(entry.value(), &self.inner.storage);
+        }
+        Ok(())
     }
 
     /// Stop the listener, release the workdir lock. Idempotent.
