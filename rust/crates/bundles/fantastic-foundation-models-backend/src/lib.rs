@@ -95,12 +95,19 @@ pub trait FoundationModelsHost: Send + Sync {
     /// - `history_json` — JSON array of prior turns: `[{role, text}, ...]`.
     ///   The host should replay these into the session before streaming.
     /// - `user_message` — the new user turn that drives this response.
+    /// - `tools_json` — JSON array of currently-registered tools in
+    ///   Apple-FM / OpenAI shape: `[{name, description, parameters},
+    ///   ...]`. Comes from `kernel.send("tools", {list_for_llm})` —
+    ///   `"[]"` when the tools agent isn't present or holds no tools.
+    ///   The host wraps each entry as a `LanguageModelSession.Tool`
+    ///   whose `call(...)` closure invokes `kernel.dispatch_tool`.
     fn stream_response(
         &self,
         stream_id: String,
         system_prompt: String,
         history_json: String,
         user_message: String,
+        tools_json: String,
     );
 
     /// Cancel an in-flight stream by id. Idempotent. The host should
@@ -605,12 +612,18 @@ async fn send(kernel: &Arc<Kernel>, agent_id: &AgentId, payload: &Value) -> Valu
         },
     );
 
+    // Fetch the current tool registry — empty array if the tools
+    // agent isn't present or holds nothing. The LLM-using bundle
+    // ALWAYS pulls this; per-call opt-in is intentionally absent.
+    let tools_json = fetch_tools_json(kernel).await;
+
     if let Some(h) = host() {
         h.stream_response(
             stream_id.clone(),
             system_prompt,
             history_json,
             text.to_string(),
+            tools_json,
         );
     }
 
@@ -706,6 +719,22 @@ fn probe_host() -> HostProbes {
             model_available: false,
             backend_registered: false,
         },
+    }
+}
+
+/// Fetch the current tool registry as a JSON string ready to hand
+/// to the host. Returns `"[]"` when no tools agent is present, the
+/// tools agent answers an unexpected shape, or the registry is empty.
+/// Graceful — never blocks `send` on tool-registry trouble.
+async fn fetch_tools_json(kernel: &Arc<Kernel>) -> String {
+    let reply = kernel
+        .send(&AgentId::from("tools"), json!({"type":"list_for_llm"}))
+        .await;
+    match reply.get("tools") {
+        Some(arr @ Value::Array(_)) => {
+            serde_json::to_string(arr).unwrap_or_else(|_| "[]".to_string())
+        }
+        _ => "[]".to_string(),
     }
 }
 

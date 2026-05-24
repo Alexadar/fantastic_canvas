@@ -17,13 +17,17 @@ use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Captured `stream_response` args (stream_id, system_prompt,
+/// history_json, user_message, tools_json).
+type StreamCall = (String, String, String, String, String);
+
 /// Mock host. Records the streaming call so the demo can show what
 /// Swift would receive in production.
 #[derive(Default)]
 struct MockHost {
     available: AtomicBool,
     model_loaded: AtomicBool,
-    last_call: Mutex<Option<(String, String, String, String)>>,
+    last_call: Mutex<Option<StreamCall>>,
     cancels: AtomicUsize,
 }
 
@@ -40,9 +44,15 @@ impl FoundationModelsHost for MockHost {
         system_prompt: String,
         history_json: String,
         user_message: String,
+        tools_json: String,
     ) {
-        *self.last_call.lock().unwrap() =
-            Some((stream_id, system_prompt, history_json, user_message));
+        *self.last_call.lock().unwrap() = Some((
+            stream_id,
+            system_prompt,
+            history_json,
+            user_message,
+            tools_json,
+        ));
     }
     fn cancel(&self, _stream_id: String) {
         self.cancels.fetch_add(1, Ordering::Relaxed);

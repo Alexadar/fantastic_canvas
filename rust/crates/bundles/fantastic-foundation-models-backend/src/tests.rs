@@ -41,11 +41,15 @@ fn test_lock() -> MutexGuard<'static, ()> {
 /// the probes. `stream_response` doesn't actually stream — tests
 /// drive token feedback by calling `push_token` / `complete` /
 /// `error` directly.
+/// Captured `stream_response` args (stream_id, system_prompt,
+/// history_json, user_message, tools_json).
+type StreamCall = (String, String, String, String, String);
+
 #[derive(Default)]
 struct MockHost {
     available: AtomicBool,
     model_loaded: AtomicBool,
-    last_stream: Mutex<Option<(String, String, String, String)>>,
+    last_stream: Mutex<Option<StreamCall>>,
     cancels: AtomicUsize,
 }
 
@@ -71,9 +75,15 @@ impl FoundationModelsHost for MockHost {
         system_prompt: String,
         history_json: String,
         user_message: String,
+        tools_json: String,
     ) {
-        *self.last_stream.lock().expect("last_stream poisoned") =
-            Some((stream_id, system_prompt, history_json, user_message));
+        *self.last_stream.lock().expect("last_stream poisoned") = Some((
+            stream_id,
+            system_prompt,
+            history_json,
+            user_message,
+            tools_json,
+        ));
     }
     fn cancel(&self, _stream_id: String) {
         self.cancels.fetch_add(1, Ordering::Relaxed);

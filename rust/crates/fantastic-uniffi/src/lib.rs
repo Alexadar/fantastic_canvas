@@ -116,6 +116,10 @@ fn register_default_bundles() -> BundleRegistry {
         fantastic_proxy_agent::HANDLER_MODULE,
         fantastic_proxy_agent::ProxyAgentBundle::new(),
     );
+    reg.register(
+        fantastic_tools::HANDLER_MODULE,
+        fantastic_tools::ToolsBundle::new(),
+    );
 
     // ── Full-tier-only (subprocess / fork / dynamic loading).
     //
@@ -492,12 +496,21 @@ mod fm_bridge {
         /// via `kernel.fm_push_token(stream_id, delta)`, finalizes via
         /// `kernel.fm_complete(stream_id)`, and surfaces failures via
         /// `kernel.fm_error(stream_id, message)`.
+        ///
+        /// `tools_json` is the current tool set in Apple-FM / OpenAI
+        /// shape: `[{name, description, parameters}, …]`. The bundle
+        /// fetches this from `kernel.send("tools", {list_for_llm})`
+        /// before every call — `"[]"` if the tools agent isn't
+        /// present or holds nothing. Swift wraps each entry in a
+        /// `LanguageModelSession.Tool` whose `call(...)` closure
+        /// invokes `kernel.dispatch_tool(name, args_json)`.
         fn stream_response(
             &self,
             stream_id: String,
             system_prompt: String,
             history_json: String,
             user_message: String,
+            tools_json: String,
         );
 
         /// Cancel an in-flight stream by id. Idempotent.
@@ -533,9 +546,15 @@ mod fm_bridge {
             system_prompt: String,
             history_json: String,
             user_message: String,
+            tools_json: String,
         ) {
-            self.inner
-                .stream_response(stream_id, system_prompt, history_json, user_message);
+            self.inner.stream_response(
+                stream_id,
+                system_prompt,
+                history_json,
+                user_message,
+                tools_json,
+            );
         }
         fn cancel(&self, stream_id: String) {
             self.inner.cancel(stream_id);
@@ -711,6 +730,109 @@ impl Kernel {
         self.inner
             .emit(&AgentId::from(agent_id.as_str()), event)
             .await;
+    }
+}
+
+// ── Tools bridge (registrable LLM tool calling) ────────────────────
+//
+// The `tools.tools` bundle holds a process-global map of registered
+// tools (name → {agent_id, verb, schema, sender}). LLM-using bundles
+// (FM, ollama, …) pull `list_for_llm` before each model call;
+// `dispatch_tool` is the LLM → kernel → dispatch_target round-trip.
+//
+// These wrappers are sugar over `kernel.send(target_id="tools", …)`:
+// they take structured params so Swift callers don't have to build
+// JSON strings, then forward to the bundle.
+
+/// Thin async wrappers around `kernel.send(target="tools", ...)` so
+/// Swift callers don't have to build JSON strings. The bundle itself
+/// is the same regardless of which path you take.
+#[uniffi::export(async_runtime = "tokio")]
+impl Kernel {
+    /// Register a tool. `sender_id` is the cleanup key — pass the
+    /// agent id that owns this registration. `verb` defaults to the
+    /// tool name when `None`. `parameters_schema_json` is the JSON
+    /// Schema for the tool's args (FM uses it for guided generation).
+    pub async fn register_tool(
+        &self,
+        sender_id: String,
+        name: String,
+        agent_id: String,
+        verb: Option<String>,
+        description: String,
+        parameters_schema_json: String,
+    ) -> String {
+        let schema: Value = serde_json::from_str(&parameters_schema_json).unwrap_or(Value::Null);
+        let mut payload = serde_json::Map::new();
+        payload.insert("type".to_string(), Value::String("register".to_string()));
+        payload.insert("name".to_string(), Value::String(name));
+        payload.insert("agent_id".to_string(), Value::String(agent_id));
+        payload.insert("description".to_string(), Value::String(description));
+        payload.insert("parameters_schema".to_string(), schema);
+        payload.insert("sender".to_string(), Value::String(sender_id));
+        if let Some(v) = verb {
+            payload.insert("verb".to_string(), Value::String(v));
+        }
+        let reply = self
+            .inner
+            .send(&AgentId::from("tools"), Value::Object(payload))
+            .await;
+        serde_json::to_string(&reply).unwrap_or_else(|_| "null".to_string())
+    }
+
+    /// Drop one tool by name. Returns `{ok: true, name}` on hit,
+    /// `{error, reason: "not_found"}` if no such tool.
+    pub async fn unregister_tool(&self, _sender_id: String, name: String) -> String {
+        let reply = self
+            .inner
+            .send(
+                &AgentId::from("tools"),
+                json!({"type":"unregister","name": name}),
+            )
+            .await;
+        serde_json::to_string(&reply).unwrap_or_else(|_| "null".to_string())
+    }
+
+    /// Drop every tool registered with `sender_id`. Returns
+    /// `{ok: true, removed: <n>, sender}`. Use this on logout / mode
+    /// change / agent teardown.
+    pub async fn unregister_tools_by_sender(&self, sender_id: String) -> String {
+        let reply = self
+            .inner
+            .send(
+                &AgentId::from("tools"),
+                json!({"type":"unregister_by_sender","sender": sender_id}),
+            )
+            .await;
+        serde_json::to_string(&reply).unwrap_or_else(|_| "null".to_string())
+    }
+
+    /// Fetch the current tool list in Apple-FM / OpenAI-compatible
+    /// shape: `{tools: [{name, description, parameters}]}`. Pass this
+    /// directly to `LanguageModelSession(tools:)` after wrapping each
+    /// entry in a `Tool` conformance.
+    pub async fn list_tools_for_llm(&self) -> String {
+        let reply = self
+            .inner
+            .send(&AgentId::from("tools"), json!({"type":"list_for_llm"}))
+            .await;
+        serde_json::to_string(&reply).unwrap_or_else(|_| "null".to_string())
+    }
+
+    /// LLM → kernel: invoke a tool by name with JSON-encoded args.
+    /// Returns the raw reply from the dispatch target (whatever
+    /// `kernel.send(entry.agent_id, ...)` produced). Feed this back
+    /// to the `LanguageModelSession` as the tool's output.
+    pub async fn dispatch_tool(&self, name: String, arguments_json: String) -> String {
+        let args: Value = serde_json::from_str(&arguments_json).unwrap_or(Value::Null);
+        let reply = self
+            .inner
+            .send(
+                &AgentId::from("tools"),
+                json!({"type":"dispatch","name": name,"arguments": args}),
+            )
+            .await;
+        serde_json::to_string(&reply).unwrap_or_else(|_| "null".to_string())
     }
 }
 
