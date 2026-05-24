@@ -83,7 +83,45 @@ Expect: standard cascade. Bundle's `on_delete` hook runs (no host
 to call, so it just clears the registry — no observable effect at
 the CLI level).
 
-### Test 7: cargo tests (the bidirectional + streaming path)
+### Test 7: chat-backend verb shape via CLI (no host)
+
+Verifies the wire shape the Swift LLM chat backend speaks. CLI
+process has no Swift host registered, so every verb returns the
+graceful `no_host` envelope — that's exactly what proves the
+verbs are reaching the bundle. Multi-step state verification
+happens via cargo unit tests + the runnable example (the CLI
+can't drive a Swift host).
+
+```bash
+$FANTASTIC core create_agent handler_module=proxy_agent.tools id=fm \
+  > /tmp/fk_proxy/fm_create.json
+jq -e '.id == "fm"' /tmp/fk_proxy/fm_create.json
+
+# send → no_host envelope (proves the verb reached the bundle)
+$FANTASTIC fm send text="hi" client_id=cli > /tmp/fk_proxy/fm_send.json
+jq -e '.reason == "no_host"' /tmp/fk_proxy/fm_send.json
+
+# history, interrupt, backend_state — all return no_host envelope
+$FANTASTIC fm history client_id=cli > /tmp/fk_proxy/fm_hist.json
+jq -e '.reason == "no_host"' /tmp/fk_proxy/fm_hist.json
+
+$FANTASTIC fm interrupt client_id=cli > /tmp/fk_proxy/fm_int.json
+jq -e '.reason == "no_host"' /tmp/fk_proxy/fm_int.json
+
+$FANTASTIC fm backend_state > /tmp/fk_proxy/fm_state.json
+jq -e '.reason == "no_host"' /tmp/fk_proxy/fm_state.json
+
+# reflect → generic proxy_agent identity, host_registered: false
+$FANTASTIC fm reflect > /tmp/fk_proxy/fm_reflect.json
+jq -e '.kind == "proxy_agent"' /tmp/fk_proxy/fm_reflect.json
+jq -e '.host_registered == false' /tmp/fk_proxy/fm_reflect.json
+```
+
+Expect: every chat verb routes correctly at the bundle level; once a
+Swift host is registered (in production), `handle(payload_json)` is
+where the actual chat backend logic fires.
+
+### Test 8: cargo tests (the bidirectional + streaming path)
 
 ```bash
 cd /path/to/fantastic_canvas/rust
@@ -92,7 +130,7 @@ cargo run -p fantastic-proxy-agent --example proxy_mock_session
 ```
 
 Expect:
-- 15 unit tests pass
+- 20 unit tests pass (includes 5 chat-backend pattern tests)
 - Example demo prints JSON at each step, ALL ASSERTIONS GREEN
 
 ## Summary table
@@ -105,7 +143,8 @@ Expect:
 | 4. arbitrary verb no_host |  |  |
 | 5. shutdown ok |  |  |
 | 6. cascade delete |  |  |
-| 7. cargo tests + example |  |  |
+| 7. chat-backend verb shape |  |  |
+| 8. cargo tests + example |  |  |
 
 ## End-to-end with a Swift host (manual, after app-side wires up)
 

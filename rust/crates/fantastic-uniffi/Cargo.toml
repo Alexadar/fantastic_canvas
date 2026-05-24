@@ -46,11 +46,6 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 uniffi = { version = "0.29", features = ["tokio"] }
 
-# Apple-only bundle. Linked into the XCFramework only on macOS / iOS
-# targets. Linux / Windows builds skip it entirely.
-[target.'cfg(target_vendor = "apple")'.dependencies]
-fantastic-foundation-models-backend = { path = "../bundles/fantastic-foundation-models-backend" }
-
 [build-dependencies]
 uniffi = { version = "0.29", features = ["build"] }
 

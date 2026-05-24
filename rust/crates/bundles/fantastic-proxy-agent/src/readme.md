@@ -60,6 +60,105 @@ needed if you cascade-delete through the standard verb.
 
 UniFFI 0.29 callback methods are sync. Swift impls re-dispatch to
 `MainActor` via `Task { @MainActor in … }`; the sync return value
-is just an ack. The standard streaming-out pattern (FM's
-`{queued, stream_id}` + `proxy_emit` token feedback) applies here
-too if the host needs to fire async events back.
+is just an ack. The standard streaming-out pattern (the `{queued,
+stream_id}` reply + `proxy_emit` for async token feedback) is the
+canonical way to surface streamed work back to the kernel.
+
+## Worked example — LLM chat backend
+
+Wrapping an on-device LLM (Apple Foundation Models, future local
+models, etc.) is the **primary use case** for `proxy_agent` after
+the standalone FM bundle was retired. Same pattern, same verbs,
+generic substrate.
+
+### Verb surface
+
+The Swift host's `handle(payloadJson)` switches on `payload.type`:
+
+| verb | payload | reply |
+|---|---|---|
+| `send` | `{text, client_id?}` | `{queued: true, stream_id, message_id}` — host kicks streaming task |
+| `history` | `{client_id?}` | `{messages, client_id}` |
+| `interrupt` | `{client_id?}` | `{interrupted: true}` |
+| `backend_state` | `{}` | `{apple_intelligence_available, model_available, backend_registered, in_flight, …}` |
+| `reflect` | `{}` | identity + provider probes |
+
+This is the same surface `ai_chat_webapp` expects from any chat
+backend (`ollama_backend`, `nvidia_nim_backend`, etc.), so dropping
+in a Swift-backed proxy_agent with `upstream_id: "fm"` requires no
+chat-webapp changes.
+
+### Streaming via `proxy_emit`
+
+`handle({type:"send"})` returns **synchronously** with `{queued,
+stream_id}`. The host kicks a `Task { @MainActor in … }` that:
+
+1. Pulls current tools from the registry:
+   ```swift
+   let toolsJson = try await kernel.sendJson(
+       targetId: "tools",
+       payloadJson: #"{"type":"list_for_llm"}"#)
+   ```
+2. Constructs (or reuses) a `LanguageModelSession` with the tools.
+3. Streams the user message:
+   ```swift
+   for try await token in session.streamResponse(to: userText) {
+     try await kernel.proxyEmit(
+         agentId: "fm",
+         eventJson: #"{"type":"token","stream_id":"...","delta":"..."}"#)
+   }
+   try await kernel.proxyEmit(agentId: "fm",
+       eventJson: #"{"type":"done","stream_id":"..."}"#)
+   ```
+
+Tokens fan out via the kernel's standard watcher mechanism —
+anything that did `kernel.watch(src:"fm", watcher:"chat_ui")`
+receives them.
+
+### Session lifecycle (Apple FM caveat)
+
+Apple's `LanguageModelSession` has a known iOS 26.x issue: creating
+a **second** session whose LLM invokes a tool crashes inside Apple's
+framework (`SwiftUI/AppGraph.swift:26 — AppGraph.shared may only be
+set once!`). Workaround: **hold one session per chat thread** in
+the host (stored property, not local variable), bootstrap it on
+first `send`, reuse for every subsequent turn:
+
+```swift
+final class FoundationModelsProxyHost: ProxyAgent {
+  private var session: LanguageModelSession?  // ← persistent
+
+  func handle(payloadJson: String) -> String {
+    // ...
+    if session == nil {
+      session = LanguageModelSession(instructions: ..., tools: ...)
+    }
+    // reuse session for every turn
+  }
+}
+```
+
+Apple's session keeps its own transcript internally; on the first
+turn the host can replay `historyJson` from the kernel (if any) to
+bootstrap; on subsequent turns the session owns context and the
+host can ignore the kernel's history field. The kernel's history
+stays authoritative for **telemetry + replay**, the session's
+transcript stays authoritative for **what the LLM saw**.
+
+### Why this lives on proxy_agent
+
+There's no Apple-FM-specific bundle anymore. The proxy_agent
+substrate handles:
+- Host registration per agent_id
+- Sync verb dispatch
+- Cascade-delete hooks (host can dispose session via `on_delete`)
+- Sender-attributed inbound (`send_json_as`) and async outbound
+  (`proxy_emit`)
+
+Anything FM-specific (the verb table, the session lifecycle, the
+history shape, the availability probes) is **the Swift host's
+job**. The kernel doesn't know it's talking to an LLM.
+
+See `fantastic-tools/src/readme.md` (Swift Integration) for the
+companion piece: how the chat backend pulls registered tools from
+the `tools.tools` agent on every `send`.

@@ -98,23 +98,6 @@ fn register_default_bundles() -> BundleRegistry {
         reg.register("ssh_runner.tools", fantastic_ssh_runner::SshRunnerBundle);
     }
 
-    // ── Apple-only bundle.
-    //
-    // The `foundation_models_backend` forwards chat to a host
-    // implementation of `FoundationModelsHost`. On the standalone CLI
-    // no host is registered yet (step 2b will add a native Swift-static-
-    // -lib host); the bundle still answers `backend_state` /
-    // `reflect` / `history` so consumers can probe + show a graceful
-    // degrade message ("not registered"). Linux / Windows builds skip
-    // the bundle entirely.
-    #[cfg(target_vendor = "apple")]
-    {
-        reg.register(
-            fantastic_foundation_models_backend::HANDLER_MODULE,
-            fantastic_foundation_models_backend::FoundationModelsBackendBundle::new(),
-        );
-    }
-
     reg
 }
 

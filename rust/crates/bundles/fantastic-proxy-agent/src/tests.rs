@@ -308,3 +308,234 @@ async fn host_can_return_ok_ack_by_default() {
     let r = kernel.send(&a, json!({"type":"render","frame":7})).await;
     assert_eq!(r["ok"], true);
 }
+
+// ── Worked example: chat backend on proxy_agent ─────────────────────
+//
+// These tests prove the chat-backend verb shape works on top of the
+// generic proxy_agent. The pattern is what Swift hosts use to wrap
+// Apple FM (or any other on-device LLM):
+//
+//   handle({type:"send"})   → returns {queued, stream_id} immediately,
+//                              then a background task streams tokens
+//                              via kernel.emit on the host's own inbox
+//   handle({type:"history"})    → returns stored messages
+//   handle({type:"interrupt"})  → flips a cancel flag, returns
+//                                  {interrupted: true}
+//   handle({type:"backend_state"}) → returns availability probes
+//
+// The tools-pull path (kernel.send("tools", list_for_llm) called from
+// the chat backend during streaming) is covered separately in
+// fantastic-tools/tests/chat_backend_pulls_tools.rs — that test needs
+// both bundles + the tools registry which would create a dev-dep
+// cycle here. The streaming path (kernel.emit on the host's inbox →
+// watcher fanout) is verified below.
+
+/// Mock chat-backend host. Shared state lives behind Arc<Mutex<_>>
+/// so the spawned streaming task can mutate it. Models a Swift host
+/// that holds a `LanguageModelSession` plus per-turn bookkeeping.
+struct ChatBackendMockHost {
+    history: Arc<Mutex<Vec<Value>>>,
+    cancel_flag: Arc<AtomicUsize>,
+    /// Set on `attach` so handle()'s spawned task can address its own
+    /// agent id + drive kernel.emit / kernel.send.
+    kernel_and_id: Mutex<Option<(Arc<Kernel>, AgentId)>>,
+    /// Signaled when the streaming task finishes — tests wait on this
+    /// before asserting emitted state.
+    stream_done: Arc<tokio::sync::Notify>,
+}
+
+impl ChatBackendMockHost {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            history: Arc::new(Mutex::new(Vec::new())),
+            cancel_flag: Arc::new(AtomicUsize::new(0)),
+            kernel_and_id: Mutex::new(None),
+            stream_done: Arc::new(tokio::sync::Notify::new()),
+        })
+    }
+    fn attach(&self, kernel: Arc<Kernel>, agent_id: AgentId) {
+        *self.kernel_and_id.lock().unwrap() = Some((kernel, agent_id));
+    }
+}
+
+impl ProxyAgentHost for ChatBackendMockHost {
+    fn handle(&self, payload_json: String) -> String {
+        let payload: Value = serde_json::from_str(&payload_json).unwrap_or(Value::Null);
+        let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
+        match verb {
+            "send" => {
+                let text = payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                self.history.lock().unwrap().push(json!({
+                    "role":"user","content":text,"complete":true
+                }));
+                // Stream two tokens + a done event from a spawned task,
+                // simulating what a Swift host does with kernel.proxyEmit
+                // inside its LanguageModelSession callback.
+                let kid = self.kernel_and_id.lock().unwrap().clone();
+                let notify = Arc::clone(&self.stream_done);
+                if let Some((k, id)) = kid {
+                    tokio::spawn(async move {
+                        k.emit(
+                            &id,
+                            json!({"type":"token","stream_id":"stm_t","delta":"hi "}),
+                        )
+                        .await;
+                        k.emit(
+                            &id,
+                            json!({"type":"token","stream_id":"stm_t","delta":"there"}),
+                        )
+                        .await;
+                        k.emit(&id, json!({"type":"done","stream_id":"stm_t"}))
+                            .await;
+                        notify.notify_one();
+                    });
+                }
+                json!({"queued":true,"stream_id":"stm_t","message_id":"msg_t"}).to_string()
+            }
+            "history" => {
+                let msgs = self.history.lock().unwrap().clone();
+                json!({"messages": msgs, "client_id": "cli"}).to_string()
+            }
+            "interrupt" => {
+                self.cancel_flag.fetch_add(1, Ordering::Relaxed);
+                json!({"interrupted": true}).to_string()
+            }
+            "backend_state" => json!({
+                "apple_intelligence_available": true,
+                "model_available": true,
+                "backend_registered": true,
+                "in_flight": false,
+            })
+            .to_string(),
+            "reflect" => json!({
+                "sentence":"Mock chat backend on proxy_agent",
+                "provider":"mock",
+                "verbs":{"send":"...","history":"...","interrupt":"...","backend_state":"...","reflect":"..."},
+            })
+            .to_string(),
+            _ => json!({"error":"unknown verb","reason":"unknown_verb"}).to_string(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn chat_backend_send_returns_queued_with_stream_id() {
+    let _g = test_lock();
+    let kernel = mk_kernel(StorageMode::InMemory);
+    let a = create_proxy_agent(&kernel, "fm").await;
+    let host = ChatBackendMockHost::new();
+    host.attach(Arc::clone(&kernel), a.clone());
+    register_host(a.clone(), host.clone());
+
+    let r = kernel
+        .send(&a, json!({"type":"send","text":"hello","client_id":"cli"}))
+        .await;
+    assert_eq!(r["queued"], true);
+    assert_eq!(r["stream_id"], "stm_t");
+    assert_eq!(r["message_id"], "msg_t");
+}
+
+#[tokio::test]
+async fn chat_backend_history_returns_messages_appended_by_send() {
+    let _g = test_lock();
+    let kernel = mk_kernel(StorageMode::InMemory);
+    let a = create_proxy_agent(&kernel, "fm").await;
+    let host = ChatBackendMockHost::new();
+    host.attach(Arc::clone(&kernel), a.clone());
+    register_host(a.clone(), host.clone());
+
+    let _ = kernel
+        .send(&a, json!({"type":"send","text":"first","client_id":"cli"}))
+        .await;
+    let _ = kernel
+        .send(&a, json!({"type":"send","text":"second","client_id":"cli"}))
+        .await;
+    let r = kernel
+        .send(&a, json!({"type":"history","client_id":"cli"}))
+        .await;
+    let msgs = r["messages"].as_array().expect("messages array");
+    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs[0]["content"], "first");
+    assert_eq!(msgs[1]["content"], "second");
+}
+
+#[tokio::test]
+async fn chat_backend_interrupt_sets_flag_and_returns_interrupted() {
+    let _g = test_lock();
+    let kernel = mk_kernel(StorageMode::InMemory);
+    let a = create_proxy_agent(&kernel, "fm").await;
+    let host = ChatBackendMockHost::new();
+    host.attach(Arc::clone(&kernel), a.clone());
+    register_host(a.clone(), host.clone());
+
+    let r = kernel.send(&a, json!({"type":"interrupt"})).await;
+    assert_eq!(r["interrupted"], true);
+    assert_eq!(host.cancel_flag.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn chat_backend_backend_state_returns_availability_probes() {
+    let _g = test_lock();
+    let kernel = mk_kernel(StorageMode::InMemory);
+    let a = create_proxy_agent(&kernel, "fm").await;
+    let host = ChatBackendMockHost::new();
+    host.attach(Arc::clone(&kernel), a.clone());
+    register_host(a.clone(), host.clone());
+
+    let r = kernel.send(&a, json!({"type":"backend_state"})).await;
+    assert_eq!(r["apple_intelligence_available"], true);
+    assert_eq!(r["model_available"], true);
+    assert_eq!(r["backend_registered"], true);
+    assert_eq!(r["in_flight"], false);
+}
+
+#[tokio::test]
+async fn chat_backend_streams_tokens_via_emit_to_own_inbox() {
+    let _g = test_lock();
+    let kernel = mk_kernel(StorageMode::InMemory);
+    let a = create_proxy_agent(&kernel, "fm").await;
+    let host = ChatBackendMockHost::new();
+    host.attach(Arc::clone(&kernel), a.clone());
+    register_host(a.clone(), host.clone());
+
+    // Subscribe to state events; we'll see one "send" event per
+    // kernel.send and one "emit" event per kernel.emit. Tokens flow as
+    // emit events targeting the fm agent.
+    let events: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    let _token = kernel.add_state_subscriber(Arc::new(move |ev: &Value| {
+        events_clone.lock().unwrap().push(ev.clone());
+    }));
+
+    let r = kernel
+        .send(&a, json!({"type":"send","text":"hi","client_id":"cli"}))
+        .await;
+    assert_eq!(r["queued"], true);
+
+    // Wait for the spawned streaming task to finish.
+    host.stream_done.notified().await;
+
+    let captured = events.lock().unwrap().clone();
+    let emit_tokens: Vec<&Value> = captured
+        .iter()
+        .filter(|e| e["type"] == "emit" && e["target"] == a.as_str() && e["verb"] == "token")
+        .collect();
+    let emit_done: Vec<&Value> = captured
+        .iter()
+        .filter(|e| e["type"] == "emit" && e["target"] == a.as_str() && e["verb"] == "done")
+        .collect();
+    assert_eq!(
+        emit_tokens.len(),
+        2,
+        "expected 2 token events; got {emit_tokens:?}"
+    );
+    assert_eq!(
+        emit_done.len(),
+        1,
+        "expected 1 done event; got {emit_done:?}"
+    );
+}

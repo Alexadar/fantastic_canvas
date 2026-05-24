@@ -31,7 +31,6 @@ members = [
     "crates/bundles/fantastic-python-runtime",
     "crates/bundles/fantastic-local-runner",
     "crates/bundles/fantastic-ssh-runner",
-    "crates/bundles/fantastic-foundation-models-backend",
     "crates/bundles/fantastic-proxy-agent",
     "crates/bundles/fantastic-tools",
     "crates/uniffi-bindgen",

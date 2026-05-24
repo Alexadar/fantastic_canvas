@@ -172,16 +172,33 @@ Expect:
 | 9. cascade delete | | |
 | 10. cargo + example | | |
 
-## End-to-end with a Swift FM host (manual, after app-claude wires up)
+## End-to-end with a Swift chat backend (manual, after app-claude wires up)
+
+The chat backend is a `proxy_agent.tools` agent backed by a Swift
+host implementing `ProxyAgentHost`. The same agent answers every
+chat verb (`send` / `history` / `interrupt` / `backend_state` /
+`reflect`) and pulls tools from this registry inside its `send`
+handler.
 
 ```swift
-// 1. Create the tools agent
+// 1. Create the tools agent + the chat backend (proxy_agent) agent.
 _ = try await kernel.sendJson(
     targetId: "core",
     payloadJson: #"{"type":"create_agent","handler_module":"tools.tools","id":"tools"}"#
 )
+_ = try await kernel.sendJson(
+    targetId: "core",
+    payloadJson: #"{"type":"create_agent","handler_module":"proxy_agent.tools","id":"fm"}"#
+)
 
-// 2. Register tools (sugar)
+// 2. Register the Swift host that wraps LanguageModelSession.
+//    The host's `handle({type:"send"})` pulls list_for_llm internally
+//    and streams tokens back via kernel.proxyEmit on the fm agent's
+//    inbox.
+kernel.registerProxyAgent(agentId: "fm",
+                          host: FoundationModelsProxyHost(kernel: kernel))
+
+// 3. Register tools (sugar wrapper).
 _ = try await kernel.registerTool(
     senderId: "weather_provider",
     name: "get_weather",
@@ -191,11 +208,16 @@ _ = try await kernel.registerTool(
     parametersSchemaJson: #"{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}"#
 )
 
-// 3. FM bundle's send fires → bundle pre-fetches list_for_llm →
-//    calls your stream_response with tools_json. Build LMSession
-//    with DynamicGenerationSchema per tool; each tool's call(...)
-//    closure invokes kernel.dispatchTool(name:, argumentsJson:).
+// 4. Chat now flows through the fm agent. ai_chat_webapp talks to
+//    "fm" the same way it would talk to any chat backend.
+_ = try await kernel.sendJson(
+    targetId: "fm",
+    payloadJson: #"{"type":"send","text":"What's the weather in Paris?","client_id":"cli"}"#
+)
+// → host pulls list_for_llm → builds LanguageModelSession with tools
+// → streams tokens via kernel.proxyEmit("fm", {type:"token", ...})
+// → ai_chat_webapp's watcher receives them and re-renders
 
-// 4. Cleanup
+// 5. Cleanup on logout / mode change.
 _ = try await kernel.unregisterToolsBySender(senderId: "weather_provider")
 ```

@@ -227,31 +227,65 @@ _ = try await kernel.sendJson(
 )
 ```
 
-### 3. Wire `tools_json` into FM's `stream_response`
+### 3. Pull tools from the chat backend (a `proxy_agent` host)
 
-When the FM bundle's `send` verb fires, it pre-fetches the current
-tool set from the registry and passes it to your
-`FoundationModelsBackend` callback as a NEW `tools_json: String`
-param on `stream_response`:
+The chat backend is a `proxy_agent.tools` agent with a Swift host
+that implements `ProxyAgentHost.handle`. On `{type:"send"}`, the
+host pulls the current tool set from the kernel and feeds it to its
+`LanguageModelSession`:
 
 ```swift
-extension FoundationModelsBackendImpl: FoundationModelsBackend {
-  func streamResponse(streamId: String,
-                       systemPrompt: String,
-                       historyJson: String,
-                       userMessage: String,
-                       toolsJson: String) {        // ← NEW
-    Task { @MainActor in
-      let tools = parseTools(toolsJson)            // → [LMTool]
-      let session = LanguageModelSession(
-          instructions: systemPrompt,
-          tools: tools                              // ← Apple-FM tool wiring
-      )
-      // … run the session, push tokens via kernel.fmPushToken / fmComplete
+final class FoundationModelsProxyHost: ProxyAgent {
+  private var session: LanguageModelSession?
+  private let kernel: Kernel
+
+  func handle(payloadJson: String) -> String {
+    let payload = try? JSONSerialization.jsonObject(with: payloadJson.data(using:.utf8)!)
+    let dict = payload as? [String:Any] ?? [:]
+    switch dict["type"] as? String {
+    case "send":
+      let stream_id = nextStreamId()
+      Task { @MainActor in
+        // Pull current tools BEFORE constructing the LMSession.
+        let toolsJson = try await kernel.sendJson(
+            targetId: "tools",
+            payloadJson: #"{"type":"list_for_llm"}"#)
+        let tools = parseTools(toolsJson, kernel: kernel)   // → [LMTool]
+        if session == nil {
+          session = LanguageModelSession(
+              instructions: systemPrompt,
+              tools: tools)
+        }
+        // Stream the user message via the held session;
+        // push tokens out via kernel.proxyEmit on this agent's inbox.
+        for try await token in session!.streamResponse(to: userText) {
+          try await kernel.proxyEmit(
+              agentId: "fm",
+              eventJson: #"{"type":"token","stream_id":"\#(stream_id)","delta":"\#(token)"}"#)
+        }
+        try await kernel.proxyEmit(agentId: "fm",
+            eventJson: #"{"type":"done","stream_id":"\#(stream_id)"}"#)
+      }
+      return #"{"queued":true,"stream_id":"\#(stream_id)"}"#
+    case "history":     return historyJson()
+    case "interrupt":   return interruptCurrent()
+    case "backend_state": return backendStateJson()
+    case "reflect":     return reflectJson()
+    default:            return #"{"ok":true}"#
     }
   }
 }
+
+// At kernel boot:
+_ = try await kernel.sendJson(targetId:"core",
+    payloadJson: #"{"type":"create_agent","handler_module":"proxy_agent.tools","id":"fm"}"#)
+kernel.registerProxyAgent(agentId: "fm",
+    host: FoundationModelsProxyHost(kernel: kernel))
 ```
+
+Tokens flow as **emit events on the fm agent's own inbox** —
+`ai_chat_webapp` (or any other consumer) watches the `fm` agent via
+the kernel's standard watcher fanout and receives them.
 
 ### 4. Build a `LanguageModelSession.Tool` from each entry
 

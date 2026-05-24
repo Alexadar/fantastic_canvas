@@ -42,12 +42,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 
-# Apple-only bundle. Linked into the CLI only on macOS / iOS / etc.
-# Linux + Windows builds skip it entirely (no Swift host can ever
-# register itself outside Apple, so the bundle would be dead code).
-[target.'cfg(target_vendor = "apple")'.dependencies]
-fantastic-foundation-models-backend = { path = "../bundles/fantastic-foundation-models-backend" }
-
 [features]
 # Default for the standalone CLI binary is the full tier — it runs on
 # Linux servers, macOS Pro builds, CI runners, and any unsandboxed

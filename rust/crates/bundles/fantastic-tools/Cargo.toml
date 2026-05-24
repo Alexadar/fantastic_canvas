@@ -14,5 +14,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 fantastic-proxy-agent = { path = "../fantastic-proxy-agent" }
-fantastic-foundation-models-backend = { path = "../fantastic-foundation-models-backend" }
 tokio = { workspace = true, features = ["test-util", "macros"] }
