@@ -25,19 +25,6 @@ public indirect enum JSON: Sendable, Hashable {
     case object(OrderedDictionary<String, JSON>)
 }
 
-// ── Convenience constructors ──────────────────────────────────────
-
-extension JSON {
-    /// Build a JSON object preserving key insertion order.
-    public static func object(_ pairs: KeyValuePairs<String, JSON>) -> JSON {
-        var dict: OrderedDictionary<String, JSON> = [:]
-        for (k, v) in pairs {
-            dict[k] = v
-        }
-        return .object(dict)
-    }
-}
-
 // ── ExpressibleBy* literals ───────────────────────────────────────
 
 extension JSON: ExpressibleByNilLiteral {
