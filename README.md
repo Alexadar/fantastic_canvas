@@ -13,7 +13,7 @@ format (`.fantastic/`) and the same HTTP + WebSocket wire protocol:
 ```
 fantastic_canvas/
 ├── python/   reference implementation — uvicorn + FastAPI, 510 tests
-└── swift/    production runtime for Apple — Network.framework + URLSession, 205 tests
+└── swift/    production runtime for Apple — Network.framework + URLSession, 122 tests
 ```
 
 - **Python** (`python/`) — the reference. Used today by anyone
@@ -70,7 +70,7 @@ the bundle scoreboard.
 | path | content |
 |---|---|
 | [`python/`](python/) | reference kernel + 21 bundles + 510 tests + selftests |
-| [`swift/`](swift/) | Apple-platform kernel — 21-of-21 bundle port, 205 swift tests, iOS-safe embedded slice |
+| [`swift/`](swift/) | Apple-platform kernel — 20 bundles (16 multi-platform + 4 macOS-Pro), 122 swift tests, iOS-safe embedded slice |
 | [`swift/docs/CROSS_ANALYSIS.md`](swift/docs/CROSS_ANALYSIS.md) | capability matrix vs the historical Rust port |
 | [`swift/docs/MIGRATION.md`](swift/docs/MIGRATION.md) | how the Apple app dropped UniFFI for the native Swift kernel |
 | [`.github/workflows/`](.github/workflows/) | CI — `python-*.yml` (lint, tests), `swift-build.yml` (build), `codeql.yml`, `spellcheck.yml` |
@@ -86,7 +86,7 @@ this repository — `git log -- rust/` recovers the full history.
 
 |                                  | Python                | Swift                                |
 |----------------------------------|-----------------------|--------------------------------------|
-| substrate                        | ✓ 510 tests           | ✓ 205 tests                          |
+| substrate                        | ✓ 510 tests           | ✓ 122 tests                          |
 | HTTP / WS / REST surfaces        | ✓                     | ✓ (single port, dynamic mount)       |
 | WS binary frames (incl. chunked) | ✓ single-frame        | ✓ single + chunked uploads           |
 | canvas in browser                | ✓                     | ✓                                    |

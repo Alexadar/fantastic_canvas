@@ -16,7 +16,10 @@ byte-compatible between them.
   variant so on-disk JSON matches Python's `dict` key order
 - 1 bootstrap target (`FantasticKernelStartup`) — `startKernel(...)`
   / `startKernelInMemory(...)` entry points
-- 16 bundle targets — see scoreboard below
+- 20 bundle targets (16 multi-platform + 4 macOS-Pro) — see
+  scoreboard below
+- 2 umbrella targets (`FantasticKernelEmbedded`,
+  `FantasticKernelFull`) — Apple-app entry points
 - 1 CLI executable (`fantastic`)
 - 122 tests across substrate, bundles, parity harness, public-API
   shim
