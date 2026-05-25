@@ -28,10 +28,24 @@ byte-compatible between them.
 | `FantasticKernelEmbedded` | iOS, iPadOS, visionOS, tvOS, watchOS, sandboxed macOS | All bundles EXCEPT subprocess-using ones |
 | `FantasticKernelFull` | macOS Pro (unsandboxed) | All bundles including `terminal_backend`, `local_runner`, `python_runtime`, `ssh_runner` |
 
-Tier split expressed via SwiftPM products + `#if os(macOS)` guards on
-the subprocess-using bundle code. The umbrella wrapper packages that
-the Apple app consumes live under `swift/packaging/` (gitignored —
-materialized locally; the app vendors its own copies).
+Both tiers are first-class products of this `Package.swift`. The
+Apple app declares the dependency as:
+
+```swift
+// In the app's project.yml / Package.swift:
+.package(path: "../../fantastic_canvas/swift")
+// then per target:
+.product(name: "FantasticKernelEmbedded", package: "FantasticKernel")
+// or:
+.product(name: "FantasticKernelFull",     package: "FantasticKernel")
+```
+
+The tier split is realized by which product the consuming app
+target depends on, plus the `#if os(macOS)` guards inside the
+subprocess-using bundle code. No separate wrapper packages — both
+products are umbrella targets in `Sources/FantasticKernelEmbedded/`
+and `Sources/FantasticKernelFull/` that `@_exported import` the
+kernel modules.
 
 ## Bundle scoreboard
 
@@ -102,10 +116,11 @@ swift/
     Fantastic{Terminal,Local,Python,Ssh}{Backend,Runner,Runtime}/
                                        macOS-only Pro-tier bundles
     Fantastic/                         `fantastic` CLI executable
+    FantasticKernelEmbedded/           Apple-app umbrella target (Lite tier)
+    FantasticKernelFull/                Apple-app umbrella target (Pro tier, macOS-only consumer)
   Tests/
     Fantastic*Tests/                   per-target unit suites
     FantasticParityTests/              cross-runtime byte-diff harness
-  packaging/                           Apple app wrapper SPM packages (gitignored)
   docs/
     CROSS_ANALYSIS.md                  capability matrix vs the historical Rust port
     MIGRATION.md                       how the Apple app dropped UniFFI for native Swift

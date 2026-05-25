@@ -2,11 +2,23 @@
 //
 // Fantastic Kernel — Swift workspace.
 //
-// Mirrors the Rust workspace in `rust/` for Apple-platform deployment.
-// Public API contract follows the UniFFI surface today exposed by
-// `rust/packaging/FantasticKernel{Embedded,Full}` so the iOS/macOS app
-// can stay on its current import lines while the implementation moves
-// from a Rust XCFramework to native Swift.
+// Native kernel for Apple-platform deployment. The reference
+// implementation for non-Apple deployments is the Python kernel in
+// `../python/`; both share on-disk and wire format byte-for-byte.
+//
+// Public products:
+//   • FantasticKernel{Embedded,Full}  — umbrella modules the Apple
+//                                       app imports (`@_exported`)
+//   • FantasticKernel + FantasticJSON + FantasticBundles
+//     + FantasticKernelStartup        — granular libraries
+//   • fantastic                       — CLI executable
+//
+// FantasticKernelEmbedded is the multi-platform sandbox-safe tier
+// (iOS, iPadOS, visionOS, tvOS, watchOS, sandboxed macOS).
+// FantasticKernelFull is the macOS-only Pro tier and additionally
+// pulls in the subprocess-using bundles (terminal_backend,
+// local_runner, python_runtime, ssh_runner) which are gated by
+// `#if os(macOS)` inside the kernel itself.
 
 import PackageDescription
 
@@ -41,6 +53,14 @@ let package = Package(
             "FantasticNvidiaNimBackend",
         ]),
         .library(name: "FantasticKernelStartup", targets: ["FantasticKernelStartup"]),
+
+        // Apple-app-facing umbrella products. Both `@_exported import`
+        // the kernel public surface; the tier split is realized by
+        // which product the consuming app target depends on (Lite vs
+        // Pro) + the `#if os(macOS)` gates inside the kernel.
+        .library(name: "FantasticKernelEmbedded", targets: ["FantasticKernelEmbedded"]),
+        .library(name: "FantasticKernelFull", targets: ["FantasticKernelFull"]),
+
         .executable(name: "fantastic", targets: ["Fantastic"]),
     ],
     dependencies: [
@@ -200,6 +220,32 @@ let package = Package(
         .testTarget(
             name: "FantasticParityTests",
             dependencies: ["FantasticKernel", "FantasticJSON", "FantasticKernelStartup"]
+        ),
+
+        // ── Apple-app umbrella targets ───────────────────────────
+        // `@_exported import` the kernel public surface so app code
+        // sees `Kernel`, `ProxyAgent`, `startKernelInMemory`, etc.
+        // through a stable product name. Embedded skips Pro-tier
+        // bundle deps so it doesn't drag subprocess-using code into
+        // iOS/sandboxed builds even though those bundles compile to
+        // empty on non-macOS — keeps the dep graph honest.
+        .target(
+            name: "FantasticKernelEmbedded",
+            dependencies: [
+                "FantasticJSON", "FantasticKernel",
+                "FantasticKernelStartup",
+                "FantasticProxyAgent", "FantasticTools",
+            ]
+        ),
+        .target(
+            name: "FantasticKernelFull",
+            dependencies: [
+                "FantasticJSON", "FantasticKernel",
+                "FantasticKernelStartup",
+                "FantasticProxyAgent", "FantasticTools",
+                "FantasticLocalRunner", "FantasticPythonRuntime",
+                "FantasticSshRunner", "FantasticTerminalBackend",
+            ]
         ),
 
         // ── CLI executable (Phase 7) ─────────────────────────────

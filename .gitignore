@@ -12,11 +12,3 @@ tmp/
 # repo root for dev/testing. Per-tree clones live under rust/ and
 # python/ but the root convenience here gets its own ignore.
 .fantastic/
-
-# Apple-platform SPM re-export wrappers. They `@_exported import`
-# the swift/ kernel one level up and exist solely so the Apple app's
-# old `import FantasticKernelEmbedded` / `import FantasticKernelFull`
-# lines keep resolving without code changes. Treated as an
-# app-distribution concern, not canvas-tracked source — the app side
-# is responsible for materializing / vendoring them where needed.
-/swift/packaging/
