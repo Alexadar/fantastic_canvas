@@ -188,7 +188,10 @@ let package = Package(
         ),
         .testTarget(
             name: "FantasticKernelStartupTests",
-            dependencies: ["FantasticKernelStartup", "FantasticKernel", "FantasticJSON"]
+            dependencies: [
+                "FantasticKernelStartup", "FantasticKernel", "FantasticJSON",
+                "FantasticProxyAgent",
+            ]
         ),
         // ── Cross-runtime parity (Phase 8J) ──────────────────────
         // Spawns the Rust `fantastic` binary as a subprocess +

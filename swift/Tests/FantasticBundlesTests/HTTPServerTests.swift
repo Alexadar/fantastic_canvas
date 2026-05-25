@@ -7,7 +7,7 @@ import FantasticWeb
 import Foundation
 import Testing
 
-@Suite("HTTP server")
+@Suite("HTTP server", .serialized)
 struct HTTPServerTests {
     @Test func bootStartsServerOnRandomPort() async throws {
         let kernel = try await startKernelInMemory(portHint: 0)

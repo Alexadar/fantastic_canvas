@@ -245,3 +245,66 @@ extension Kernel {
         // `defer { kernel.shutdown() }` works.
     }
 }
+
+// ── proxy_agent host registration as Kernel methods ───────────────
+//
+// The Rust UniFFI surface exposed these as instance methods on
+// `Kernel`; today the `FantasticProxyAgent` module ships them as
+// module-level free functions (`registerHost(_:_:)`). The methods
+// below restore the UniFFI shape so callers writing
+// `kernel.registerProxyAgent(agentId:host:)` work unchanged.
+//
+// These methods live in FantasticKernel (not FantasticProxyAgent)
+// only so the call-site surface matches Rust UniFFI; the actual
+// host registry stays in FantasticProxyAgent.
+
+// Forward-declare the protocol so this file doesn't need to import
+// FantasticProxyAgent (which would create a dependency cycle —
+// FantasticProxyAgent already imports FantasticKernel). Apps see
+// the symbol through `FantasticKernelEmbedded`'s re-exports.
+public protocol _ProxyAgentRegistrable: AnyObject, Sendable {
+    func handle(payloadJson: String) -> String
+    func onBoot()
+    func onDelete()
+}
+
+extension Kernel {
+    /// Install a Swift host for the proxy_agent with `agentId`.
+    /// Mirrors UniFFI's `Kernel.registerProxyAgent`. The host must
+    /// conform to `ProxyAgentHost` (aliased as `ProxyAgent`).
+    ///
+    /// Implementation forwards to the module-global host registry
+    /// in `FantasticProxyAgent` via the small bridge below.
+    public func registerProxyAgent(
+        agentId: String,
+        host: any _ProxyAgentRegistrable
+    ) {
+        Kernel._proxyAgentRegisterHook?(AgentId(agentId), host)
+    }
+
+    /// Drop the host for the proxy_agent with `agentId`. No-op if
+    /// nothing was registered. Mirrors UniFFI's
+    /// `Kernel.unregisterProxyAgent`.
+    @discardableResult
+    public func unregisterProxyAgent(agentId: String) -> Bool {
+        return Kernel._proxyAgentUnregisterHook?(AgentId(agentId)) ?? false
+    }
+
+    /// Hook the `FantasticProxyAgent` module wires up at import-time
+    /// so this extension doesn't need a direct dep on it. Set
+    /// exactly once via `installProxyAgentRegistrationHook(_:_:)`.
+    nonisolated(unsafe) public static var _proxyAgentRegisterHook:
+        ((AgentId, any _ProxyAgentRegistrable) -> Void)?
+    nonisolated(unsafe) public static var _proxyAgentUnregisterHook:
+        ((AgentId) -> Bool)?
+}
+
+/// Called once by `FantasticProxyAgent` to plug the host registry
+/// into `Kernel.registerProxyAgent` / `unregisterProxyAgent`.
+public func installProxyAgentRegistrationHook(
+    register: @escaping (AgentId, any _ProxyAgentRegistrable) -> Void,
+    unregister: @escaping (AgentId) -> Bool
+) {
+    Kernel._proxyAgentRegisterHook = register
+    Kernel._proxyAgentUnregisterHook = unregister
+}

@@ -8,7 +8,7 @@ import Testing
 
 @testable import FantasticWeb
 
-@Suite("WebSocket")
+@Suite("WebSocket", .serialized)
 struct WebSocketTests {
     @Test func computeAcceptMatchesRFC() {
         // RFC 6455 example: key "dGhlIHNhbXBsZSBub25jZQ==" → accept

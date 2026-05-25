@@ -97,7 +97,7 @@
         }
     }
 
-    @Suite("Cross-runtime parity (Rust ↔ Swift)")
+    @Suite("Cross-runtime parity (Rust ↔ Swift)", .serialized)
     struct CrossRuntimeParityTests {
         @Test func reflectOnBareCore() async throws {
             guard let binary = rustBinaryURL() else {

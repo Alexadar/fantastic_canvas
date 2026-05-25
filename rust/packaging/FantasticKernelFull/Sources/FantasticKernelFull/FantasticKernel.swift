@@ -17,6 +17,8 @@
 @_exported import FantasticJSON
 @_exported import FantasticKernel
 @_exported import FantasticKernelStartup
+@_exported import FantasticProxyAgent
+@_exported import FantasticTools
 
 import Foundation
 
