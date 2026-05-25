@@ -132,7 +132,7 @@ public final class Kernel: @unchecked Sendable {
     // ── Inbox + watchers ────────────────────────────────────────
 
     @discardableResult
-    func ensureInbox(_ id: AgentId) -> AsyncStream<JSON> {
+    public func ensureInbox(_ id: AgentId) -> AsyncStream<JSON> {
         inboxLock.lock()
         defer { inboxLock.unlock() }
         if let stream = _inboxStreams[id] {

@@ -159,6 +159,7 @@ public final class WebBundle: AgentBundle, @unchecked Sendable {
             }
             let portHint = UInt16(agent.metaValue(forKey: "port")?.asInt ?? 0)
             let server = WebServer(kernel: kernel, agentId: agent.id)
+            installWebSocketUpgrade(on: server, kernel: kernel)
             do {
                 let port = try server.start(portHint: portHint)
                 setServer(server, for: agent.id)
