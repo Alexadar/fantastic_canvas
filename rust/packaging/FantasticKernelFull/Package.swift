@@ -1,13 +1,22 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.0
 //
-// FantasticKernelFull — desktop/PTY tier of the Rust kernel as a Swift
-// Package. Wraps `Fantastic-Full.xcframework` (Mac-only).
+// FantasticKernelFull — desktop / unsandboxed tier of the kernel as
+// a Swift Package.
 //
-// Use this from FantasticPro (macOS, Developer ID, unsandboxed). The
-// full tier registers PTY-using bundles (terminal_backend, local_runner,
-// python_runtime, ssh_runner once ported) — bundles the iOS sandbox
-// forbids. There are no iOS slices in this XCFramework; targeting iOS
-// from this product is a build-time error by design.
+// **Backend switched from Rust XCFramework → native Swift kernel
+// (`../../../swift`).** Same migration as `FantasticKernelEmbedded`,
+// but macOS-only (this product never built iOS slices; the Pro tier
+// is Developer ID + unsandboxed by definition).
+//
+// The native Swift kernel handles the Pro tier by enabling the
+// `#if os(macOS)` paths inside `FantasticLocalRunner` and
+// `FantasticPythonRuntime` automatically. `FantasticSshRunner` +
+// `FantasticTerminalBackend` join the Pro tier as their Swift ports
+// land in phases 8F + 8G.
+//
+// Use this from FantasticPro (macOS, Developer ID, unsandboxed).
+// There are still no iOS slices; targeting iOS from this product is
+// a build-time error by design.
 //
 // Lite uses the sister package `FantasticKernelEmbedded`.
 //
@@ -20,35 +29,32 @@
 //       dependencies:
 //         - package: FantasticKernelFull
 //           product: FantasticKernelFull
-//
-// The XCFramework is built by `rust/scripts/build-xcframework-full.sh`.
 
 import PackageDescription
 
 let package = Package(
     name: "FantasticKernelFull",
     platforms: [
-        .macOS(.v13),
+        .macOS(.v14)
     ],
     products: [
         .library(
             name: "FantasticKernelFull",
             targets: ["FantasticKernelFull"]
-        ),
+        )
+    ],
+    dependencies: [
+        .package(path: "../../../swift")
     ],
     targets: [
-        // The Swift wrapper layer (re-exports the UniFFI-generated bindings).
         .target(
             name: "FantasticKernelFull",
-            dependencies: ["FantasticUniFFIFull"],
+            dependencies: [
+                .product(name: "FantasticKernelStartup", package: "swift"),
+                .product(name: "FantasticKernel", package: "swift"),
+                .product(name: "FantasticJSON", package: "swift"),
+            ],
             path: "Sources/FantasticKernelFull"
-        ),
-        // The binary XCFramework that ships the full-tier Rust kernel.
-        // Apple's Xcode 16+ SPM validation requires the .xcframework
-        // directory basename to match the binary-target name exactly.
-        .binaryTarget(
-            name: "FantasticUniFFIFull",
-            path: "FantasticUniFFIFull.xcframework"
-        ),
+        )
     ]
 )

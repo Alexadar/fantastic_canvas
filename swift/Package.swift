@@ -39,6 +39,7 @@ let package = Package(
             "FantasticWeb",
             "FantasticOllamaBackend",
         ]),
+        .library(name: "FantasticKernelStartup", targets: ["FantasticKernelStartup"]),
         .executable(name: "fantastic", targets: ["Fantastic"]),
     ],
     dependencies: [
@@ -152,9 +153,12 @@ let package = Package(
             dependencies: ["FantasticKernel", "FantasticJSON"]
         ),
 
-        // ── CLI executable (Phase 7) ─────────────────────────────
-        .executableTarget(
-            name: "Fantastic",
+        // ── Startup layer (Phase 8A) ─────────────────────────────
+        // Composes the default bundle set + exposes
+        // startKernelInMemory / startKernel free functions matching
+        // the Rust UniFFI surface. App-facing entry point.
+        .target(
+            name: "FantasticKernelStartup",
             dependencies: [
                 "FantasticKernel", "FantasticJSON",
                 "FantasticFile", "FantasticProxyAgent", "FantasticTools",
@@ -165,6 +169,18 @@ let package = Package(
                 "FantasticKernelBridge", "FantasticWeb",
                 "FantasticOllamaBackend",
                 "FantasticLocalRunner", "FantasticPythonRuntime",
+            ]
+        ),
+        .testTarget(
+            name: "FantasticKernelStartupTests",
+            dependencies: ["FantasticKernelStartup", "FantasticKernel", "FantasticJSON"]
+        ),
+
+        // ── CLI executable (Phase 7) ─────────────────────────────
+        .executableTarget(
+            name: "Fantastic",
+            dependencies: [
+                "FantasticKernelStartup", "FantasticKernel", "FantasticJSON",
             ]
         ),
 

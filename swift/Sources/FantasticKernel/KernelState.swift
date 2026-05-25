@@ -41,7 +41,12 @@ extension Kernel {
 
     /// Write the snapshot to `<workdir>/.fantastic/state.json` in
     /// Disk mode. In InMemory mode this is a no-op.
-    public func save() throws {
+    ///
+    /// Distinct from the shim `save() -> String` in PublicAPI.swift
+    /// (which mirrors Rust UniFFI's `save() -> String` and returns
+    /// the JSON in-memory). Use this when you have a Disk-mode
+    /// kernel and want it to flush.
+    public func saveToDisk() throws {
         guard let stateFile = storage.stateFile else { return }
         let json = try saveJSON()
         guard let data = json.data(using: .utf8) else { return }

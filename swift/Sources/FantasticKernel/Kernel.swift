@@ -56,6 +56,12 @@ public final class Kernel: @unchecked Sendable {
     private let rootLock = NSLock()
     private var _root: Agent?
 
+    /// HTTP port the listener is bound to (0 if no listener). Set
+    /// by phase 8B when the Hummingbird listener binds. Exposed via
+    /// `httpPort()` shim in `PublicAPI.swift`.
+    let httpPortLock = NSLock()
+    var _httpPort: UInt16 = 0
+
     public let bundles: BundleRegistry
     public let storage: StorageMode
     public let inboxBound: Int

@@ -1,28 +1,40 @@
-// FantasticKernel — Swift wrapper over the UniFFI-generated bindings.
+// FantasticKernelEmbedded — re-exports the native Swift kernel
+// under the same module name the Apple app already imports.
 //
-// The auto-generated `fantastic.swift` (produced by
-// `scripts/build-xcframework.sh`) sits alongside this file and is
-// re-exported. We keep this file present so the Sources directory
-// isn't empty before the build script runs.
+// Backend swap: was a UniFFI XCFramework wrapper; now imports the
+// Swift kernel directly. Consumers see the same symbols:
 //
-// Consumers should import `FantasticKernel` and use the API directly:
+//     import FantasticKernelEmbedded
 //
-//     import FantasticKernel
-//
-//     let kernel = try await Fantastic.startKernel(
-//         workdir: appGroupURL.path,
-//         portHint: 0
-//     )
+//     let kernel = try await startKernelInMemory(portHint: 0)
 //     let port = kernel.httpPort()
-//     // ... point WKWebView at http://127.0.0.1:\(port)/<canvas_id>/
 //     defer { kernel.shutdown() }
+//
+//     class MyHost: ProxyAgent { ... }
+//     try kernel.registerProxyAgent(agentId: "my_agent", host: MyHost())
+//
+// Migration note: prior versions of this package wrapped a Rust
+// XCFramework built by `rust/scripts/build-xcframework-embedded.sh`.
+// That script still works and the Rust kernel keeps building, but
+// nothing in this Apple-platform Swift Package links it any more.
+
+@_exported import FantasticJSON
+@_exported import FantasticKernel
+@_exported import FantasticKernelStartup
 
 import Foundation
 
-/// Convenience namespace + version constant. The generated UniFFI
-/// bindings (fantastic.swift) expose the actual API.
-public enum FantasticKernel {
-    /// Library version. Bumped alongside Cargo.toml's
-    /// `[workspace.package].version`.
-    public static let version = "0.1.0"
+/// Convenience namespace + version constant. Actual API surface
+/// lives in `FantasticKernel` and `FantasticKernelStartup`,
+/// re-exported above.
+public enum FantasticKernelEmbeddedInfo {
+    /// Library version. Bumped alongside the Swift package's
+    /// version. Distinct from the Rust `Cargo.toml` version because
+    /// the implementations are now independent.
+    public static let version = "0.2.0-swift"
+
+    /// True when this binary is backed by the native Swift kernel
+    /// (always true from v0.2.0 onward). Pre-0.2.0 versions wrapped
+    /// the Rust XCFramework.
+    public static let isSwiftNative = true
 }
