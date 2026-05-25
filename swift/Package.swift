@@ -38,6 +38,7 @@ let package = Package(
             "FantasticKernelBridge",
             "FantasticWeb",
             "FantasticOllamaBackend",
+            "FantasticNvidiaNimBackend",
         ]),
         .library(name: "FantasticKernelStartup", targets: ["FantasticKernelStartup"]),
         .executable(name: "fantastic", targets: ["Fantastic"]),
@@ -136,9 +137,14 @@ let package = Package(
             ]
         ),
 
-        // ── LLM backends (Phase 5) ───────────────────────────────
+        // ── LLM backends (Phase 5 / 8D) ──────────────────────────
         .target(
             name: "FantasticOllamaBackend",
+            dependencies: ["FantasticKernel", "FantasticJSON",
+                           .product(name: "OrderedCollections", package: "swift-collections")]
+        ),
+        .target(
+            name: "FantasticNvidiaNimBackend",
             dependencies: ["FantasticKernel", "FantasticJSON",
                            .product(name: "OrderedCollections", package: "swift-collections")]
         ),
@@ -167,7 +173,7 @@ let package = Package(
                 "FantasticAiChatWebapp", "FantasticTerminalWebapp",
                 "FantasticTelemetryPane", "FantasticCliBundle",
                 "FantasticKernelBridge", "FantasticWeb",
-                "FantasticOllamaBackend",
+                "FantasticOllamaBackend", "FantasticNvidiaNimBackend",
                 "FantasticLocalRunner", "FantasticPythonRuntime",
             ]
         ),

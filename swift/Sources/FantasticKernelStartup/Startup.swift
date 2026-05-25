@@ -21,6 +21,7 @@ import FantasticHtmlAgent
 import FantasticJSON
 import FantasticKernel
 import FantasticKernelBridge
+import FantasticNvidiaNimBackend
 import FantasticOllamaBackend
 import FantasticProxyAgent
 import FantasticScheduler
@@ -54,6 +55,7 @@ public func defaultBundleRegistry() -> BundleRegistry {
     r.register("kernel_bridge.tools", KernelBridgeBundle())
     r.register("web.tools", WebBundle())
     r.register("ollama_backend.tools", OllamaBackendBundle())
+    r.register("nvidia_nim_backend.tools", NvidiaNimBundle())
     #if os(macOS)
         r.register("local_runner.tools", LocalRunnerBundle())
         r.register("python_runtime.tools", PythonRuntimeBundle())
