@@ -149,13 +149,21 @@ let package = Package(
                            .product(name: "OrderedCollections", package: "swift-collections")]
         ),
 
-        // ── Pro-tier subprocess bundles (Phase 6, macOS only) ────
+        // ── Pro-tier subprocess bundles (macOS only) ─────────────
         .target(
             name: "FantasticLocalRunner",
             dependencies: ["FantasticKernel", "FantasticJSON"]
         ),
         .target(
             name: "FantasticPythonRuntime",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticSshRunner",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticTerminalBackend",
             dependencies: ["FantasticKernel", "FantasticJSON"]
         ),
 
@@ -175,6 +183,7 @@ let package = Package(
                 "FantasticKernelBridge", "FantasticWeb",
                 "FantasticOllamaBackend", "FantasticNvidiaNimBackend",
                 "FantasticLocalRunner", "FantasticPythonRuntime",
+                "FantasticSshRunner", "FantasticTerminalBackend",
             ]
         ),
         .testTarget(

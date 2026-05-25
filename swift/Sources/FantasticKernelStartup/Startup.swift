@@ -34,6 +34,8 @@ import Foundation
 #if os(macOS)
     import FantasticLocalRunner
     import FantasticPythonRuntime
+    import FantasticSshRunner
+    import FantasticTerminalBackend
 #endif
 
 /// Build the default bundle registry — every bundle that ships in
@@ -59,6 +61,8 @@ public func defaultBundleRegistry() -> BundleRegistry {
     #if os(macOS)
         r.register("local_runner.tools", LocalRunnerBundle())
         r.register("python_runtime.tools", PythonRuntimeBundle())
+        r.register("ssh_runner.tools", SshRunnerBundle())
+        r.register("terminal_backend.tools", TerminalBackendBundle())
     #endif
     return r
 }
