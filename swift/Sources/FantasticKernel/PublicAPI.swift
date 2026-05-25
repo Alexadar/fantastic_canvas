@@ -58,8 +58,9 @@ extension Kernel {
         return httpPortValue
     }
 
-    /// Phase 8B sets this when the listener binds.
-    func setHttpPort(_ port: UInt16) {
+    /// Phase 8B sets this when the listener binds. Public so the
+    /// `FantasticWeb` target can write it.
+    public func setHttpPort(_ port: UInt16) {
         httpPortLock.lock()
         defer { httpPortLock.unlock() }
         _httpPort = port

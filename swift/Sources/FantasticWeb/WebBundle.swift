@@ -91,9 +91,29 @@ public enum WebAssets {
 
 // ── Bundle ─────────────────────────────────────────────────────────
 
-public struct WebBundle: AgentBundle {
+public final class WebBundle: AgentBundle, @unchecked Sendable {
     public let name = "web"
     public init() {}
+
+    /// Live `WebServer` instances keyed by agent id. Created in
+    /// `boot`, dropped in `shutdown`. NSLock-protected because
+    /// boot/shutdown can race with concurrent verb dispatch.
+    private let serversLock = NSLock()
+    private var servers: [AgentId: WebServer] = [:]
+
+    private func serverFor(_ id: AgentId) -> WebServer? {
+        serversLock.lock(); defer { serversLock.unlock() }
+        return servers[id]
+    }
+
+    private func setServer(_ server: WebServer?, for id: AgentId) {
+        serversLock.lock(); defer { serversLock.unlock() }
+        if let server = server {
+            servers[id] = server
+        } else {
+            servers.removeValue(forKey: id)
+        }
+    }
 
     public func handle(
         agentId: AgentId,
@@ -129,13 +149,35 @@ public struct WebBundle: AgentBundle {
                 ] as JSON,
             ] as JSON
         case "boot":
-            agent.updateMeta(["running": .bool(true)])
-            return .object([
-                "ok": .bool(true),
-                "running": .bool(true),
-                "port": agent.metaValue(forKey: "port") ?? .null,
-            ])
+            // Skip if already running.
+            if serverFor(agent.id) != nil {
+                return .object([
+                    "ok": .bool(true),
+                    "running": .bool(true),
+                    "port": .integer(Int64(kernel.httpPort())),
+                ])
+            }
+            let portHint = UInt16(agent.metaValue(forKey: "port")?.asInt ?? 0)
+            let server = WebServer(kernel: kernel, agentId: agent.id)
+            do {
+                let port = try server.start(portHint: portHint)
+                setServer(server, for: agent.id)
+                return .object([
+                    "ok": .bool(true),
+                    "running": .bool(true),
+                    "port": .integer(Int64(port)),
+                ])
+            } catch {
+                return .object([
+                    "error": .string("web boot failed: \(error)"),
+                    "reason": .string("port_bind_failed"),
+                ])
+            }
         case "shutdown", "stop":
+            if let server = serverFor(agent.id) {
+                server.stop()
+                setServer(nil, for: agent.id)
+            }
             agent.updateMeta(["running": .bool(false)])
             return .object(["ok": .bool(true)])
         case "asset":
