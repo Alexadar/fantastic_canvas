@@ -36,7 +36,10 @@ let package = Package(
             "FantasticTelemetryPane",
             "FantasticCliBundle",
             "FantasticKernelBridge",
+            "FantasticWeb",
+            "FantasticOllamaBackend",
         ]),
+        .executable(name: "fantastic", targets: ["Fantastic"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
@@ -120,6 +123,50 @@ let package = Package(
             name: "FantasticKernelBridge",
             dependencies: ["FantasticKernel", "FantasticJSON"]
         ),
+        .target(
+            name: "FantasticWeb",
+            dependencies: ["FantasticKernel", "FantasticJSON"],
+            resources: [
+                .copy("Resources/three.module.js"),
+                .copy("Resources/xterm.min.js"),
+                .copy("Resources/xterm.min.css"),
+                .copy("Resources/xterm-addon-fit.min.js"),
+                .copy("Resources/transport.js"),
+            ]
+        ),
+
+        // ── LLM backends (Phase 5) ───────────────────────────────
+        .target(
+            name: "FantasticOllamaBackend",
+            dependencies: ["FantasticKernel", "FantasticJSON",
+                           .product(name: "OrderedCollections", package: "swift-collections")]
+        ),
+
+        // ── Pro-tier subprocess bundles (Phase 6, macOS only) ────
+        .target(
+            name: "FantasticLocalRunner",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticPythonRuntime",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+
+        // ── CLI executable (Phase 7) ─────────────────────────────
+        .executableTarget(
+            name: "Fantastic",
+            dependencies: [
+                "FantasticKernel", "FantasticJSON",
+                "FantasticFile", "FantasticProxyAgent", "FantasticTools",
+                "FantasticHtmlAgent", "FantasticGlAgent", "FantasticScheduler",
+                "FantasticCanvasBackend", "FantasticCanvasWebapp",
+                "FantasticAiChatWebapp", "FantasticTerminalWebapp",
+                "FantasticTelemetryPane", "FantasticCliBundle",
+                "FantasticKernelBridge", "FantasticWeb",
+                "FantasticOllamaBackend",
+                "FantasticLocalRunner", "FantasticPythonRuntime",
+            ]
+        ),
 
         .testTarget(
             name: "FantasticBundlesTests",
@@ -130,7 +177,7 @@ let package = Package(
                 "FantasticCanvasBackend", "FantasticCanvasWebapp",
                 "FantasticAiChatWebapp", "FantasticTerminalWebapp",
                 "FantasticTelemetryPane", "FantasticCliBundle",
-                "FantasticKernelBridge",
+                "FantasticKernelBridge", "FantasticWeb",
             ]
         ),
     ]
