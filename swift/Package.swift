@@ -190,6 +190,14 @@ let package = Package(
             name: "FantasticKernelStartupTests",
             dependencies: ["FantasticKernelStartup", "FantasticKernel", "FantasticJSON"]
         ),
+        // ── Cross-runtime parity (Phase 8J) ──────────────────────
+        // Spawns the Rust `fantastic` binary as a subprocess +
+        // fires identical verb payloads at both kernels; diffs the
+        // JSON replies. Skips when RUST_KERNEL_BIN env var is unset.
+        .testTarget(
+            name: "FantasticParityTests",
+            dependencies: ["FantasticKernel", "FantasticJSON", "FantasticKernelStartup"]
+        ),
 
         // ── CLI executable (Phase 7) ─────────────────────────────
         .executableTarget(
