@@ -6,7 +6,7 @@
 //
 // Frame protocol:
 //   client → server : {"type":"call", "target":"<id>", "payload":{...}, "id":"<id>"}
-//   server → client : {"type":"reply", "id":"<id>", "result":{...}}
+//   server → client : {"type":"reply", "id":"<id>", "data":{...}}
 //   server → client : {"type":"event", "agent":"<id>", "payload":{...}} (watcher fanout)
 
 import CryptoKit
@@ -162,10 +162,14 @@ private func handleCall(
     let payload = parsed["payload"]
     let id = parsed["id"].asString ?? ""
     let reply = await kernel.send(AgentId(target), payload)
+    // Field name MUST be `data` — transport.js's reply handler reads
+    // `msg.data` (see fantastic-web/Resources/transport.js:193). Rust
+    // kernel used `data`; this Swift port had drifted to `result` which
+    // caused every browser-side `t.call(...)` to resolve to `undefined`.
     let frame: JSON = .object([
         "type": .string("reply"),
         "id": .string(id),
-        "result": reply,
+        "data": reply,
     ])
     sendTextFrame(connection: connection, text: frame.serialize())
 }

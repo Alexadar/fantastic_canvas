@@ -48,7 +48,9 @@ public struct AiChatWebappBundle: AgentBundle {
                     "interrupt": "Forwards to upstream backend.",
                 ] as JSON,
             ] as JSON
-        case "boot", "shutdown":
+        case "boot":
+            return await bootReply(agentId: agent.id, kernel: kernel)
+        case "shutdown":
             return .object(["ok": .bool(true)])
         case "render_html":
             return .object(["html": .string(Self.defaultHtml)])
@@ -69,5 +71,60 @@ public struct AiChatWebappBundle: AgentBundle {
         default:
             return .object(["error": .string("unknown verb \(verb)")])
         }
+    }
+
+    /// Idempotently ensure an LLM backend exists as a child of this
+    /// webapp + bind its id into `upstream_id` meta. Backend handler
+    /// module is provider-dependent: `meta.provider == "ollama"` →
+    /// `ollama_backend.tools`; anything else → `nvidia_nim_backend.tools`.
+    /// Ports `rust/crates/bundles/fantastic-ai-chat-webapp/src/lib.rs:132-186`.
+    private func bootReply(agentId: AgentId, kernel: Kernel) async -> JSON {
+        guard let me = kernel.agent(agentId) else { return .null }
+        let provider = me.metaValue(forKey: "provider")?.asString ?? "ollama"
+        let backendHM = (provider == "ollama")
+            ? "ollama_backend.tools"
+            : "nvidia_nim_backend.tools"
+
+        if let upstreamStr = me.metaValue(forKey: "upstream_id")?.asString,
+            !upstreamStr.isEmpty,
+            kernel.agent(AgentId(upstreamStr)) != nil
+        {
+            return .object([
+                "ok": .bool(true),
+                "upstream_id": .string(upstreamStr),
+            ])
+        }
+        let hasBackendChild = me.childIds().contains { cid in
+            kernel.agent(cid)?.handlerModule == backendHM
+        }
+        if hasBackendChild {
+            return .null
+        }
+
+        let createReply = await kernel.send(
+            agentId,
+            .object([
+                "type": .string("create_agent"),
+                "handler_module": .string(backendHM),
+            ]))
+        guard let backendId = createReply["id"].asString else {
+            return .object([
+                "error": .string(
+                    "ai_chat_webapp.boot: create backend failed: \(createReply.serialize())")
+            ])
+        }
+        let updateReply = await kernel.send(
+            AgentId("core"),
+            .object([
+                "type": .string("update_agent"),
+                "id": .string(agentId.value),
+                "upstream_id": .string(backendId),
+            ]))
+        if let err = updateReply["error"].asString {
+            return .object([
+                "error": .string("ai_chat_webapp.boot: write upstream_id failed: \(err)")
+            ])
+        }
+        return .null
     }
 }

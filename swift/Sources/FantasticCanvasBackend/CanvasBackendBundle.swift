@@ -1,8 +1,15 @@
 // Spatial UI host agent.
 //
-// Mirrors Rust's `fantastic-canvas-backend::CanvasBackendBundle`.
-// Tracks "members" (the agents shown in the canvas) + their
-// positions; canvas-webapp queries via `discover` + `get_webapp`.
+// Mirrors Rust's `fantastic-canvas-backend::CanvasBackendBundle`. Members
+// of the canvas are REAL CHILD AGENTS spawned via `core.create_agent`,
+// not entries in a JSON array. Layout metadata (`x`, `y`, `width`,
+// `height`) lives on each child's own `meta`. Discovery is a spatial
+// filter over the children.
+//
+// Earlier this Swift port stored members in `meta.members` as a JSON
+// array of dicts — that diverged from Rust and meant the canvas frontend
+// couldn't `t.call(<member_id>, {type:"get_gl_view"})` because there was
+// no real agent at that id. This file restores the Rust contract.
 
 import FantasticJSON
 import FantasticKernel
@@ -29,94 +36,166 @@ public struct CanvasBackendBundle: AgentBundle {
             return [
                 "id": .string(agent.id.value),
                 "kind": .string("canvas_backend"),
-                "sentence": .string("Spatial UI host — tracks members + positions."),
-                "members": .integer(Int64(membersOf(agent: agent).count)),
+                "sentence": .string("Spatial UI host — children = members."),
+                "member_count": .integer(Int64(agent.childIds().count)),
                 "verbs": [
-                    "add_agent": "args: id, x?, y?, w?, h?.",
-                    "remove_agent": "args: id.",
+                    "add_agent": "args: handler_module (or agent_id), x?, y?, w?, h?.",
+                    "remove_agent": "args: agent_id.",
                     "discover": "args: x, y, w, h. Returns intersecting members.",
+                    "list_members": "Returns [{id}] for every child.",
                 ] as JSON,
             ] as JSON
         case "boot", "shutdown":
             return .object(["ok": .bool(true)])
         case "add_agent":
-            return addAgentVerb(agent: agent, payload: payload, kernel: kernel)
+            return await addAgentVerb(canvasId: agent.id, payload: payload, kernel: kernel)
         case "remove_agent":
-            return removeAgentVerb(agent: agent, payload: payload, kernel: kernel)
+            return await removeAgentVerb(canvasId: agent.id, payload: payload, kernel: kernel)
         case "discover":
-            return discoverVerb(agent: agent, payload: payload)
+            return discoverVerb(canvasAgent: agent, payload: payload, kernel: kernel)
         case "list_members":
-            return .object([
-                "members": .array(membersOf(agent: agent).map { .object($0) })
-            ])
+            let members = agent.childIds().map { JSON.string($0.value) }
+            return .object(["members": .array(members)])
         default:
             return .object(["error": .string("unknown verb \(verb)")])
         }
     }
 
-    private func membersOf(agent: Agent) -> [OrderedDictionary<String, JSON>] {
-        guard let arr = agent.metaValue(forKey: "members")?.asArray else { return [] }
-        return arr.compactMap { v in
-            if case let .object(m) = v { return m }
-            return nil
-        }
-    }
+    /// Spawn a child agent under the canvas, then probe it for one of the
+    /// two render contracts (`get_webapp` for DOM iframes, `get_gl_view`
+    /// for shared-canvas GL). Cascade-delete the new member if neither
+    /// answers — canvas-eligibility requires a UI verb.
+    ///
+    /// Ports `rust/crates/bundles/fantastic-canvas-backend/src/lib.rs:102-194`.
+    private func addAgentVerb(canvasId: AgentId, payload: JSON, kernel: Kernel) async -> JSON {
+        let handlerModule = payload["handler_module"].asString
+        let existingId = payload["agent_id"].asString
 
-    private func addAgentVerb(agent: Agent, payload: JSON, kernel: Kernel) -> JSON {
-        guard let memberId = payload["id"].asString else {
-            return .object(["error": .string("add_agent requires id")])
-        }
-        var member: OrderedDictionary<String, JSON> = [:]
-        member["id"] = .string(memberId)
-        member["x"] = payload["x"].isNull ? .integer(0) : payload["x"]
-        member["y"] = payload["y"].isNull ? .integer(0) : payload["y"]
-        member["w"] = payload["w"].isNull ? .integer(320) : payload["w"]
-        member["h"] = payload["h"].isNull ? .integer(240) : payload["h"]
-
-        var current = membersOf(agent: agent)
-        current.removeAll { $0["id"]?.asString == memberId }
-        current.append(member)
-        agent.updateMeta([
-            "members": .array(current.map { .object($0) })
-        ])
-        try? Persistence.persist(agent: agent, storage: kernel.storage)
-        return .object([
-            "ok": .bool(true),
-            "id": .string(memberId),
-        ])
-    }
-
-    private func removeAgentVerb(agent: Agent, payload: JSON, kernel: Kernel) -> JSON {
-        guard let memberId = payload["id"].asString else {
-            return .object(["error": .string("remove_agent requires id")])
-        }
-        var current = membersOf(agent: agent)
-        let before = current.count
-        current.removeAll { $0["id"]?.asString == memberId }
-        if current.count < before {
-            agent.updateMeta([
-                "members": .array(current.map { .object($0) })
+        let newMemberId: AgentId
+        if let hm = handlerModule {
+            // Path A: spawn a fresh member as a child of the canvas.
+            // Build a create_agent payload that flattens every key from
+            // the original (so x/y/width/height land on the new record)
+            // except framing fields.
+            var createPayload: OrderedDictionary<String, JSON> = [:]
+            createPayload["type"] = .string("create_agent")
+            createPayload["handler_module"] = .string(hm)
+            if case let .object(obj) = payload {
+                for (k, v) in obj {
+                    if k == "type" || k == "handler_module" || k == "agent_id" {
+                        continue
+                    }
+                    createPayload[k] = v
+                }
+            }
+            let reply = await kernel.send(canvasId, .object(createPayload))
+            if let err = reply["error"].asString {
+                return .object([
+                    "error": .string("add_agent: create failed: \(err)")
+                ])
+            }
+            guard let id = reply["id"].asString else {
+                return .object([
+                    "error": .string("add_agent: create returned no id")
+                ])
+            }
+            newMemberId = AgentId(id)
+        } else if existingId != nil {
+            // Path B: re-parent. Rust kernel refuses this as Phase-1
+            // scope (substrate doesn't expose re-parenting as a system
+            // verb yet). Match.
+            return .object([
+                "error": .string(
+                    "add_agent: re-parenting existing agent not yet supported (Phase 1)")
             ])
-            try? Persistence.persist(agent: agent, storage: kernel.storage)
+        } else {
+            return .object([
+                "error": .string("add_agent: requires handler_module or agent_id")
+            ])
         }
+
+        // Probe both render verbs in parallel.
+        let webappReply = await kernel.send(newMemberId, .object(["type": .string("get_webapp")]))
+        let hasDom = webappReply["error"].asString == nil
+            && webappReply["url"].asString != nil
+        let glReply = await kernel.send(newMemberId, .object(["type": .string("get_gl_view")]))
+        let hasGl = glReply["error"].asString == nil
+            && glReply["source"].asString != nil
+
+        if !hasDom && !hasGl {
+            // Cascade-delete the just-spawned member.
+            _ = await kernel.send(
+                canvasId,
+                .object([
+                    "type": .string("delete_agent"),
+                    "id": .string(newMemberId.value),
+                ]))
+            return .object([
+                "error": .string(
+                    "add_agent: '\(newMemberId.value)' answers neither get_webapp nor get_gl_view; nothing to render"
+                )
+            ])
+        }
+
+        // Re-fetch the canvas to read its current child_ids (the spawn
+        // mutated it in place).
+        let members =
+            kernel.agent(canvasId)?.childIds().map { JSON.string($0.value) } ?? []
+        await kernel.emit(
+            canvasId,
+            .object([
+                "type": .string("members_updated"),
+                "members": .array(members),
+            ]))
         return .object([
             "ok": .bool(true),
-            "removed": .bool(current.count < before),
+            "member_id": .string(newMemberId.value),
+            "members": .array(members),
         ])
     }
 
-    private func discoverVerb(agent: Agent, payload: JSON) -> JSON {
+    /// Cascade-delete a member.
+    private func removeAgentVerb(canvasId: AgentId, payload: JSON, kernel: Kernel) async -> JSON {
+        guard let targetIdStr = payload["agent_id"].asString else {
+            return .object(["error": .string("remove_agent requires agent_id")])
+        }
+        let reply = await kernel.send(
+            canvasId,
+            .object([
+                "type": .string("delete_agent"),
+                "id": .string(targetIdStr),
+            ]))
+        let members =
+            kernel.agent(canvasId)?.childIds().map { JSON.string($0.value) } ?? []
+        await kernel.emit(
+            canvasId,
+            .object([
+                "type": .string("members_updated"),
+                "members": .array(members),
+            ]))
+        return .object([
+            "removed": .bool(reply["error"].asString == nil),
+            "members": .array(members),
+        ])
+    }
+
+    /// Spatial bbox query over members' meta (x/y/width/height).
+    private func discoverVerb(canvasAgent: Agent, payload: JSON, kernel: Kernel) -> JSON {
         let x = payload["x"].asDouble ?? 0
         let y = payload["y"].asDouble ?? 0
         let w = payload["w"].asDouble ?? 0
         let h = payload["h"].asDouble ?? 0
-        let members = membersOf(agent: agent).filter { member in
-            let mx = member["x"]?.asDouble ?? 0
-            let my = member["y"]?.asDouble ?? 0
-            let mw = member["w"]?.asDouble ?? 0
-            let mh = member["h"]?.asDouble ?? 0
-            return mx < x + w && mx + mw > x && my < y + h && my + mh > y
+        var hits: [JSON] = []
+        for cid in canvasAgent.childIds() {
+            guard let child = kernel.agent(cid) else { continue }
+            let mx = child.metaValue(forKey: "x")?.asDouble ?? 0
+            let my = child.metaValue(forKey: "y")?.asDouble ?? 0
+            let mw = child.metaValue(forKey: "width")?.asDouble ?? 320
+            let mh = child.metaValue(forKey: "height")?.asDouble ?? 240
+            if mx < x + w && mx + mw > x && my < y + h && my + mh > y {
+                hits.append(.string(cid.value))
+            }
         }
-        return .object(["members": .array(members.map { .object($0) })])
+        return .object(["members": .array(hits)])
     }
 }

@@ -1,32 +1,27 @@
 # Fantastic Kernel — Swift
 
-Native Swift port of the Rust kernel in `../rust/`. Targets Apple
-platforms (macOS, iOS, iPadOS, visionOS, tvOS, watchOS). The Rust
-workspace remains the canonical implementation for non-Apple
-deployments.
+Native Swift kernel for Apple platforms. macOS, iOS, iPadOS,
+visionOS, tvOS, watchOS. Used in-process by the Apple app — no
+UniFFI, no XCFramework, no native subprocess required.
 
-**Status: Phase 1 of 8 — foundation types only.** See "Phases" below
-for the full roadmap.
+The reference kernel for non-Apple deployments is in
+[`../python/`](../python/). Wire format + on-disk shape are
+byte-compatible between them.
 
-## Why a Swift port
+## What's in the box
 
-The Apple-platform app (`apple/`) consumes the Rust kernel via UniFFI
-through two SPM packages (`FantasticKernelEmbedded`,
-`FantasticKernelFull`). Several recent commits have been about making
-the Rust↔Swift boundary thinner (FM bundle removal, CDN bundling,
-inline GL). A native Swift kernel removes the boundary entirely on
-Apple platforms while keeping the Rust kernel for non-Apple.
+- 1 substrate target (`FantasticKernel`) — actor-based agent
+  store, system verbs, persistence, lock-file workdir guard
+- 1 JSON target (`FantasticJSON`) — `OrderedDictionary`-backed
+  variant so on-disk JSON matches Python's `dict` key order
+- 1 bootstrap target (`FantasticKernelStartup`) — `startKernel(...)`
+  / `startKernelInMemory(...)` entry points
+- 16 bundle targets — see scoreboard below
+- 1 CLI executable (`fantastic`)
+- 122 tests across substrate, bundles, parity harness, public-API
+  shim
 
-Vertical-integration wins:
-- Direct `LanguageModelSession`, `AppIntents`, `WidgetKit`, `Vision`,
-  `Speech`, `HealthKit`, `EventKit`, `SwiftData`, `CloudKit` access
-  without UniFFI callback ceremony
-- SwiftUI agents that ARE views, not just HTML in a WebView
-- Xcode debugger across the whole stack
-- Sandboxed by default with proper entitlements
-- No XCFramework build pipeline
-
-## Tiers (matching the Rust workspace)
+## Tiers
 
 | product | platforms | includes |
 |---|---|---|
@@ -34,40 +29,54 @@ Vertical-integration wins:
 | `FantasticKernelFull` | macOS Pro (unsandboxed) | All bundles including `terminal_backend`, `local_runner`, `python_runtime`, `ssh_runner` |
 
 Tier split expressed via SwiftPM products + `#if os(macOS)` guards on
-subprocess-using bundle code.
+the subprocess-using bundle code. The umbrella wrapper packages that
+the Apple app consumes live under `swift/packaging/` (gitignored —
+materialized locally; the app vendors its own copies).
 
-## Phases
+## Bundle scoreboard
 
-| phase | scope | LOC | status |
+| bundle | target | tier | role |
 |---|---|---|---|
-| 1 | Foundation — `JSON`, `AgentId`, `AgentRecord`, `BundleError` | ~700 | **landed** |
-| 2 | Kernel — `Agent`, `Kernel` actor, `Bundle` protocol, `BundleRegistry`, `StorageMode`, `KernelState`, persistence, lock file, lifecycle | ~3,500 | next |
-| 3 | Trivial bundles — `file`, `html_agent`, `gl_agent`, `scheduler`, `canvas_backend`, `canvas_webapp`, `ai_chat_webapp`, `terminal_webapp`, `kernel_bridge`, `telemetry_pane`, `cli_bundle`, `tools`, `proxy_agent` | ~5,000 | |
-| 4 | HTTP layer — `web`, `web_ws`, `web_rest` via Hummingbird | ~2,900 | |
-| 5 | LLM backends — `ollama_backend`, `nvidia_nim_backend` via URLSession AsyncBytes | ~3,700 | |
-| 6 | Pro-tier (macOS-only) subprocess bundles — `terminal_backend`, `local_runner`, `python_runtime`, `ssh_runner` | ~4,100 | |
-| 7 | CLI binary — `fantastic` executable | ~260 | |
-| 8 | Migration — Swift kernel replaces XCFramework in the Apple app; UniFFI retired | — | |
-
-Total: ~20k LOC of substantive Swift (the Rust side is 24k; UniFFI
-bridge ~756 LOC vanishes in the port).
+| file | `FantasticFile` | both | sandboxed file storage |
+| proxy_agent | `FantasticProxyAgent` | both | host-implemented agents (LanguageModel, etc.) |
+| tools | `FantasticTools` | both | LLM tool registry |
+| html_agent | `FantasticHtmlAgent` | both | HTML surface agent |
+| gl_agent | `FantasticGlAgent` | both | WebGL surface agent |
+| scheduler | `FantasticScheduler` | both | cron / interval triggers |
+| canvas_backend | `FantasticCanvasBackend` | both | spatial workspace state |
+| canvas_webapp | `FantasticCanvasWebapp` | both | canvas frontend at `/<id>/` |
+| ai_chat_webapp | `FantasticAiChatWebapp` | both | chat UI, provider-agnostic |
+| terminal_webapp | `FantasticTerminalWebapp` | both | xterm.js frontend |
+| telemetry_pane | `FantasticTelemetryPane` | both | event firehose UI |
+| cli_bundle | `FantasticCliBundle` | both | scripted-CLI surface |
+| kernel_bridge | `FantasticKernelBridge` | both | in-memory + WS + HTTP transports |
+| web | `FantasticWeb` | both | HTTP + WS server (Network.framework) |
+| ollama_backend | `FantasticOllamaBackend` | both | local LLM, URLSession AsyncBytes SSE |
+| nvidia_nim_backend | `FantasticNvidiaNimBackend` | both | hosted LLM, SSE + bearer auth + 429 retry |
+| local_runner | `FantasticLocalRunner` | Pro | macOS-only — Process subprocess |
+| python_runtime | `FantasticPythonRuntime` | Pro | macOS-only — embedded Python |
+| ssh_runner | `FantasticSshRunner` | Pro | macOS-only — `ssh -L` tunnel |
+| terminal_backend | `FantasticTerminalBackend` | Pro | macOS-only — `forkpty` + DispatchIO |
 
 ## Wire compatibility
 
 Verb names stay snake_case strings in JSON. Payload shapes match the
-Rust kernel byte-for-byte. This allows two concurrent kernels to
-exchange messages via the `kernel_bridge` bundle during the migration
-period.
+Python kernel byte-for-byte. The `kernel_bridge` bundle's in-process
+transport pairs two kernels (e.g. Swift ↔ Python) for end-to-end
+mixed-runtime tests.
 
 `OrderedDictionary` (from swift-collections) backs the `JSON.object`
-variant so `agent.json` byte-for-byte parity holds across Rust↔Swift.
+variant so `agent.json` byte-for-byte parity holds across runtimes.
 
 ## Building
 
 ```bash
 cd swift
 swift build
-swift test           # 45 tests so far (Phase 1)
+swift test                              # full suite
+swift test --filter FantasticKernel     # substrate only
+RUST_KERNEL_BIN=<path> swift test \
+    --filter FantasticParityTests       # cross-runtime parity (optional)
 ```
 
 Requires Swift 6.0+ (Xcode 16+).
@@ -76,39 +85,57 @@ Requires Swift 6.0+ (Xcode 16+).
 
 ```
 swift/
-  Package.swift                    SwiftPM workspace
+  Package.swift                        SwiftPM workspace
   Sources/
-    FantasticJSON/                 JSON enum + Codable + parser
-    FantasticKernel/               AgentId, AgentRecord, BundleError (Phase 1)
-                                   Agent, Kernel actor, Bundle protocol (Phase 2+)
+    FantasticJSON/                     JSON enum + parser
+    FantasticKernel/                   Agent, Kernel actor, Bundle protocol,
+                                       BundleRegistry, persistence, lock, system verbs
+    FantasticKernelStartup/            startKernel / startKernelInMemory
+    FantasticWeb/                      HTTP + WS server (Network.framework)
+    FantasticOllamaBackend/            local LLM SSE
+    FantasticNvidiaNimBackend/         hosted LLM SSE
+    Fantastic{Canvas,AiChat,Terminal,Telemetry}{Backend,Webapp,Pane}/
+                                       UI + state bundles
+    Fantastic{File,ProxyAgent,Tools,HtmlAgent,GlAgent,Scheduler,
+              CliBundle,KernelBridge}/
+                                       supporting bundles
+    Fantastic{Terminal,Local,Python,Ssh}{Backend,Runner,Runtime}/
+                                       macOS-only Pro-tier bundles
+    Fantastic/                         `fantastic` CLI executable
   Tests/
-    FantasticJSONTests/
-    FantasticKernelTests/
-  README.md                        this file
+    Fantastic*Tests/                   per-target unit suites
+    FantasticParityTests/              cross-runtime byte-diff harness
+  packaging/                           Apple app wrapper SPM packages (gitignored)
+  docs/
+    CROSS_ANALYSIS.md                  capability matrix vs the historical Rust port
+    MIGRATION.md                       how the Apple app dropped UniFFI for native Swift
 ```
 
 ## Public API contract
 
-The Swift kernel exposes the same method names + payload shapes as
-the UniFFI surface today. The Apple app's `import FantasticKernel{Embedded,Full}`
-lines and call sites stay unchanged through the migration; only the
-underlying implementation (Rust XCFramework → native Swift) swaps.
-Coordinated communication with `app-claude` before any breaking
-change to:
+The Swift kernel exposes the same method names + payload shapes the
+Apple app already consumes (preserved from the historical UniFFI
+surface to keep the app's import lines unchanged through the
+migration). Coordinated communication with `app-claude` before any
+breaking change to:
 - `Kernel.sendJson(targetId:payloadJson:)`
 - `Kernel.sendJsonAs(senderId:targetId:payloadJson:)`
 - `Kernel.proxyEmit(agentId:eventJson:)`
 - `Kernel.registerProxyAgent(agentId:host:)`
 - `Kernel.registerTool` / `unregisterToolsBySender` / `listToolsForLlm`
-- `ProxyAgent` protocol (handle, onBoot, onDelete)
-- HTTP routes (`/<agent_id>/`, `/<agent_id>/ws`, `/_assets/*`, `/transport.js`)
-- Bundle names: `proxy_agent.tools`, `tools.tools`, `canvas_webapp.tools`,
-  `canvas_backend.tools`, `web.tools`, etc.
+- `ProxyAgent` protocol (`handle`, `onBoot`, `onDelete`)
+- HTTP routes (`/<agent_id>/`, `/<agent_id>/ws`, `/_assets/*`,
+  `/transport.js`)
+- Bundle names: `proxy_agent.tools`, `tools.tools`,
+  `canvas_webapp.tools`, `canvas_backend.tools`, `web.tools`, etc.
 
 ## Third-party dependencies
 
-- [swift-collections](https://github.com/apple/swift-collections) 1.1+ — `OrderedDictionary` for `JSON.object` key-order preservation
-- (Phase 4) [Hummingbird](https://github.com/hummingbird-project/hummingbird) 2.x — HTTP server framework (closest axum analog in Swift)
+- [swift-collections](https://github.com/apple/swift-collections) 1.1+
+  — `OrderedDictionary` for `JSON.object` key-order preservation
+
+That's it — no Hummingbird, no Vapor, no NIO directly. HTTP + WS run
+on `Network.framework`; LLM backends run on `URLSession.AsyncBytes`.
 
 ## License
 
