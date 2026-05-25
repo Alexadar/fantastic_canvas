@@ -7,16 +7,6 @@
 // `rust/packaging/FantasticKernel{Embedded,Full}` so the iOS/macOS app
 // can stay on its current import lines while the implementation moves
 // from a Rust XCFramework to native Swift.
-//
-// Tiers (mirror Rust's `embedded` / `full` Cargo features):
-//   - FantasticKernelEmbedded — sandbox-safe; ships in iOS / iPadOS /
-//     visionOS / tvOS / watchOS / sandboxed macOS targets
-//   - FantasticKernelFull — adds macOS-only subprocess-using bundles
-//     (terminal_backend, local_runner, python_runtime, ssh_runner)
-//
-// Phase 1 (this file's initial state) ships only the foundation types
-// — JSON, AgentId, AgentRecord, BundleError. The Kernel actor, bundles,
-// and HTTP layer arrive in subsequent phases.
 
 import PackageDescription
 
@@ -32,35 +22,33 @@ let package = Package(
     products: [
         .library(name: "FantasticJSON", targets: ["FantasticJSON"]),
         .library(name: "FantasticKernel", targets: ["FantasticKernel"]),
+        .library(name: "FantasticBundles", targets: [
+            "FantasticFile",
+            "FantasticProxyAgent",
+            "FantasticTools",
+            "FantasticHtmlAgent",
+            "FantasticGlAgent",
+            "FantasticScheduler",
+            "FantasticCanvasBackend",
+            "FantasticCanvasWebapp",
+            "FantasticAiChatWebapp",
+            "FantasticTerminalWebapp",
+            "FantasticTelemetryPane",
+            "FantasticCliBundle",
+            "FantasticKernelBridge",
+        ]),
     ],
     dependencies: [
-        // OrderedCollections preserves JSON object key order on
-        // round-trip — matches Rust's `serde_json::Map<String, Value>`
-        // with the `preserve_order` feature. Required so `agent.json`
-        // bytes are stable across Rust↔Swift cross-runtime testing.
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
     ],
     targets: [
-        // ── FantasticJSON ─────────────────────────────────────────
-        // Dynamic JSON value type for the kernel's substrate-level
-        // dispatch (every verb takes/returns arbitrary JSON). Mirrors
-        // `serde_json::Value`.
+        // ── Core ─────────────────────────────────────────────────
         .target(
             name: "FantasticJSON",
-            dependencies: [
-                .product(name: "OrderedCollections", package: "swift-collections"),
-            ]
+            dependencies: [.product(name: "OrderedCollections", package: "swift-collections")]
         ),
-        .testTarget(
-            name: "FantasticJSONTests",
-            dependencies: ["FantasticJSON"]
-        ),
+        .testTarget(name: "FantasticJSONTests", dependencies: ["FantasticJSON"]),
 
-        // ── FantasticKernel ───────────────────────────────────────
-        // Phase 1: foundation types only (AgentId, AgentRecord,
-        // BundleError). Phase 2 adds Agent, Kernel actor,
-        // BundleRegistry, StorageMode, KernelState, persistence,
-        // lock file, lifecycle, reflect, save/load.
         .target(
             name: "FantasticKernel",
             dependencies: [
@@ -71,6 +59,79 @@ let package = Package(
         .testTarget(
             name: "FantasticKernelTests",
             dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+
+        // ── Trivially-portable bundles (Phase 3) ─────────────────
+        .target(
+            name: "FantasticFile",
+            dependencies: ["FantasticKernel", "FantasticJSON",
+                           .product(name: "OrderedCollections", package: "swift-collections")]
+        ),
+        .target(
+            name: "FantasticProxyAgent",
+            dependencies: ["FantasticKernel", "FantasticJSON",
+                           .product(name: "OrderedCollections", package: "swift-collections")]
+        ),
+        .target(
+            name: "FantasticTools",
+            dependencies: ["FantasticKernel", "FantasticJSON",
+                           .product(name: "OrderedCollections", package: "swift-collections")]
+        ),
+        .target(
+            name: "FantasticHtmlAgent",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticGlAgent",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticScheduler",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticCanvasBackend",
+            dependencies: ["FantasticKernel", "FantasticJSON",
+                           .product(name: "OrderedCollections", package: "swift-collections")]
+        ),
+        .target(
+            name: "FantasticCanvasWebapp",
+            dependencies: ["FantasticKernel", "FantasticJSON"],
+            resources: [.copy("Resources/canvas.html")]
+        ),
+        .target(
+            name: "FantasticAiChatWebapp",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticTerminalWebapp",
+            dependencies: ["FantasticKernel", "FantasticJSON"],
+            resources: [.copy("Resources/index.html")]
+        ),
+        .target(
+            name: "FantasticTelemetryPane",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticCliBundle",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticKernelBridge",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+
+        .testTarget(
+            name: "FantasticBundlesTests",
+            dependencies: [
+                "FantasticKernel", "FantasticJSON",
+                "FantasticFile", "FantasticProxyAgent", "FantasticTools",
+                "FantasticHtmlAgent", "FantasticGlAgent", "FantasticScheduler",
+                "FantasticCanvasBackend", "FantasticCanvasWebapp",
+                "FantasticAiChatWebapp", "FantasticTerminalWebapp",
+                "FantasticTelemetryPane", "FantasticCliBundle",
+                "FantasticKernelBridge",
+            ]
         ),
     ]
 )
