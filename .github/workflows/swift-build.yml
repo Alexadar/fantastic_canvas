@@ -1,0 +1,41 @@
+name: Swift Build
+
+# CI gate for the Swift workspace at `swift/`. Builds + tests on
+# macOS-latest (Apple platforms are the deployment target; Linux
+# Swift is rough enough that we skip the Ubuntu matrix here, unlike
+# rust-build.yml).
+#
+# Phase 1 ships ~700 LOC of foundation types (JSON, AgentId,
+# AgentRecord, BundleError); the workflow grows organically with
+# each phase but stays a pure-lint gate — no archive, no XCFramework
+# build artefact.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'swift/**'
+      - '.github/workflows/swift-build.yml'
+
+jobs:
+  test:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: swift
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16
+        run: |
+          # Pin a recent Xcode that ships Swift 6.0+. macos-latest
+          # changes its default Xcode over time; pin explicitly so
+          # the toolchain doesn't drift under us.
+          sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer || true
+          swift --version
+
+      - name: swift build
+        run: swift build
+
+      - name: swift test
+        run: swift test
