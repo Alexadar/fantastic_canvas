@@ -4,10 +4,11 @@
 // to avoid pulling in a separate WS package — we only need text
 // frames, ping/pong, and close. RFC 6455 minimal subset.
 //
-// Frame protocol:
-//   client → server : {"type":"call", "target":"<id>", "payload":{...}, "id":"<id>"}
+// Frame protocol (matches python/bundled_agents/web/host/_proxy.py —
+// the reference template):
+//   client → server : {"type":"call",  "target":"<id>", "payload":{...}, "id":"<id>"}
 //   server → client : {"type":"reply", "id":"<id>", "data":{...}}
-//   server → client : {"type":"event", "agent":"<id>", "payload":{...}} (watcher fanout)
+//   server → client : {"type":"event", "payload":{...}}  (watcher fanout)
 
 import CryptoKit
 import FantasticJSON
@@ -78,9 +79,11 @@ private func handleUpgrade(
         kernel.watch(src: agentId, watcher: watcherId)
         Task {
             for await event in kernel.ensureInbox(watcherId) {
+                // Frame matches Python reference: {type:"event", payload}.
+                // No `agent` field — emitter identity is whatever the
+                // payload carries (typically via sender attribution).
                 let frame: JSON = .object([
                     "type": .string("event"),
-                    "agent": .string(agentId.value),
                     "payload": event,
                 ])
                 sendTextFrame(connection: connection, text: frame.serialize())

@@ -143,6 +143,21 @@ extension JSON {
         return out
     }
 
+    /// Pretty-print with `indent` spaces per level, matching
+    /// Python's `json.dumps(obj, indent=2)` byte-for-byte:
+    ///   - `": "` between key and value
+    ///   - `,\n<indent>` between items
+    ///   - empty `{}` / `[]` stay compact (no inner newline)
+    ///   - no trailing newline on the outermost value
+    ///
+    /// Used for on-disk persistence (`agent.json`) so the bytes
+    /// match what the Python kernel writes for the same record.
+    public func serializePretty(indent: Int = 2) -> String {
+        var out = String()
+        writeToPretty(&out, level: 0, indent: indent)
+        return out
+    }
+
     private func writeTo(_ out: inout String) {
         switch self {
         case .null:
@@ -184,6 +199,56 @@ extension JSON {
                 out.append(":")
                 v.writeTo(&out)
             }
+            out.append("}")
+        }
+    }
+
+    /// Pretty-print writer mirroring CPython's `json.encoder`
+    /// `indent=N` behavior. Item separators are `,` (no trailing
+    /// space — Python writes `,\n<indent>`), key/value separator
+    /// is `": "`.
+    private func writeToPretty(_ out: inout String, level: Int, indent: Int) {
+        switch self {
+        case .null, .bool, .integer, .double, .string:
+            // Scalars: same bytes as compact mode.
+            writeTo(&out)
+        case .array(let arr):
+            if arr.isEmpty {
+                out.append("[]")
+                return
+            }
+            out.append("[\n")
+            let childPad = String(repeating: " ", count: (level + 1) * indent)
+            let parentPad = String(repeating: " ", count: level * indent)
+            var first = true
+            for item in arr {
+                if !first { out.append(",\n") }
+                first = false
+                out.append(childPad)
+                item.writeToPretty(&out, level: level + 1, indent: indent)
+            }
+            out.append("\n")
+            out.append(parentPad)
+            out.append("]")
+        case .object(let dict):
+            if dict.isEmpty {
+                out.append("{}")
+                return
+            }
+            out.append("{\n")
+            let childPad = String(repeating: " ", count: (level + 1) * indent)
+            let parentPad = String(repeating: " ", count: level * indent)
+            var first = true
+            for (k, v) in dict {
+                if !first { out.append(",\n") }
+                first = false
+                out.append(childPad)
+                JSON.writeEscapedString(k, to: &out)
+                out.append(": ")
+                v.writeToPretty(&out, level: level + 1, indent: indent)
+            }
+            out.append("\n")
+            out.append(parentPad)
             out.append("}")
         }
     }

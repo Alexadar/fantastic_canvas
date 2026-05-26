@@ -55,7 +55,7 @@ struct HTTPServerTests {
             }
         }
         let port = kernel.httpPort()
-        let url = URL(string: "http://127.0.0.1:\(port)/transport.js")!
+        let url = URL(string: "http://127.0.0.1:\(port)/_fantastic/transport.js")!
         let (data, response) = try await URLSession.shared.data(from: url)
         let http = try #require(response as? HTTPURLResponse)
         #expect(http.statusCode == 200)
@@ -125,8 +125,8 @@ struct HTTPServerTests {
         #expect(http.statusCode == 200)
         let body = String(data: data, encoding: .utf8) ?? ""
         #expect(body.contains("<h1>Hello</h1>"))
-        // transport.js auto-injected.
-        #expect(body.contains("/transport.js"))
+        // transport.js auto-injected at the Python-matching URL.
+        #expect(body.contains("/_fantastic/transport.js"))
     }
 
     @Test func acceptsPostVerbToAgent() async throws {

@@ -91,7 +91,7 @@ struct WebSocketTests {
         let parsed = try JSON.parse(text)
         #expect(parsed["type"].asString == "reply")
         #expect(parsed["id"].asString == "c1")
-        let agents = parsed["result"]["agents"].asArray ?? []
+        let agents = parsed["data"]["agents"].asArray ?? []
         let ids = agents.compactMap { $0["id"].asString }
         #expect(ids.contains("core"))
 

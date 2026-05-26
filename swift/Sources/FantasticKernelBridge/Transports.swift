@@ -20,14 +20,15 @@ public actor HttpTransport {
     }
 
     public func forward(target: AgentId, payload: JSON) async -> JSON {
-        var req = URLRequest(url: endpoint)
+        // Matches Python `kernel_bridge._transport.HTTPTransport`
+        // (the reference template): POST to `<endpoint>/<target>`
+        // with the payload as the raw JSON body. Target lives in
+        // the URL path, not in an envelope around the payload.
+        let url = endpoint.appendingPathComponent(target.value)
+        var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: JSON = .object([
-            "target": .string(target.value),
-            "payload": payload,
-        ])
-        req.httpBody = body.serialize().data(using: .utf8)
+        req.httpBody = payload.serialize().data(using: .utf8)
 
         do {
             let (data, response) = try await session.data(for: req)
@@ -133,7 +134,11 @@ public actor WebSocketTransport {
                     let id = parsed["id"].asString
                 {
                     if let cont = pending.removeValue(forKey: id) {
-                        cont.resume(returning: parsed["result"])
+                        // Reply envelope is `{type:"reply", id, data}` —
+                        // matches Python's web/_proxy.py (reference
+                        // template) and the Swift web server itself
+                        // (FantasticWeb/WebSocket.swift:170-172).
+                        cont.resume(returning: parsed["data"])
                     }
                 }
             } catch {

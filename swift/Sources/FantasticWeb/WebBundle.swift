@@ -40,7 +40,7 @@ public enum WebAssets {
         ("/_assets/xterm.min.js", "application/javascript"),
         ("/_assets/xterm.min.css", "text/css"),
         ("/_assets/xterm-addon-fit.min.js", "application/javascript"),
-        ("/transport.js", "application/javascript"),
+        ("/_fantastic/transport.js", "application/javascript"),
     ]
 
     /// Look up the asset body for a top-level static-asset URL path.
@@ -55,18 +55,18 @@ public enum WebAssets {
             return (xtermCSS, "text/css")
         case "/_assets/xterm-addon-fit.min.js":
             return (xtermAddonFitJS, "application/javascript")
-        case "/transport.js":
+        case "/_fantastic/transport.js":
             return (transportJS, "application/javascript")
         default:
             return nil
         }
     }
 
-    /// Inject `<script src="/transport.js"></script>` before `</head>`
+    /// Inject `<script src="/_fantastic/transport.js"></script>` before `</head>`
     /// (or at the top of `<body>` if no head). Matches Rust's
     /// `inject_transport`.
     public static func injectTransport(into html: String) -> String {
-        let injection = "<script src=\"/transport.js\"></script>"
+        let injection = "<script src=\"/_fantastic/transport.js\"></script>"
         if html.contains(injection) { return html }
         if let range = html.range(of: "</head>") {
             return html.replacingCharacters(in: range, with: "\(injection)</head>")
@@ -130,7 +130,7 @@ public final class WebBundle: AgentBundle, @unchecked Sendable {
                 "id": .string(agent.id.value),
                 "kind": .string("web"),
                 "sentence": .string(
-                    "HTTP host — exposes /<id>/, /transport.js, /_assets/* + per-child get_routes."
+                    "HTTP host — exposes /<id>/, /_fantastic/transport.js, /_assets/* + per-child get_routes."
                 ),
                 "port": agent.metaValue(forKey: "port") ?? .null,
                 "running": agent.metaValue(forKey: "running") ?? .bool(false),
@@ -145,7 +145,7 @@ public final class WebBundle: AgentBundle, @unchecked Sendable {
                     "boot": "Marks the agent running (real HTTP listener wired by host).",
                     "shutdown": "Marks the agent stopped.",
                     "render": "args: agent_id. Returns the agent's render_html reply + transport.js injection.",
-                    "asset": "args: path. Returns the vendored asset for /_assets/* or /transport.js.",
+                    "asset": "args: path. Returns the vendored asset for /_assets/* or /_fantastic/transport.js.",
                 ] as JSON,
             ] as JSON
         case "boot":

@@ -5,14 +5,19 @@
 // platform. Trade-off: we hand-roll a small HTTP/1.1 parser. Worth
 // it for the brain kernel's small route surface.
 //
-// Routes:
-//   GET  /                     → root link tree (JSON of agents)
-//   GET  /transport.js         → transport.js
-//   GET  /favicon.ico|.png     → favicon (deferred: bundled asset)
-//   GET  /_assets/<name>       → vendored Three.js / xterm assets
-//   GET  /<agent_id>/          → kernel.send(agentId, render_html)
-//   GET  /<agent_id>/file/...  → kernel.send(agentId, read path)
-//   POST /<agent_id>/<verb>    → kernel.send(agentId, {type:verb, ...body})
+// Routes (match python/bundled_agents/web/host/app.py — the
+// reference template):
+//   GET  /                          → root link tree (JSON of agents)
+//   GET  /_fantastic/transport.js   → transport.js
+//   GET  /favicon.png               → bundled favicon
+//   GET  /_assets/<name>            → vendored Three.js / xterm assets
+//                                     (Swift-specific extension for
+//                                     hermetic operation — Python's
+//                                     canvas.html still loads these
+//                                     from a CDN; intentional drift)
+//   GET  /<agent_id>/               → kernel.send(agentId, render_html)
+//   GET  /<agent_id>/file/...       → kernel.send(agentId, read path)
+//   POST /<agent_id>/<verb>         → kernel.send(agentId, {type:verb, ...body})
 //
 // WebSocket upgrade (`/<agent_id>/ws`) lands in 8C — this file
 // dispatches unknown upgrades through to the WS handler hook.
@@ -186,11 +191,14 @@ public final class WebServer: @unchecked Sendable {
         switch (request.method, request.path) {
         case ("GET", "/"):
             response = await serveIndex()
-        case ("GET", "/transport.js"):
+        case ("GET", "/_fantastic/transport.js"):
+            // URL matches python/web/host/app.py:122 — keeps the
+            // bundled transport.js reachable at the same path on
+            // both runtimes so identical HTML can target either.
             response = HTTPResponse(
                 status: 200, contentType: "application/javascript",
                 body: WebAssets.transportJS.data(using: .utf8) ?? Data())
-        case ("GET", "/favicon.ico"), ("GET", "/favicon.png"):
+        case ("GET", "/favicon.png"):
             response = HTTPResponse(status: 404, contentType: "text/plain", body: Data())
         case ("GET", let path) where path.hasPrefix("/_assets/"):
             if let asset = WebAssets.body(forPath: path) {

@@ -37,7 +37,7 @@ public struct TelemetryPaneBundle: AgentBundle {
         case "render_html":
             return .object([
                 "html": .string(
-                    "<!doctype html><html><body><div id=\"telemetry\"></div><script src=\"/transport.js\"></script></body></html>"
+                    "<!doctype html><html><body><div id=\"telemetry\"></div><script src=\"/_fantastic/transport.js\"></script></body></html>"
                 )
             ])
         case "get_webapp":

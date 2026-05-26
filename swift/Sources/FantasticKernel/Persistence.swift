@@ -53,7 +53,12 @@ public enum Persistence {
         }
 
         let merged: JSON = .object(existing)
-        let serialized = merged.serialize()
+        // On-disk format matches Python's
+        //   `self._agent_file().write_text(json.dumps(self.record, indent=2))`
+        // so cross-runtime workdir handoff produces byte-identical
+        // agent.json files. Compact form is reserved for the wire
+        // protocol (`.serialize()`).
+        let serialized = merged.serializePretty(indent: 2)
         guard let bytes = serialized.data(using: .utf8) else {
             throw PersistenceError.ioFailure("non-UTF-8 serialization")
         }

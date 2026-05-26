@@ -16,7 +16,7 @@ public struct AiChatWebappBundle: AgentBundle {
 
     private static let defaultHtml = """
         <!doctype html><html><head><meta charset="utf-8"><title>chat</title></head>
-        <body><div id="chat"></div><script src="/transport.js"></script>
+        <body><div id="chat"></div><script src="/_fantastic/transport.js"></script>
         <script>
         const t = fantastic_transport();
         // Minimal stub — full chat UI loads dynamically in production.
