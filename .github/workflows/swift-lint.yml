@@ -30,12 +30,17 @@ jobs:
 
       - name: Select Xcode 16
         run: |
-          # Pin a recent Xcode that ships Swift 6.0+ and a current
-          # swift-format. macos-latest changes its default Xcode
-          # over time; pin explicitly so the toolchain doesn't drift.
+          # Pin a recent Xcode that ships Swift 6.0+. macos-latest
+          # changes its default Xcode over time; pin explicitly so
+          # the toolchain doesn't drift.
           sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer || true
           swift --version
-          swift-format --version
+
+      - name: Install swift-format
+        # Xcode bundles swift-format inside the toolchain but doesn't
+        # add it to PATH on the GitHub runner. Brew is the lightest
+        # way to get a top-level `swift-format` executable.
+        run: brew install swift-format
 
       - name: swift-format lint
         run: swift-format lint --recursive Sources Tests
