@@ -16,6 +16,7 @@ import FantasticCanvasBackend
 import FantasticCanvasWebapp
 import FantasticCliBundle
 import FantasticFile
+import FantasticFoundationModelsBackend
 import FantasticGlAgent
 import FantasticHtmlAgent
 import FantasticJSON
@@ -58,6 +59,7 @@ public func defaultBundleRegistry() -> BundleRegistry {
     r.register("web.tools", WebBundle())
     r.register("ollama_backend.tools", OllamaBackendBundle())
     r.register("nvidia_nim_backend.tools", NvidiaNimBundle())
+    r.register("foundation_models_backend.tools", FoundationModelsBackendBundle())
     #if os(macOS)
         r.register("local_runner.tools", LocalRunnerBundle())
         r.register("python_runtime.tools", PythonRuntimeBundle())

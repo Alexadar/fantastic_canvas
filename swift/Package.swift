@@ -51,6 +51,7 @@ let package = Package(
             "FantasticWeb",
             "FantasticOllamaBackend",
             "FantasticNvidiaNimBackend",
+            "FantasticFoundationModelsBackend",
         ]),
         .library(name: "FantasticKernelStartup", targets: ["FantasticKernelStartup"]),
 
@@ -168,6 +169,11 @@ let package = Package(
             dependencies: ["FantasticKernel", "FantasticJSON",
                            .product(name: "OrderedCollections", package: "swift-collections")]
         ),
+        .target(
+            name: "FantasticFoundationModelsBackend",
+            dependencies: ["FantasticKernel", "FantasticJSON",
+                           .product(name: "OrderedCollections", package: "swift-collections")]
+        ),
 
         // ── Pro-tier subprocess bundles (macOS only) ─────────────
         .target(
@@ -202,6 +208,7 @@ let package = Package(
                 "FantasticTelemetryPane", "FantasticCliBundle",
                 "FantasticKernelBridge", "FantasticWeb",
                 "FantasticOllamaBackend", "FantasticNvidiaNimBackend",
+                "FantasticFoundationModelsBackend",
                 "FantasticLocalRunner", "FantasticPythonRuntime",
                 "FantasticSshRunner", "FantasticTerminalBackend",
             ]
