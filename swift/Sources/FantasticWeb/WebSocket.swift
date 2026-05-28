@@ -6,9 +6,20 @@
 //
 // Frame protocol (matches python/bundled_agents/web/host/_proxy.py —
 // the reference template):
-//   client → server : {"type":"call",  "target":"<id>", "payload":{...}, "id":"<id>"}
+//   client → server : {"type":"call",   "target":"<id>", "payload":{...}, "id":"<id>"}
+//   client → server : {"type":"emit",   "target":"<id>", "payload":{...}}
+//   client → server : {"type":"watch",  "src":"<id>"}
+//   client → server : {"type":"unwatch","src":"<id>"}
 //   server → client : {"type":"reply", "id":"<id>", "data":{...}}
 //   server → client : {"type":"event", "payload":{...}}  (watcher fanout)
+//
+// Every connection auto-watches the URL-path agent (`agentSegment`)
+// so a browser sees its inbox events without an explicit watch —
+// AND honors explicit `watch`/`unwatch` frames that add/remove other
+// sources onto the SAME client inbox (parity with Python's
+// `_proxy.run`: `kernel.watch(host_agent_id, client_id)` up front +
+// `_on_watch` for additional srcs). The kernel_bridge's
+// `watch_remote` relies on the explicit-watch path.
 
 import CryptoKit
 import FantasticJSON
@@ -72,32 +83,49 @@ private func handleUpgrade(
     }
     send(handshake.data(using: .utf8) ?? Data())
 
-    // Auto-watch: WS clients subscribe to the agent's inbox so token
-    // streams + state events flow without a separate subscribe verb.
+    // One synthetic client id per connection. The URL-path agent is
+    // auto-watched onto it; explicit `watch` frames add more sources
+    // onto the SAME inbox. A single drain task pumps that inbox out
+    // as `{type:"event", payload}` frames. Mirrors Python's
+    // `_proxy.run`: `client_id` + `watching` set + `drain_outbound`.
+    let clientId = AgentId("ws_client_\(UUID().uuidString.prefix(8))")
+    let state = WSClientState(clientId: clientId)
+    let inbox = kernel.ensureInbox(clientId)
     if kernel.agent(agentId) != nil {
-        let watcherId = AgentId("ws_client_\(UUID().uuidString.prefix(8))")
-        kernel.watch(src: agentId, watcher: watcherId)
-        Task {
-            for await event in kernel.ensureInbox(watcherId) {
-                // Frame matches Python reference: {type:"event", payload}.
-                // No `agent` field — emitter identity is whatever the
-                // payload carries (typically via sender attribution).
-                let frame: JSON = .object([
-                    "type": .string("event"),
-                    "payload": event,
-                ])
-                sendTextFrame(connection: connection, text: frame.serialize())
-            }
+        kernel.watch(src: agentId, watcher: clientId)
+        state.watching.insert(agentId)
+    }
+    Task {
+        for await event in inbox {
+            // Frame matches Python reference: {type:"event", payload}.
+            // No `agent` field — emitter identity is whatever the
+            // payload carries (typically via sender attribution).
+            let frame: JSON = .object([
+                "type": .string("event"),
+                "payload": event,
+            ])
+            sendTextFrame(connection: connection, text: frame.serialize())
         }
     }
 
-    await readLoop(connection: connection, agentId: agentId, kernel: kernel)
+    await readLoop(connection: connection, agentId: agentId, kernel: kernel, state: state)
+}
+
+/// Per-connection mutable state. The `watching` set is mutated only
+/// from the read loop (frames are handled sequentially), so no extra
+/// synchronization is needed; the drain task reads only the immutable
+/// `clientId`.
+final class WSClientState: @unchecked Sendable {
+    let clientId: AgentId
+    var watching: Set<AgentId> = []
+    init(clientId: AgentId) { self.clientId = clientId }
 }
 
 private func readLoop(
     connection: NWConnection,
     agentId: AgentId,
     kernel: Kernel,
+    state: WSClientState,
     accumulated: Data = Data()
 ) async {
     let (data, isComplete, _) = await receiveBytes(connection: connection)
@@ -108,7 +136,9 @@ private func readLoop(
     // Parse as many complete frames as we have.
     while let (frame, consumed) = decodeFrame(buffer) {
         buffer.removeSubrange(0..<consumed)
-        await handleFrame(frame: frame, connection: connection, agentId: agentId, kernel: kernel)
+        await handleFrame(
+            frame: frame, connection: connection, agentId: agentId,
+            kernel: kernel, state: state)
         if frame.opcode == .close {
             connection.cancel()
             return
@@ -118,7 +148,9 @@ private func readLoop(
         connection.cancel()
         return
     }
-    await readLoop(connection: connection, agentId: agentId, kernel: kernel, accumulated: buffer)
+    await readLoop(
+        connection: connection, agentId: agentId, kernel: kernel,
+        state: state, accumulated: buffer)
 }
 
 private func receiveBytes(connection: NWConnection) async -> (Data?, Bool, Error?) {
@@ -134,15 +166,45 @@ private func handleFrame(
     frame: WebSocketFrame,
     connection: NWConnection,
     agentId: AgentId,
-    kernel: Kernel
+    kernel: Kernel,
+    state: WSClientState
 ) async {
     switch frame.opcode {
     case .text:
         guard let text = String(data: frame.payload, encoding: .utf8),
             let parsed = try? JSON.parse(text)
         else { return }
-        if parsed["type"].asString == "call" {
-            await handleCall(parsed: parsed, connection: connection, agentId: agentId, kernel: kernel)
+        switch parsed["type"].asString {
+        case "call":
+            await handleCall(
+                parsed: parsed, connection: connection, agentId: agentId, kernel: kernel)
+        case "emit":
+            // Mirror of Python's `_on_emit`: fire-and-forget into a
+            // target's inbox, no reply.
+            let target = parsed["target"].asString ?? agentId.value
+            await kernel.emit(AgentId(target), parsed["payload"])
+        case "watch":
+            // Mirror of Python's `_on_watch`: add `src` onto this
+            // client's inbox so its events stream back as `event`
+            // frames. Idempotent via the `watching` set.
+            if let src = parsed["src"].asString {
+                let srcId = AgentId(src)
+                if !state.watching.contains(srcId) {
+                    kernel.watch(src: srcId, watcher: state.clientId)
+                    state.watching.insert(srcId)
+                }
+            }
+        case "unwatch":
+            // Mirror of Python's `_on_unwatch`.
+            if let src = parsed["src"].asString {
+                let srcId = AgentId(src)
+                if state.watching.contains(srcId) {
+                    kernel.unwatch(src: srcId, watcher: state.clientId)
+                    state.watching.remove(srcId)
+                }
+            }
+        default:
+            break  // unknown frame type — ignore (weak)
         }
     case .ping:
         sendFrame(connection: connection, opcode: .pong, payload: frame.payload)

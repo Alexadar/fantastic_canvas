@@ -89,4 +89,50 @@ public enum Persistence {
             try? fm.removeItem(at: agent.rootPath)
         }
     }
+
+    /// Walk `<agentsDir>/<id>/agent.json` files and decode each into
+    /// an `AgentRecord`. Matches the per-agent file format Python's
+    /// canonical kernel writes — flat top-level keys (`id`,
+    /// `handler_module`, `parent_id`, plus arbitrary meta fields).
+    ///
+    /// Failures (missing file, unparseable JSON) are LOGGED to stderr
+    /// and skipped — mirrors the weak-load policy the substrate
+    /// applies for unknown handler_modules. The kernel deals with a
+    /// partial fleet gracefully.
+    ///
+    /// Returns records in directory-listing order. The caller is
+    /// expected to wrap in a `KernelState` and call `kernel.load(_:)`
+    /// which validates root + parent integrity.
+    public static func readAllAgentRecords(from agentsDir: URL) -> [AgentRecord] {
+        let fm = FileManager.default
+        guard
+            let entries = try? fm.contentsOfDirectory(
+                at: agentsDir, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles])
+        else {
+            return []
+        }
+        var records: [AgentRecord] = []
+        let decoder = JSONDecoder()
+        for entry in entries {
+            // Each direct child of agentsDir is `<id>/`, containing
+            // an `agent.json`. Skip anything that isn't a dir.
+            var isDir: ObjCBool = false
+            guard
+                fm.fileExists(atPath: entry.path, isDirectory: &isDir),
+                isDir.boolValue
+            else { continue }
+            let agentFile = entry.appendingPathComponent("agent.json")
+            guard let data = try? Data(contentsOf: agentFile) else { continue }
+            do {
+                let record = try decoder.decode(AgentRecord.self, from: data)
+                records.append(record)
+            } catch {
+                FileHandle.standardError.write(
+                    "[kernel] skipping malformed agent.json at \(agentFile.path): \(error)\n"
+                        .data(using: .utf8) ?? Data())
+            }
+        }
+        return records
+    }
 }

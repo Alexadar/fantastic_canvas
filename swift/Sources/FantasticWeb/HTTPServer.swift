@@ -31,6 +31,13 @@ import Network
     import Darwin
 #endif
 
+/// Errors thrown by `WebServer.start`.
+public enum WebServerError: Error {
+    /// The `NWListener` did not reach `.ready` within the startup
+    /// timeout — the bound port never resolved.
+    case listenerStartTimeout
+}
+
 /// Server lifecycle owner. Started by `WebBundle.boot`, stopped by
 /// `WebBundle.shutdown`. One instance per `web.tools` agent.
 public final class WebServer: @unchecked Sendable {
@@ -39,6 +46,18 @@ public final class WebServer: @unchecked Sendable {
     private var listener: NWListener?
     private let lock = NSLock()
     private var connections: Set<ObjectIdentifier> = []
+
+    /// Dedicated queues so the listener's state callbacks never
+    /// compete with blocked `semaphore.wait` threads on the global
+    /// pool. Under heavy parallel load (e.g. the full test suite
+    /// booting many servers at once) routing the listener through
+    /// `.global()` could starve the pool and delay `.ready` past the
+    /// startup timeout, surfacing as a spurious port-0 boot. A private
+    /// serial queue for the listener + a concurrent queue for
+    /// connections keeps startup deterministic.
+    private let listenerQueue = DispatchQueue(label: "fantastic.web.listener")
+    private let connectionQueue = DispatchQueue(
+        label: "fantastic.web.connections", attributes: .concurrent)
 
     /// Optional WebSocket upgrade handler installed in 8C. When
     /// non-nil, `Upgrade: websocket` requests are forwarded here.
@@ -93,14 +112,19 @@ public final class WebServer: @unchecked Sendable {
                 break
             }
         }
-        listener.start(queue: .global())
-        _ = semaphore.wait(timeout: .now() + .seconds(5))
+        listener.start(queue: listenerQueue)
+        let waitResult = semaphore.wait(timeout: .now() + .seconds(5))
         result.lock.lock()
         let err = result.error
         let resolvedPort = result.port
         result.lock.unlock()
         if let err = err {
             throw err
+        }
+        // Fail loudly on timeout rather than silently returning port 0
+        // (which would later surface as a confusing "can't connect").
+        if waitResult == .timedOut {
+            throw WebServerError.listenerStartTimeout
         }
         // Sync port back into the kernel + the web agent's meta.
         kernel.setHttpPort(resolvedPort)
@@ -142,7 +166,7 @@ public final class WebServer: @unchecked Sendable {
                 break
             }
         }
-        connection.start(queue: .global())
+        connection.start(queue: connectionQueue)
     }
 
     private func readRequest(_ connection: NWConnection, accumulated: Data = Data()) {

@@ -5,6 +5,16 @@ A medium that unifies humans and AIs into a single workspace. Recursive
 (`send(target_id, payload)`), plugin-discovered bundles. Every agent
 answers `{type:"reflect"}` — the universal discovery verb.
 
+> **This is the canonical reference implementation** of the Fantastic
+> protocol. When other runtimes (`swift/`, the Apple app's embedded
+> kernel) disagree with this kernel on wire shape, on-disk format,
+> verb payloads, or reflect output, the other runtime is wrong. The
+> protocol surface lives in this file (sections "Architecture",
+> "Universal patterns", "Storage policy") — no separate spec doc.
+> Cross-runtime drift is caught mechanically by
+> `swift/Tests/FantasticParityTests`, which spawns this kernel and
+> byte-diffs replies.
+
 ## Architecture
 
 ```
@@ -91,7 +101,7 @@ fantastic> @core list_agents
 | `ai/ai_chat_webapp` | provider-agnostic chat UI; fronts any backend that answers `send`/`history`/`interrupt` |
 | `canvas/{canvas_backend, canvas_webapp}` | spatial UI host; Liquid-Glass-styled DOM iframes (`get_webapp`) layered with GL views (`get_gl_view`); explicit `add_agent` membership; pure-streaming lifecycle (no polling). Each GL view runs in its own `THREE.Group` container — live `set_gl_source` reload in place (`gl_source_changed`), no canvas refresh. Wheel zoom is horizon-anchored (pulls toward screen center, 2D + GL locked in sync) and smoothed (rAF-lerped toward a `targetZ`). |
 | `canvas/telemetry_pane` | live agent-vis GL view — water-floating sprites + sender→receiver neon wires + traveling pulses + last-10 messages pane; runs inside any canvas's WebGL scene |
-| `kernel_bridge` | cross-kernel comms — pairs of bridge agents exchange `forward` envelopes over memory / WS / SSH+WS / HTTP. WS targets the remote's `web_ws` surface (full duplex); HTTP targets `web_rest` (request/reply only). All transports are **weak binding** — addressed by URL + path only; no shared Python types with the remote kernel. Weak proxy: local→local stays direct. |
+| `kernel_bridge` | cross-kernel comms — **WS-only, asymmetric**. A bridge agent opens a WS to the remote's `web_ws` surface and ships raw `{type:"call", target, payload}` frames; the remote dispatches `kernel.send` exactly like a browser frame and replies over the same socket — **no peer bridge needed**. Transports: memory (test backbone) / ws / ssh+ws. Streaming via `watch_remote` (`{type:"watch", src}` out, `{type:"event"}` back, re-emitted on the bridge's own inbox). All transports are **weak binding** — addressed by URL + path only; no shared Python types with the remote kernel. Weak proxy: local→local stays direct. |
 | `ssh_runner` | remote `fantastic` lifecycle over SSH — start/stop/restart/status + local SSH tunnel for canvas iframing. Pure subprocess ssh; composes with `kernel_bridge` for messaging |
 
 Each bundle is a real Python package with its own `pyproject.toml`,

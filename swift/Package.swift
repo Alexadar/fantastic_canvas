@@ -262,6 +262,10 @@ let package = Package(
                 "FantasticKernelStartup", "FantasticKernel", "FantasticJSON",
             ]
         ),
+        .testTarget(
+            name: "FantasticCLITests",
+            dependencies: ["Fantastic", "FantasticJSON", "FantasticKernel"]
+        ),
 
         .testTarget(
             name: "FantasticBundlesTests",
