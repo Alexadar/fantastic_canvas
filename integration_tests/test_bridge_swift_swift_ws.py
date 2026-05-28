@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from helpers.seeding import seed_bridge_ws, seed_web
+from helpers.seeding import seed_bridge_ws, seed_web, seed_web_ws
 
 
 @pytest.mark.asyncio
@@ -36,8 +36,9 @@ async def test_swift_swift_ws_forward_reflect(
     port_a = free_port()
     port_b = free_port()
 
-    # Swift A (client): web (native WS) + bridge.
+    # Swift A (client): web + web_ws (orchestrator drives A over WS) + bridge.
     seed_web(swift_binary, workdir_a, port_a)
+    seed_web_ws(swift_binary, workdir_a)
     seed_bridge_ws(
         swift_binary, workdir_a,
         agent_id="bridge",
@@ -45,8 +46,9 @@ async def test_swift_swift_ws_forward_reflect(
         peer_port=port_b,
     )
 
-    # Swift B (server): web only (native WS at /<id>/ws).
+    # Swift B (server): web + web_ws (bridge dials B's /<peer_id>/ws).
     seed_web(swift_binary, workdir_b, port_b)
+    seed_web_ws(swift_binary, workdir_b)
 
     # B (server) up first, then A (client). A's daemon boots the
     # bridge → connects to B.

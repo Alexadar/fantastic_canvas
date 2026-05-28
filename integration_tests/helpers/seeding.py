@@ -99,10 +99,9 @@ def seed_web(binary: Path, workdir: Path, port: int) -> None:
 
 
 def seed_web_ws(binary: Path, workdir: Path) -> None:
-    """Persist a `web_ws` agent as a child of `web` (Python-only —
-    Swift's web bundle handles WS natively, but seeding the agent
-    is a no-op there since the bundle isn't installed; weak-load
-    silently skips it on Swift)."""
+    """Persist a `web_ws` agent as a child of `web`. Required on BOTH
+    kernels for WS — the host serves `/<id>/ws` only when a `web_ws`
+    child contributes the route (WS is opt-in, parity with Python)."""
     reply = seed_create(
         binary, workdir,
         handler_module="web_ws.tools",
@@ -111,6 +110,22 @@ def seed_web_ws(binary: Path, workdir: Path) -> None:
     )
     if "error" in reply and "no bundle" not in str(reply.get("error", "")):
         raise RuntimeError(f"web_ws seed failed: {reply}")
+
+
+def seed_web_rest(binary: Path, workdir: Path, agent_id: str = "rest") -> str:
+    """Persist a `web_rest` agent as a child of `web`. Contributes
+    `POST /<self>/<target>` (verb in body) + `GET /<self>/_reflect`
+    routes the host mounts at boot. Returns the agent id. Works on
+    both kernels (web_rest.tools is registered in each)."""
+    reply = seed_create(
+        binary, workdir,
+        handler_module="web_rest.tools",
+        agent_id=agent_id,
+        parent_id="web",
+    )
+    if "error" in reply and "no bundle" not in str(reply.get("error", "")):
+        raise RuntimeError(f"web_rest seed failed: {reply}")
+    return reply.get("id", agent_id)
 
 
 def seed_bridge_ws(

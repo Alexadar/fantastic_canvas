@@ -90,49 +90,72 @@ public enum Persistence {
         }
     }
 
-    /// Walk `<agentsDir>/<id>/agent.json` files and decode each into
-    /// an `AgentRecord`. Matches the per-agent file format Python's
-    /// canonical kernel writes — flat top-level keys (`id`,
-    /// `handler_module`, `parent_id`, plus arbitrary meta fields).
+    /// Recursively walk the nested on-disk agent tree and decode every
+    /// `agent.json` into an `AgentRecord`. The canonical layout nests
+    /// children under their parent:
+    ///
+    ///   <agentsDir>/<id>/agent.json
+    ///   <agentsDir>/<id>/agents/<child>/agent.json
+    ///   <agentsDir>/<id>/agents/<child>/agents/<grandchild>/agent.json
+    ///
+    /// so a shallow read (direct children only) would drop every
+    /// nested agent — canvas members, a `web_ws` under `web`, etc. —
+    /// and the one-shot CLI / daemon would boot a partial fleet.
+    /// Mirrors Python's `_load_children` recursion.
     ///
     /// Failures (missing file, unparseable JSON) are LOGGED to stderr
     /// and skipped — mirrors the weak-load policy the substrate
     /// applies for unknown handler_modules. The kernel deals with a
     /// partial fleet gracefully.
     ///
-    /// Returns records in directory-listing order. The caller is
-    /// expected to wrap in a `KernelState` and call `kernel.load(_:)`
-    /// which validates root + parent integrity.
+    /// Returns records depth-first. The caller wraps them in a
+    /// `KernelState` and calls `kernel.load(_:)`, which wires the tree
+    /// by `parent_id` (order-independent) and validates root + parent
+    /// integrity.
     public static func readAllAgentRecords(from agentsDir: URL) -> [AgentRecord] {
-        let fm = FileManager.default
-        guard
-            let entries = try? fm.contentsOfDirectory(
-                at: agentsDir, includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles])
-        else {
-            return []
-        }
         var records: [AgentRecord] = []
         let decoder = JSONDecoder()
-        for entry in entries {
-            // Each direct child of agentsDir is `<id>/`, containing
-            // an `agent.json`. Skip anything that isn't a dir.
-            var isDir: ObjCBool = false
+        let fm = FileManager.default
+
+        func walk(_ dir: URL) {
             guard
-                fm.fileExists(atPath: entry.path, isDirectory: &isDir),
-                isDir.boolValue
-            else { continue }
-            let agentFile = entry.appendingPathComponent("agent.json")
-            guard let data = try? Data(contentsOf: agentFile) else { continue }
-            do {
-                let record = try decoder.decode(AgentRecord.self, from: data)
-                records.append(record)
-            } catch {
-                FileHandle.standardError.write(
-                    "[kernel] skipping malformed agent.json at \(agentFile.path): \(error)\n"
-                        .data(using: .utf8) ?? Data())
+                let entries = try? fm.contentsOfDirectory(
+                    at: dir, includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles])
+            else {
+                return
+            }
+            for entry in entries {
+                // Each direct child of `dir` is `<id>/`, containing an
+                // `agent.json` plus (optionally) a nested `agents/` dir.
+                var isDir: ObjCBool = false
+                guard
+                    fm.fileExists(atPath: entry.path, isDirectory: &isDir),
+                    isDir.boolValue
+                else { continue }
+                let agentFile = entry.appendingPathComponent("agent.json")
+                if let data = try? Data(contentsOf: agentFile) {
+                    do {
+                        let record = try decoder.decode(AgentRecord.self, from: data)
+                        records.append(record)
+                    } catch {
+                        FileHandle.standardError.write(
+                            "[kernel] skipping malformed agent.json at \(agentFile.path): \(error)\n"
+                                .data(using: .utf8) ?? Data())
+                    }
+                }
+                // Recurse into this agent's children, if any.
+                let childrenDir = entry.appendingPathComponent("agents")
+                var childIsDir: ObjCBool = false
+                if fm.fileExists(atPath: childrenDir.path, isDirectory: &childIsDir),
+                    childIsDir.boolValue
+                {
+                    walk(childrenDir)
+                }
             }
         }
+
+        walk(agentsDir)
         return records
     }
 }

@@ -47,8 +47,9 @@ async def test_python_swift_ws_forward_reflect(
         peer_port=port_b,
     )
 
-    # Swift B: web only (native WS at /<id>/ws).
+    # Swift B: web + web_ws (WS is opt-in via the web_ws child).
     seed_web(swift_binary, workdir_b, port_b)
+    seed_web_ws(swift_binary, workdir_b)
 
     # B (server) up first, then A (client).
     kernel_b = await swift_kernel(workdir_b, port_b)

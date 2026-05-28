@@ -41,20 +41,27 @@ public func computeWebSocketAccept(key: String) -> String {
     return Data(digest).base64EncodedString()
 }
 
-/// Install the WebSocket upgrade handler on `server`. After this,
-/// requests targeting `/<agent_id>/ws` with `Upgrade: websocket`
-/// will be promoted to bidirectional JSON-frame channels routed
-/// through `kernel`.
-public func installWebSocketUpgrade(on server: WebServer, kernel: Kernel) {
-    server.webSocketUpgrade = { agentSegment, connection, request in
-        Task {
-            await handleUpgrade(
-                agentSegment: agentSegment,
-                connection: connection,
-                request: request,
-                kernel: kernel
-            )
-        }
+/// Run the shared WebSocket proxy for an upgrade request. The host's
+/// route matcher calls this when a `web_ws`-contributed
+/// `/{host_id}/ws` route matches — `hostId` is the captured path
+/// segment (the agent whose inbox the connection auto-watches).
+/// Promotes the connection to a bidirectional JSON-frame channel
+/// routed through `kernel`. This is the shared machinery `web_ws`
+/// reuses (analog of Python's `web/_proxy.run`) — the WS logic lives
+/// in the host module, the `web_ws` bundle only declares the route.
+public func runWebSocketProxy(
+    hostId: String,
+    connection: NWConnection,
+    request: HTTPRequest,
+    kernel: Kernel
+) {
+    Task {
+        await handleUpgrade(
+            agentSegment: hostId,
+            connection: connection,
+            request: request,
+            kernel: kernel
+        )
     }
 }
 

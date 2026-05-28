@@ -44,6 +44,10 @@ public struct CanvasBackendBundle: AgentBundle {
                     "discover": "args: x, y, w(>0), h(>0). Returns {agents:[{id,x,y,width,height}]} intersecting the query rect.",
                     "list_members": "Returns [{id}] for every child.",
                 ] as JSON,
+                "emits": [
+                    "members_updated":
+                        "{type:'members_updated', members:[id,...]} — broadcast on this canvas's inbox after every add_agent / remove_agent"
+                ] as JSON,
             ] as JSON
         case "boot", "shutdown":
             return .object(["ok": .bool(true)])

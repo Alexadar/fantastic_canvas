@@ -10,6 +10,24 @@ import Testing
 
 @Suite("WebSocket", .serialized)
 struct WebSocketTests {
+    /// WS is opt-in (parity with Python): the host serves `/<id>/ws`
+    /// only when a `web_ws` child contributes the route. `web` already
+    /// auto-booted via `startKernelInMemory`, so create the child then
+    /// hot-`mount` it onto the live server.
+    private func mountWebWS(_ kernel: Kernel) async {
+        let rec = await kernel.send(
+            AgentId("web"),
+            .object([
+                "type": .string("create_agent"),
+                "handler_module": .string("web_ws.tools"),
+                "id": .string("web_ws"),
+            ]))
+        let wsId = rec["id"].asString ?? "web_ws"
+        _ = await kernel.send(
+            AgentId("web"),
+            .object(["type": .string("mount"), "child_id": .string(wsId)]))
+    }
+
     @Test func computeAcceptMatchesRFC() {
         // RFC 6455 example: key "dGhlIHNhbXBsZSBub25jZQ==" → accept
         // "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
@@ -60,6 +78,7 @@ struct WebSocketTests {
         let kernel = try await startKernelInMemory(portHint: 0)
         _ = await kernel.send(
             AgentId("web"), .object(["type": .string("boot")]))
+        await mountWebWS(kernel)
         defer {
             Task {
                 _ = await kernel.send(
@@ -116,6 +135,7 @@ struct WebSocketTests {
         let kernel = try await startKernelInMemory(portHint: 0)
         _ = await kernel.send(
             AgentId("web"), .object(["type": .string("boot")]))
+        await mountWebWS(kernel)
         defer {
             Task {
                 _ = await kernel.send(

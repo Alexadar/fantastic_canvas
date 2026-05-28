@@ -20,6 +20,8 @@ import FantasticScheduler
 import FantasticTelemetryPane
 import FantasticTerminalWebapp
 import FantasticTools
+import FantasticWebRest
+import FantasticWebWS
 import Foundation
 import Testing
 
@@ -37,6 +39,8 @@ func makeKernelWithAll() -> Kernel {
     registry.register("terminal_webapp.tools", TerminalWebappBundle())
     registry.register("telemetry_pane.tools", TelemetryPaneBundle())
     registry.register("kernel_bridge.tools", KernelBridgeBundle())
+    registry.register("web_ws.tools", WebWSBundle())
+    registry.register("web_rest.tools", WebRestBundle())
     let kernel = Kernel(storage: .inMemory, bundles: registry)
     let root = Agent(id: "core", handlerModule: nil, parentId: nil)
     kernel.register(root)
@@ -311,5 +315,68 @@ struct BundleSmokeTests {
         // Just verify the token works for unsubscribe — full CLI
         // output testing is overkill for a smoke test.
         kernel.unsubscribe(token)
+    }
+
+    @Test func webWSGetRoutesShape() async {
+        let kernel = makeKernelWithAll()
+        _ = await kernel.send(
+            "core",
+            ["type": "create_agent", "handler_module": "web_ws.tools", "id": "ws"])
+        let r = await kernel.send("ws", ["type": "get_routes"])
+        let routes = r["routes"].asArray ?? []
+        #expect(routes.count == 1)
+        #expect(routes.first?["kind"].asString == "websocket")
+        #expect(routes.first?["path"].asString == "/{host_id}/ws")
+    }
+
+    @Test func webRestGetRoutesNamespacedBySelf() async {
+        let kernel = makeKernelWithAll()
+        _ = await kernel.send(
+            "core",
+            ["type": "create_agent", "handler_module": "web_rest.tools", "id": "rest"])
+        let r = await kernel.send("rest", ["type": "get_routes"])
+        let paths = (r["routes"].asArray ?? []).compactMap { $0["path"].asString }
+        #expect(paths.contains("/rest/{target}"))
+        #expect(paths.contains("/rest/_reflect"))
+        #expect(paths.contains("/rest/_reflect/{target}"))
+    }
+
+    @Test func webRestHandleRoutePostDispatchesBodyVerb() async {
+        let kernel = makeKernelWithAll()
+        _ = await kernel.send(
+            "core",
+            ["type": "create_agent", "handler_module": "web_rest.tools", "id": "rest"])
+        // Simulate the host calling handle_route for
+        // POST /rest/core  body={type:list_agents}.
+        let reply = await kernel.send(
+            "rest",
+            [
+                "type": "handle_route",
+                "method": "POST",
+                "params": ["target": "core"] as JSON,
+                "query": [:] as JSON,
+                "body": "{\"type\":\"list_agents\"}",
+            ])
+        #expect(reply["status"].asInt == 200)
+        #expect(reply["content_type"].asString == "application/json")
+        let body = reply["body"].asString ?? ""
+        #expect(body.contains("\"core\""))
+    }
+
+    @Test func webRestHandleRouteBadJsonIs400() async {
+        let kernel = makeKernelWithAll()
+        _ = await kernel.send(
+            "core",
+            ["type": "create_agent", "handler_module": "web_rest.tools", "id": "rest"])
+        let reply = await kernel.send(
+            "rest",
+            [
+                "type": "handle_route",
+                "method": "POST",
+                "params": ["target": "core"] as JSON,
+                "query": [:] as JSON,
+                "body": "not json",
+            ])
+        #expect(reply["status"].asInt == 400)
     }
 }

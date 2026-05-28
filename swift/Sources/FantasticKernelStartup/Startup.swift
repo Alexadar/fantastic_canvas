@@ -30,6 +30,8 @@ import FantasticTelemetryPane
 import FantasticTerminalWebapp
 import FantasticTools
 import FantasticWeb
+import FantasticWebRest
+import FantasticWebWS
 import Foundation
 
 #if os(macOS)
@@ -57,6 +59,8 @@ public func defaultBundleRegistry() -> BundleRegistry {
     r.register("telemetry_pane.tools", TelemetryPaneBundle())
     r.register("kernel_bridge.tools", KernelBridgeBundle())
     r.register("web.tools", WebBundle())
+    r.register("web_ws.tools", WebWSBundle())
+    r.register("web_rest.tools", WebRestBundle())
     r.register("ollama_backend.tools", OllamaBackendBundle())
     r.register("nvidia_nim_backend.tools", NvidiaNimBundle())
     r.register("foundation_models_backend.tools", FoundationModelsBackendBundle())

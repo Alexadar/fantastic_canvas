@@ -37,6 +37,7 @@ async def test_swift_python_ws_forward_reflect(
 
     # Swift A: web (native WS, no web_ws child needed) + bridge.
     seed_web(swift_binary, workdir_a, port_a)
+    seed_web_ws(swift_binary, workdir_a)  # WS is opt-in: host needs a web_ws child
     seed_bridge_ws(
         swift_binary, workdir_a,
         agent_id="bridge",

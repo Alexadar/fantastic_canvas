@@ -29,6 +29,7 @@ async def test_swift_python_ws_watch_remote_streams_event(
 
     # Swift A (client): web (native WS) + bridge.
     seed_web(swift_binary, workdir_a, port_a)
+    seed_web_ws(swift_binary, workdir_a)  # WS opt-in (orchestrator + watch)
     seed_bridge_ws(
         swift_binary, workdir_a,
         agent_id="bridge",

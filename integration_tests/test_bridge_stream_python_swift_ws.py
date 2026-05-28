@@ -39,8 +39,9 @@ async def test_python_swift_ws_watch_remote_streams_event(
         peer_port=port_b,
     )
 
-    # Swift B (server): web only (native WS).
+    # Swift B (server): web + web_ws (WS opt-in; bridge dials + ws_emit).
     seed_web(swift_binary, workdir_b, port_b)
+    seed_web_ws(swift_binary, workdir_b)
 
     kernel_b = await swift_kernel(workdir_b, port_b)
     kernel_a = await python_kernel(workdir_a, port_a)

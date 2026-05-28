@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from helpers.seeding import seed_bridge_ws, seed_web
+from helpers.seeding import seed_bridge_ws, seed_web, seed_web_ws
 from helpers.streaming import assert_watch_remote_streams
 
 
@@ -26,8 +26,9 @@ async def test_swift_swift_ws_watch_remote_streams_event(
     port_a = free_port()
     port_b = free_port()
 
-    # Swift A (client): web (native WS) + bridge.
+    # Swift A (client): web + web_ws (orchestrator + watch over WS) + bridge.
     seed_web(swift_binary, workdir_a, port_a)
+    seed_web_ws(swift_binary, workdir_a)
     seed_bridge_ws(
         swift_binary, workdir_a,
         agent_id="bridge",
@@ -35,8 +36,9 @@ async def test_swift_swift_ws_watch_remote_streams_event(
         peer_port=port_b,
     )
 
-    # Swift B (server): web only.
+    # Swift B (server): web + web_ws (bridge dials + ws_emit).
     seed_web(swift_binary, workdir_b, port_b)
+    seed_web_ws(swift_binary, workdir_b)
 
     kernel_b = await swift_kernel(workdir_b, port_b)
     kernel_a = await swift_kernel(workdir_a, port_a)

@@ -49,6 +49,8 @@ let package = Package(
             "FantasticCliBundle",
             "FantasticKernelBridge",
             "FantasticWeb",
+            "FantasticWebWS",
+            "FantasticWebRest",
             "FantasticOllamaBackend",
             "FantasticNvidiaNimBackend",
             "FantasticFoundationModelsBackend",
@@ -157,6 +159,21 @@ let package = Package(
                 .copy("Resources/transport.js"),
             ]
         ),
+        // Composable web surfaces (children of a `web` host). They run
+        // no server — they return `get_routes` descriptors the host
+        // mounts. WS handling is the host's shared proxy, so neither
+        // depends on FantasticWeb (no cycle).
+        .target(
+            name: "FantasticWebWS",
+            dependencies: ["FantasticKernel", "FantasticJSON"]
+        ),
+        .target(
+            name: "FantasticWebRest",
+            dependencies: [
+                "FantasticKernel", "FantasticJSON",
+                .product(name: "OrderedCollections", package: "swift-collections"),
+            ]
+        ),
 
         // ── LLM backends (Phase 5 / 8D) ──────────────────────────
         .target(
@@ -206,7 +223,7 @@ let package = Package(
                 "FantasticCanvasBackend", "FantasticCanvasWebapp",
                 "FantasticAiChatWebapp", "FantasticTerminalWebapp",
                 "FantasticTelemetryPane", "FantasticCliBundle",
-                "FantasticKernelBridge", "FantasticWeb",
+                "FantasticKernelBridge", "FantasticWeb", "FantasticWebWS", "FantasticWebRest",
                 "FantasticOllamaBackend", "FantasticNvidiaNimBackend",
                 "FantasticFoundationModelsBackend",
                 "FantasticLocalRunner", "FantasticPythonRuntime",
@@ -276,7 +293,7 @@ let package = Package(
                 "FantasticCanvasBackend", "FantasticCanvasWebapp",
                 "FantasticAiChatWebapp", "FantasticTerminalWebapp",
                 "FantasticTelemetryPane", "FantasticCliBundle",
-                "FantasticKernelBridge", "FantasticWeb",
+                "FantasticKernelBridge", "FantasticWeb", "FantasticWebWS", "FantasticWebRest",
             ]
         ),
     ]

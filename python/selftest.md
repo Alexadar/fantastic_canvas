@@ -137,7 +137,7 @@ agent answers them natively for its own children, so there's no
 | `bundled_agents/canvas/telemetry_pane/selftest.md` | webapp, web | live agent-vis GL view; subscribes to kernel state stream |
 | `bundled_agents/canvas/gl_agent/selftest.md` | kernel, http, web | GL-view-as-record agent; mirror of html_agent for inline `gl_source` |
 | `bundled_agents/canvas/html_agent/selftest.md` | kernel, http, web | UI-as-record agent; render_html duck type; cross-agent calls from iframe |
-| `bundled_agents/kernel_bridge/selftest.md` | kernel, ws, ssh | cross-kernel forward envelopes; memory + WS + SSH+WS transports |
+| `bundled_agents/kernel_bridge/selftest.md` | kernel, ws, ssh | cross-kernel WS bridge — asymmetric raw call frames to remote `web_ws` (no peer bridge); memory + WS + SSH+WS transports; streaming via `watch_remote` |
 | `bundled_agents/ssh_runner/selftest.md` | kernel, ssh | remote `fantastic` lifecycle; SSH tunnel for canvas iframing |
 | `bundled_agents/python_runtime/selftest.md` | kernel | subprocess Python exec; timeout / interrupt / cwd |
 
