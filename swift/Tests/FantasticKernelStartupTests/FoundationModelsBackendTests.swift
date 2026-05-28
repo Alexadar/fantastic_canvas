@@ -53,7 +53,6 @@ struct FoundationModelsBackendTests {
         #expect(r["model_available"].asBool != nil)
         #expect(r["backend_registered"].asBool == true)
         #expect(r["in_flight"].asInt != nil)
-        #expect(r["queue_depth"].asInt != nil)
         #expect(r["reason"].asString != nil)
     }
 

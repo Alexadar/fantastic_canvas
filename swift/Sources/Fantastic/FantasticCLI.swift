@@ -1,9 +1,13 @@
 // `fantastic` CLI binary.
 //
-// Mirrors Rust's `fantastic-cli`. Supports:
-//   - `fantastic reflect [<id>]` — one-shot reflect (root or named id)
+// Supports:
+//   - `fantastic reflect [<id>]`        — one-shot reflect
 //   - `fantastic <id> <verb> [k=v ...]` — one-shot RPC
-//   - (no args) — daemon mode placeholder (real daemon lands with 8H)
+//   - `fantastic chat [<workdir>]`      — interactive REPL probe
+//                                         talking to the canvas
+//                                         agent surface via the
+//                                         Apple FM backend bundle
+//   - (no args)                          — usage banner
 
 import FantasticJSON
 import FantasticKernel
@@ -24,6 +28,15 @@ func parseKV(_ s: String) -> JSON {
 struct FantasticCLI {
     static func main() async {
         let args = CommandLine.arguments.dropFirst()
+
+        // `chat` boots a disk-backed kernel against a workdir, so
+        // we branch BEFORE the in-memory boot below.
+        if args.first == "chat" {
+            let workdir = args.dropFirst().first.map { String($0) } ?? "./.fantastic-chat"
+            await ChatMode.run(workdir: workdir)
+            return
+        }
+
         let kernel: Kernel
         do {
             kernel = try await startKernelInMemory(portHint: 0)
@@ -35,7 +48,12 @@ struct FantasticCLI {
 
         if args.isEmpty {
             print(
-                "fantastic (Swift port) — usage: fantastic reflect [<id>] | fantastic <id> <verb> [k=v ...]"
+                """
+                fantastic (Swift port) — usage:
+                  fantastic reflect [<id>]
+                  fantastic <id> <verb> [k=v ...]
+                  fantastic chat [<workdir>]
+                """
             )
             return
         }
