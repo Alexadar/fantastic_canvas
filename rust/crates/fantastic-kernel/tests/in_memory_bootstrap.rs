@@ -1,7 +1,7 @@
 //! End-to-end test that `BootstrapOptions::in_memory()` boots a
 //! fully-functional kernel WITHOUT touching the filesystem.
 //!
-//! This is the foundation for the Swift app's "brain" kernel — an
+//! This is the foundation for an embedding app's "brain" kernel — an
 //! always-running in-process kernel that never persists to disk and
 //! exposes its state on demand via [`Kernel::save`] / [`Kernel::load`].
 

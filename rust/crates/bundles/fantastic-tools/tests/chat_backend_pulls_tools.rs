@@ -3,11 +3,11 @@
 //! {list_for_llm})`. Proves the brain-kernel step-5 chain:
 //!
 //!   `kernel.send("fm", {send, text})`
-//!     → ProxyAgent bundle forwards to Swift-style host
+//!     → ProxyAgent bundle forwards to the embedding host
 //!     → host's `handle` spawns a task that calls
 //!       `kernel.send("tools", {list_for_llm})`
-//!     → captured tools_json shape matches what Swift would feed
-//!       Apple-FM `LanguageModelSession.tools`
+//!     → captured tools_json shape matches what an embedding host would feed
+//!       its LLM tool list
 //!
 //! Replaces the old fm_tools_roundtrip.rs after FM bundle removal.
 //! Same coverage, generic mechanism — works on any platform.
@@ -36,7 +36,7 @@ fn test_lock() -> MutexGuard<'static, ()> {
 
 /// A chat-backend proxy_agent host that, on `send`, pulls
 /// `list_for_llm` from the tools agent and records what it got.
-/// Stands in for the Swift `FoundationModelsProxyHost` in tests.
+/// Stands in for an embedding-host LLM proxy in tests.
 struct ChatBackendHost {
     kernel_and_id: Mutex<Option<(Arc<Kernel>, AgentId)>>,
     captured: Arc<Mutex<Option<Value>>>,

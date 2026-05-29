@@ -14,7 +14,7 @@
 //! `with_sender` task-local with the target id before invoking a
 //! bundle, so bundles can't read the original sender from
 //! `current_sender()` — we surface it as an explicit field instead.
-//! The UniFFI sugar wrappers (`Kernel::register_tool`, etc.) take a
+//! The convenience wrappers (`Kernel::register_tool`, etc.) take a
 //! `sender_id` param and inject it into the payload transparently.
 //! Every entry stores the agent id that registered it; on logout /
 //! mode change the owner calls `unregister_by_sender` to drop all

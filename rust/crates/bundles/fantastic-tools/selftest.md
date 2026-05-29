@@ -172,52 +172,39 @@ Expect:
 | 9. cascade delete | | |
 | 10. cargo + example | | |
 
-## End-to-end with a Swift chat backend (manual, after app-claude wires up)
+## End-to-end with a chat backend (manual, after the app wires up)
 
-The chat backend is a `proxy_agent.tools` agent backed by a Swift
-host implementing `ProxyAgentHost`. The same agent answers every
-chat verb (`send` / `history` / `interrupt` / `backend_state` /
+The chat backend is a `proxy_agent.tools` agent backed by an
+embedding-host LLM impl — a plain-Rust implementor of the proxy-agent
+trait (the in-process app, or a test mock). The same agent answers
+every chat verb (`send` / `history` / `interrupt` / `backend_state` /
 `reflect`) and pulls tools from this registry inside its `send`
 handler.
 
-```swift
-// 1. Create the tools agent + the chat backend (proxy_agent) agent.
-_ = try await kernel.sendJson(
-    targetId: "core",
-    payloadJson: #"{"type":"create_agent","handler_module":"tools.tools","id":"tools"}"#
-)
-_ = try await kernel.sendJson(
-    targetId: "core",
-    payloadJson: #"{"type":"create_agent","handler_module":"proxy_agent.tools","id":"fm"}"#
-)
+```bash
+# 1. Create the tools agent + the chat backend (proxy_agent) agent.
+$FANTASTIC core create_agent handler_module=tools.tools id=tools
+$FANTASTIC core create_agent handler_module=proxy_agent.tools id=fm
 
-// 2. Register the Swift host that wraps LanguageModelSession.
-//    The host's `handle({type:"send"})` pulls list_for_llm internally
-//    and streams tokens back via kernel.proxyEmit on the fm agent's
-//    inbox.
-kernel.registerProxyAgent(agentId: "fm",
-                          host: FoundationModelsProxyHost(kernel: kernel))
+# 2. Register the host LLM impl in process: kernel.register_proxy_agent("fm", host).
+#    The host's handle({type:"send"}) pulls list_for_llm internally and
+#    streams tokens back as emit events on the fm agent's own inbox.
 
-// 3. Register tools (sugar wrapper).
-_ = try await kernel.registerTool(
-    senderId: "weather_provider",
-    name: "get_weather",
-    agentId: "weather_provider",
-    verb: nil,
-    description: "Returns the current weather for a city.",
-    parametersSchemaJson: #"{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}"#
-)
+# 3. Register tools (convenience wrapper or raw send).
+$FANTASTIC tools register \
+  sender=weather_provider \
+  name=get_weather \
+  agent_id=weather_provider \
+  description="Returns the current weather for a city." \
+  parameters_schema='{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}'
 
-// 4. Chat now flows through the fm agent. ai_chat_webapp talks to
-//    "fm" the same way it would talk to any chat backend.
-_ = try await kernel.sendJson(
-    targetId: "fm",
-    payloadJson: #"{"type":"send","text":"What's the weather in Paris?","client_id":"cli"}"#
-)
-// → host pulls list_for_llm → builds LanguageModelSession with tools
-// → streams tokens via kernel.proxyEmit("fm", {type:"token", ...})
-// → ai_chat_webapp's watcher receives them and re-renders
+# 4. Chat now flows through the fm agent. The web-app chat consumer
+#    talks to "fm" the same way it would talk to any chat backend.
+$FANTASTIC fm send text="What's the weather in Paris?" client_id=cli
+# → host pulls list_for_llm → builds an LLM session with tools
+# → streams tokens via emit events on "fm" ({type:"token", ...})
+# → the web-app's watcher receives them and re-renders
 
-// 5. Cleanup on logout / mode change.
-_ = try await kernel.unregisterToolsBySender(senderId: "weather_provider")
+# 5. Cleanup on logout / mode change.
+$FANTASTIC tools unregister_by_sender sender=weather_provider
 ```

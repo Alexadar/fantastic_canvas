@@ -2,12 +2,12 @@
 
 > scopes: bundle wire-shape, graceful-degrade
 > requires: `cargo build --release --bin fantastic`
-> out-of-scope: bidirectional streaming (no Swift host in the CLI)
+> out-of-scope: bidirectional streaming (no embedding host in the CLI)
 
 CLI-driven smoke for the verb wire shape. The streaming +
 bidirectional path is covered by the cargo unit tests and the
 runnable example (`cargo run -p fantastic-proxy-agent --example
-proxy_mock_session`), since the CLI has no Swift host wired in.
+proxy_mock_session`), since the CLI has no embedding host wired in.
 
 ## Pre-flight
 
@@ -60,7 +60,7 @@ jq -e '.reason == "no_host"' /tmp/fk_proxy/render.json
 jq -e '.error | contains("no host registered")' /tmp/fk_proxy/render.json
 ```
 
-Expect: structured error — Swift / UI client uses `reason` to
+Expect: structured error — the embedding host / UI uses `reason` to
 decide UX (e.g. show "loading" until host is registered).
 
 ### Test 5: shutdown without host returns ok
@@ -85,12 +85,12 @@ the CLI level).
 
 ### Test 7: chat-backend verb shape via CLI (no host)
 
-Verifies the wire shape the Swift LLM chat backend speaks. CLI
-process has no Swift host registered, so every verb returns the
+Verifies the wire shape the LLM chat backend speaks. CLI
+process has no embedding host registered, so every verb returns the
 graceful `no_host` envelope — that's exactly what proves the
 verbs are reaching the bundle. Multi-step state verification
 happens via cargo unit tests + the runnable example (the CLI
-can't drive a Swift host).
+can't drive an embedding host).
 
 ```bash
 $FANTASTIC core create_agent handler_module=proxy_agent.tools id=fm \
@@ -117,8 +117,8 @@ jq -e '.kind == "proxy_agent"' /tmp/fk_proxy/fm_reflect.json
 jq -e '.host_registered == false' /tmp/fk_proxy/fm_reflect.json
 ```
 
-Expect: every chat verb routes correctly at the bundle level; once a
-Swift host is registered (in production), `handle(payload_json)` is
+Expect: every chat verb routes correctly at the bundle level; once an
+embedding host is registered (in production), `handle(payload_json)` is
 where the actual chat backend logic fires.
 
 ### Test 8: cargo tests (the bidirectional + streaming path)
@@ -146,27 +146,26 @@ Expect:
 | 7. chat-backend verb shape |  |  |
 | 8. cargo tests + example |  |  |
 
-## End-to-end with a Swift host (manual, after app-side wires up)
+## End-to-end with an embedding host (manual, once a host is wired)
 
-```swift
-let kernel = try await startKernelInMemory(portHint: 0)
-_ = try await kernel.sendJson(targetId: "core",
-    payloadJson: #"{"type":"create_agent","handler_module":"proxy_agent.tools","id":"chat_ui"}"#)
-try kernel.registerProxyAgent(agentId: "chat_ui", host: ChatUIHost())
+A host is plain Rust: an implementor of the bundle's host trait
+(the in-process app, or a test mock like `proxy_mock_session`).
+Once `create_agent handler_module=proxy_agent.tools id=chat_ui`
+has run, the embedding app registers its host against that agent
+id. From then on the verb/emit flow is:
 
-// Other agents address the UI:
-_ = try await kernel.sendJson(targetId: "chat_ui",
-    payloadJson: #"{"type":"render_token","delta":"Paris"}"#)
-// → ChatUIHost.handle fires; SwiftUI re-renders on MainActor
+- **Inbound verbs.** Other agents address the UI agent (e.g. a
+  `render_token` verb with `delta="Paris"`). The bundle forwards
+  the payload to the registered host's `handle(payload_json)`,
+  which the app uses to update its own view state. With no host
+  registered this same verb returns the `no_host` envelope (Test 4).
+- **Outbound with sender attribution.** The UI agent sends a verb
+  to another agent (e.g. `send text="Hi"` to `chat`) carrying its
+  own id as sender, so the resulting state event records
+  `sender="chat_ui"`.
+- **Broadcast emit.** The host emits an event (e.g.
+  `focus_changed focused=true`) that the bundle fans out to every
+  watcher of `chat_ui`.
 
-// UI sends WITH sender attribution:
-_ = try await kernel.sendJsonAs(senderId: "chat_ui",
-    targetId: "chat",
-    payloadJson: #"{"type":"send","text":"Hi"}"#)
-// → state event carries sender="chat_ui"
-
-// UI broadcasts state:
-try await kernel.proxyEmit(agentId: "chat_ui",
-    eventJson: #"{"type":"focus_changed","focused":true}"#)
-// → watchers of chat_ui receive the event
-```
+The cargo unit tests + the `proxy_mock_session` example exercise
+this full inbound/outbound/emit loop against a plain-Rust mock host.

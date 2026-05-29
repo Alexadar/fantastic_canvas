@@ -10,7 +10,7 @@
 //!   `fantastic-web` WebSocket surface.
 //!
 //! Frame shape on the wire (asymmetric — bridge is a pure client;
-//! mirrors Python/Swift kernel_bridge):
+//! mirrors the Python kernel_bridge):
 //!
 //! ```text
 //! outbound  {type:"call",  id:corr, target, payload}

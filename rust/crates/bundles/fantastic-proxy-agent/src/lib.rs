@@ -2,15 +2,15 @@
 //!
 //! Every verb dispatched to a `proxy_agent` instance forwards to a
 //! host implementation of [`ProxyAgentHost`] keyed by the agent's id.
-//! Hosts live in the embedding app (Swift via UniFFI callback in
-//! production; plain-Rust impls in tests). The bundle itself is
+//! Hosts live in the embedding Rust app (an in-process implementor in
+//! production; plain-Rust mocks in tests). The bundle itself is
 //! stateless — all per-agent state lives in the host.
 //!
-//! The primary use is **SwiftUI views as first-class agents** —
-//! addressable, in the reflect tree, lifecycle-managed by standard
-//! `create_agent` / `delete_agent`. The same mechanism cleanly
-//! serves any host-driven feature: AppIntents bridges, Vision
-//! adapters, Clipboard helpers, JavaScript runtimes, future things.
+//! The primary use is **embedding-app views/features as first-class
+//! agents** — addressable, in the reflect tree, lifecycle-managed by
+//! standard `create_agent` / `delete_agent`. The same mechanism
+//! cleanly serves any host-driven feature: intent bridges, vision
+//! adapters, clipboard helpers, scripting runtimes, future things.
 //! Naming is `ProxyAgent` because UI is one consumer, not the only
 //! one.
 //!
@@ -32,13 +32,12 @@
 //!
 //! ## Two-way streaming
 //!
-//! UniFFI 0.29 doesn't allow nested callback interfaces, so host
-//! callbacks are sync (`handle(payload_json) -> reply_json`). For
-//! UI-originated streams back to the kernel, the host returns
+//! Host callbacks are sync (`handle(payload_json) -> reply_json`).
+//! For host-originated streams back to the kernel, the host returns
 //! `{queued: true, stream_id}` synchronously, then fires async
-//! events via `Kernel::proxy_emit(agent_id, event_json)` (in
-//! `fantastic-uniffi`). For sender-attributed UI-to-agent sends,
-//! the UI calls `Kernel::send_json_as`.
+//! events via `Kernel::proxy_emit(agent_id, event_json)`. For
+//! sender-attributed host-to-agent sends, the host calls
+//! `Kernel::send_json_as`.
 
 #![deny(missing_docs)]
 
@@ -57,15 +56,13 @@ pub const README: &str = include_str!("readme.md");
 
 // ── host trait ────────────────────────────────────────────────────
 
-/// Trait the embedding host implements. Swift via UniFFI in
-/// production; plain-Rust impls drive the unit tests.
+/// Trait the embedding host implements. An in-process Rust
+/// implementor in production; plain-Rust mocks drive the unit tests.
 ///
-/// All methods are sync — UniFFI 0.29 callback-interface methods
-/// can't be async. Implementations that do async work internally
-/// (SwiftUI updates on `MainActor`, network calls) should kick off
-/// a task inside `handle` and return a sync ack. Async events back
-/// to the kernel ride through `Kernel::proxy_emit` (in
-/// `fantastic-uniffi`).
+/// All methods are sync. Implementations that do async work
+/// internally (UI updates, network calls) should kick off a task
+/// inside `handle` and return a sync ack. Async events back to the
+/// kernel ride through `Kernel::proxy_emit`.
 pub trait ProxyAgentHost: Send + Sync {
     /// Verb dispatch. JSON payload in, JSON reply out. The reply
     /// can be `{"ok":true}` as a fire-and-forget ack or a real
@@ -198,8 +195,8 @@ impl Bundle for ProxyAgentBundle {
     ) -> Result<(), BundleError> {
         // Lifecycle hook fires BEFORE the agent unregisters. Call the
         // host's hook first so it can clean up (cancel tasks, drop
-        // SwiftUI bindings, etc.), THEN drop the host from the
-        // registry. If no host registered, both are no-ops.
+        // UI bindings, etc.), THEN drop the host from the registry.
+        // If no host registered, both are no-ops.
         if let Some(h) = host_for(agent_id) {
             h.on_delete();
         }

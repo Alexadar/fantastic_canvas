@@ -1,6 +1,6 @@
 //! Bootstrap — the canonical "wake a kernel" entry.
 //!
-//! Every caller (CLI daemon, one-shot RPC, Swift-embedded library,
+//! Every caller (CLI daemon, one-shot RPC, embedded library,
 //! integration tests) goes through here so the boot sequence stays
 //! identical:
 //!
@@ -77,7 +77,7 @@ impl BootstrapOptions {
     }
 
     /// In-memory bootstrap — no filesystem I/O, no lock. Used by the
-    /// Swift app's "brain" kernel and by tests that don't want to
+    /// embedding app's "brain" kernel and by tests that don't want to
     /// touch disk. The kernel still answers [`Kernel::save`] /
     /// [`Kernel::load`]; the consumer drives any persistence
     /// externally.

@@ -1,6 +1,6 @@
 //! Bundle unit tests.
 //!
-//! Uses a plain-Rust [`MockHost`] in place of Swift. Tests serialize
+//! Uses a plain-Rust [`MockHost`] as the host impl. Tests serialize
 //! via [`test_lock`] because the bundle's host registry is
 //! process-global — multiple parallel tests would otherwise see each
 //! other's hosts. Same isolation pattern as the FM bundle's tests.
@@ -312,8 +312,8 @@ async fn host_can_return_ok_ack_by_default() {
 // ── Worked example: chat backend on proxy_agent ─────────────────────
 //
 // These tests prove the chat-backend verb shape works on top of the
-// generic proxy_agent. The pattern is what Swift hosts use to wrap
-// Apple FM (or any other on-device LLM):
+// generic proxy_agent. The pattern is what an embedding host uses to
+// wrap an on-device LLM:
 //
 //   handle({type:"send"})   → returns {queued, stream_id} immediately,
 //                              then a background task streams tokens
@@ -331,8 +331,8 @@ async fn host_can_return_ok_ack_by_default() {
 // watcher fanout) is verified below.
 
 /// Mock chat-backend host. Shared state lives behind Arc<Mutex<_>>
-/// so the spawned streaming task can mutate it. Models a Swift host
-/// that holds a `LanguageModelSession` plus per-turn bookkeeping.
+/// so the spawned streaming task can mutate it. Models an embedding
+/// host that holds an LLM session plus per-turn bookkeeping.
 struct ChatBackendMockHost {
     history: Arc<Mutex<Vec<Value>>>,
     cancel_flag: Arc<AtomicUsize>,
@@ -373,8 +373,8 @@ impl ProxyAgentHost for ChatBackendMockHost {
                     "role":"user","content":text,"complete":true
                 }));
                 // Stream two tokens + a done event from a spawned task,
-                // simulating what a Swift host does with kernel.proxyEmit
-                // inside its LanguageModelSession callback.
+                // simulating what an embedding host does via the kernel
+                // proxy-emit path inside its LLM session callback.
                 let kid = self.kernel_and_id.lock().unwrap().clone();
                 let notify = Arc::clone(&self.stream_done);
                 if let Some((k, id)) = kid {

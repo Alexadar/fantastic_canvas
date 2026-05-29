@@ -2,8 +2,8 @@
 //!
 //! Bundles aren't dynamically loaded — every Rust bundle is a crate
 //! linked into the binary at compile time. The CLI crate links the
-//! default set; the UniFFI crate links a platform-appropriate subset.
-//! Adding a bundle to a build means adding its crate to the workspace
+//! default set; an embedding build may link a platform-appropriate
+//! subset. Adding a bundle to a build means adding its crate to the workspace
 //! and calling `reg.register(...)` in the relevant
 //! `register_default_bundles()` site.
 //!

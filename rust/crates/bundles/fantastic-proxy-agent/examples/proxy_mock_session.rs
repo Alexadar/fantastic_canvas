@@ -1,7 +1,7 @@
 //! End-to-end demo for the proxy_agent bundle. Two host-implemented
 //! agents (`chat_ui` + `settings_ui`) talk to each other through the
-//! kernel — same flow a Swift app would drive, with a plain-Rust
-//! mock host in place of a SwiftUI binding.
+//! kernel — same flow an embedding host would drive, with a plain-Rust
+//! mock host as the host impl.
 //!
 //! Run: `cargo run -p fantastic-proxy-agent --example proxy_mock_session`
 
@@ -106,7 +106,7 @@ async fn main() {
         assert_or_die(r["id"] == id, &format!("created {id}"));
     }
 
-    banner("Step 3: register Swift-style hosts (PrintingHost) for both");
+    banner("Step 3: register embedding hosts (PrintingHost) for both");
     let chat = AgentId::from("chat_ui");
     let settings = AgentId::from("settings_ui");
     let chat_host = PrintingHost::new("chat_ui");

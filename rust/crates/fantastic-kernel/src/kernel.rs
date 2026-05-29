@@ -33,9 +33,9 @@ pub type StateSubscriber = Arc<dyn Fn(&Value) + Send + Sync>;
 /// Opaque token returned by [`Kernel::add_state_subscriber`]; pass to
 /// [`Kernel::remove_state_subscriber`] to detach.
 ///
-/// The inner `u64` is `pub` so foreign-language bindings (e.g.
-/// fantastic-uniffi for Swift) can round-trip the value through a
-/// primitive type. Treat it as opaque from Rust callers — its
+/// The inner `u64` is `pub` so embedding consumers can round-trip the
+/// value through a primitive type (e.g. a JSON string) across a
+/// process boundary. Treat it as opaque from Rust callers — its
 /// numeric value carries no meaning beyond "token issued by this
 /// kernel".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -192,7 +192,7 @@ impl Kernel {
     }
 
     /// [`Self::save`] serialized to JSON. Used by [`Self::maybe_flush`]
-    /// (Disk auto-sync) and by the UniFFI surface (Swift consumers).
+    /// (Disk auto-sync) and by the embedding API.
     /// Output is byte-deterministic for equal kernel states.
     pub fn save_json(&self) -> String {
         serde_json::to_string(&self.save()).expect("KernelState is JSON-serializable")
@@ -393,7 +393,7 @@ impl Kernel {
     }
 
     /// JSON-string form of [`Self::load`]. Parses then loads. Used by
-    /// the UniFFI surface and the Disk-mode boot path.
+    /// the embedding API and the Disk-mode boot path.
     pub fn load_json(&self, json: &str) -> KernelResult<()> {
         let state: KernelState = serde_json::from_str(json)
             .map_err(|e| KernelError::InvalidSnapshot(format!("parse: {e}")))?;

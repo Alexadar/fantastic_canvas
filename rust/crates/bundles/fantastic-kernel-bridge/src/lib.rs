@@ -4,7 +4,7 @@
 //! over a pluggable transport. Weak binding: remote agents are
 //! addressed by URL + path only; no shared Rust types across kernels.
 //!
-//! WS-only, asymmetric (matches Python/Swift). Transports:
+//! WS-only, asymmetric (matches the canonical Python kernel). Transports:
 //! - `memory`  — in-process paired channels (tests only)
 //! - `ws`      — `tokio-tungstenite` client against a remote `web_ws` surface
 //! - `ssh+ws`  — spawns `ssh -L local:localhost:remote -N <host>` as a
@@ -224,7 +224,7 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
                 Some(p) => p,
                 None => return json!({"error": "kernel_bridge: ws transport requires peer_id"}),
             };
-            // Canonical field is `local_port` (Python/Swift parity);
+            // Canonical field is `local_port` (Python parity);
             // accept `remote_port`/`port` as fallbacks.
             let port = match meta_u64(agent_id, kernel, "local_port")
                 .or_else(|| meta_u64(agent_id, kernel, "remote_port"))
@@ -366,7 +366,7 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
         .insert(corr.clone(), tx);
 
     // Raw call frame straight to the remote's web_ws — no `forward`
-    // envelope, no peer_id addressing (asymmetric; matches Python/Swift).
+    // envelope, no peer_id addressing (asymmetric; matches the canonical Python kernel).
     let frame = json!({
         "type": "call",
         "id": corr,

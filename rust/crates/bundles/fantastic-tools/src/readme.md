@@ -7,11 +7,11 @@ nvidia, …) prepend to every model call. The registry maps
 agent in the kernel; this bundle is just the naming + schema layer
 over the kernel's existing routing.
 
-The primary use is wiring native features (filesystem, vision,
-clipboard, app intents, calculators, search) into Apple Foundation
-Models / OpenAI / Anthropic tool-calling. Same mechanism serves any
-LLM backend — the bundle is provider-agnostic; FM happens to be the
-first integration.
+The primary use is wiring host features (filesystem, vision,
+clipboard, host actions, calculators, search) into the embedding
+host's LLM tool-calling. Same mechanism serves any LLM backend — the
+bundle is provider-agnostic; the embedding-host LLM impl happens to be
+the first integration.
 
 ## Mental model
 
@@ -50,8 +50,8 @@ task-local with the target id before invoking a bundle — bundles
 can't read the original sender from `current_sender()` — so we make
 it explicit in the payload instead.
 
-The UniFFI sugar wrappers (`kernel.registerTool`,
-`kernel.unregisterToolsBySender`, …) take a `sender_id` param and
+The convenience wrappers (`kernel.register_tool`,
+`kernel.unregister_tools_by_sender`, …) take a `sender_id` param and
 inject it into the JSON payload transparently. Raw-send callers
 include `"sender": "..."` in the payload themselves.
 
@@ -152,8 +152,9 @@ kernel.send(
 {"type": "unregister_by_sender", "sender": "docs_owner"}
 ```
 
-The sugar wrapper hides this: `kernel.unregisterToolsBySender(senderId:
-"docs_owner")` injects the `sender` field for you.
+The convenience wrapper hides this:
+`kernel.unregister_tools_by_sender(sender_id: "docs_owner")` injects
+the `sender` field for you.
 
 **Nuke (admin / tests):**
 
@@ -170,160 +171,115 @@ target. Set `verb` explicitly when the tool's name and the dispatch
 target's verb differ (e.g. a tool named `search_documents` that
 dispatches verb `search` on agent `doc_index`).
 
-## Swift integration
+## Host integration
+
+The "host" is the embedding application — an in-process implementor of
+the Rust trait the kernel dispatches to (the real app, or a test
+mock). It is plain Rust; there is no foreign-language binding. The
+steps below show the CLI surface; the convenience wrappers
+(`kernel.register_tool`, …) are thin in-process equivalents of the
+same raw sends.
 
 ### 1. Boot the tools agent at kernel startup
 
-```swift
-_ = try await kernel.sendJson(
-    targetId: "core",
-    payloadJson: #"{"type":"create_agent","handler_module":"tools.tools","id":"tools"}"#
-)
+```bash
+$FANTASTIC core create_agent handler_module=tools.tools id=tools
 ```
 
-Do this once at app launch, after kernel bootstrap.
+Do this once at startup, after kernel bootstrap.
 
-### 2. Register tools (typed sugar OR raw send)
+### 2. Register tools (typed wrapper OR raw send)
 
-The fantastic-uniffi bridge exposes typed convenience wrappers:
+The convenience wrapper `kernel.register_tool(sender_id, name,
+agent_id, verb, description, parameters_schema_json)` injects the
+`sender` field for you. The equivalent raw send:
 
-```swift
-_ = try await kernel.registerTool(
-    senderId: "weather_provider",         // ← cleanup key
-    name: "get_weather",
-    agentId: "weather_provider",          // ← dispatch target
-    verb: nil,                            // ← uses tool name as verb
-    description: "Returns the current weather for a city.",
-    parametersSchemaJson: #"""
-        {
-          "type": "object",
-          "properties": {
-            "city":  { "type": "string", "minLength": 1 },
-            "units": { "type": "string", "enum": ["celsius","fahrenheit"], "default": "celsius" }
-          },
-          "required": ["city"],
-          "additionalProperties": false
-        }
-    """#
-)
+```bash
+$FANTASTIC tools register \
+  name=get_weather \
+  agent_id=weather_provider \
+  sender=weather_provider \
+  description="Returns the current weather for a city." \
+  parameters_schema='{"type":"object","properties":{"city":{"type":"string","minLength":1},"units":{"type":"string","enum":["celsius","fahrenheit"],"default":"celsius"}},"required":["city"],"additionalProperties":false}'
 ```
 
-Equivalent raw send (no sugar wrapper, include `sender` in the
-payload):
-
-```swift
-_ = try await kernel.sendJson(
-    targetId: "tools",
-    payloadJson: #"""
-        {
-          "type": "register",
-          "name": "get_weather",
-          "agent_id": "weather_provider",
-          "sender": "weather_provider",
-          "description": "...",
-          "parameters_schema": { ... }
-        }
-    """#
-)
-```
+`sender` is the cleanup key, `agent_id` the dispatch target, and an
+omitted `verb` means "dispatch using the tool name as the verb".
 
 ### 3. Pull tools from the chat backend (a `proxy_agent` host)
 
-The chat backend is a `proxy_agent.tools` agent with a Swift host
-that implements `ProxyAgentHost.handle`. On `{type:"send"}`, the
-host pulls the current tool set from the kernel and feeds it to its
-`LanguageModelSession`:
+The chat backend is a `proxy_agent.tools` agent backed by an
+embedding-host LLM impl — a plain-Rust implementor of the proxy-agent
+trait. On `{type:"send"}` the host pulls the current tool set from the
+kernel and feeds it to its LLM session, conceptually:
 
-```swift
-final class FoundationModelsProxyHost: ProxyAgent {
-  private var session: LanguageModelSession?
-  private let kernel: Kernel
-
-  func handle(payloadJson: String) -> String {
-    let payload = try? JSONSerialization.jsonObject(with: payloadJson.data(using:.utf8)!)
-    let dict = payload as? [String:Any] ?? [:]
-    switch dict["type"] as? String {
-    case "send":
-      let stream_id = nextStreamId()
-      Task { @MainActor in
-        // Pull current tools BEFORE constructing the LMSession.
-        let toolsJson = try await kernel.sendJson(
-            targetId: "tools",
-            payloadJson: #"{"type":"list_for_llm"}"#)
-        let tools = parseTools(toolsJson, kernel: kernel)   // → [LMTool]
-        if session == nil {
-          session = LanguageModelSession(
-              instructions: systemPrompt,
-              tools: tools)
-        }
-        // Stream the user message via the held session;
-        // push tokens out via kernel.proxyEmit on this agent's inbox.
-        for try await token in session!.streamResponse(to: userText) {
-          try await kernel.proxyEmit(
-              agentId: "fm",
-              eventJson: #"{"type":"token","stream_id":"\#(stream_id)","delta":"\#(token)"}"#)
-        }
-        try await kernel.proxyEmit(agentId: "fm",
-            eventJson: #"{"type":"done","stream_id":"\#(stream_id)"}"#)
-      }
-      return #"{"queued":true,"stream_id":"\#(stream_id)"}"#
-    case "history":     return historyJson()
-    case "interrupt":   return interruptCurrent()
-    case "backend_state": return backendStateJson()
-    case "reflect":     return reflectJson()
-    default:            return #"{"ok":true}"#
-    }
-  }
-}
-
-// At kernel boot:
-_ = try await kernel.sendJson(targetId:"core",
-    payloadJson: #"{"type":"create_agent","handler_module":"proxy_agent.tools","id":"fm"}"#)
-kernel.registerProxyAgent(agentId: "fm",
-    host: FoundationModelsProxyHost(kernel: kernel))
+```text
+host.handle(payload):
+  match payload["type"]:
+    "send":
+      stream_id = next_stream_id()
+      spawn:
+        # Pull current tools BEFORE constructing the LLM session.
+        tools_json = kernel.send("tools", {"type":"list_for_llm"})
+        tools = parse_tools(tools_json)        # → [LlmTool]
+        session = session.get_or_init(instructions, tools)
+        # Stream the user message via the held session; push tokens
+        # out as emit events on this agent's own inbox.
+        for token in session.stream_response(user_text):
+          kernel.emit("fm", {"type":"token","stream_id":stream_id,"delta":token})
+        kernel.emit("fm", {"type":"done","stream_id":stream_id})
+      return {"queued":true,"stream_id":stream_id}
+    "history":       return history_json()
+    "interrupt":     return interrupt_current()
+    "backend_state": return backend_state_json()
+    "reflect":       return reflect_json()
+    _:               return {"ok":true}
 ```
 
-Tokens flow as **emit events on the fm agent's own inbox** —
-`ai_chat_webapp` (or any other consumer) watches the `fm` agent via
-the kernel's standard watcher fanout and receives them.
+At kernel boot, create the agent and register the host implementation:
 
-### 4. Build a `LanguageModelSession.Tool` from each entry
-
-iOS / macOS 26+ ships `DynamicGenerationSchema(name:, schema:)` — pass
-the tool's `parameters` (JSON Schema) directly:
-
-```swift
-struct KernelTool: Tool {
-  let name: String
-  let description: String
-  let parameters: GenerationSchema   // built from parameters_schema
-
-  func call(arguments: ToolArguments) async throws -> ToolOutput {
-    // Bridge LLM args → kernel.dispatch_tool → reply
-    let argsJson = try arguments.jsonString
-    let replyJson = try await kernel.dispatchTool(
-        name: self.name,
-        argumentsJson: argsJson
-    )
-    return .json(replyJson)
-  }
-}
+```bash
+$FANTASTIC core create_agent handler_module=proxy_agent.tools id=fm
 ```
 
-Each tool's `call(...)` closure dispatches back through the kernel
-via `kernel.dispatchTool(name:argumentsJson:)`. The reply (whatever
-the dispatch target returns from `kernel.send`) feeds back to the
-session as the tool's output. The session then continues generating
-until it produces text or another tool call.
+then `kernel.register_proxy_agent("fm", host)` in process.
+
+Tokens flow as **emit events on the fm agent's own inbox** — the
+web-app chat consumer (or any other consumer) watches the `fm` agent
+via the kernel's standard watcher fanout and receives them.
+
+### 4. Build one LLM tool object from each entry
+
+Pass each entry's `parameters` (JSON Schema) straight to the host's
+LLM tool type. Conceptually:
+
+```text
+struct KernelTool:
+  name: String
+  description: String
+  parameters: Schema            # built from parameters_schema
+
+  fn call(arguments) -> ToolOutput:
+    # Bridge LLM args → tools.dispatch → reply
+    args_json = arguments.json_string()
+    reply_json = kernel.dispatch_tool(name, args_json)
+    return json(reply_json)
+```
+
+Each tool's `call(...)` dispatches back through the kernel via
+`kernel.dispatch_tool(name, arguments_json)`. The reply (whatever the
+dispatch target returns from `kernel.send`) feeds back to the session
+as the tool's output. The session then continues generating until it
+produces text or another tool call.
 
 ### 5. Cleanup on logout / mode change
 
-```swift
-_ = try await kernel.unregisterToolsBySender(senderId: "weather_provider")
+```bash
+$FANTASTIC tools unregister_by_sender sender=weather_provider
 ```
 
-Drops every tool registered with `senderId: "weather_provider"`. No
-need to remember every tool name.
+Drops every tool registered with `sender=weather_provider`. No need to
+remember every tool name.
 
 ## Conditionality patterns
 
@@ -356,13 +312,13 @@ Use for: argument-internal rules ("if A=x then B is required",
 **The registry itself is the conditional gate.** A tool that isn't
 registered cannot be called — the LLM literally doesn't see it.
 
-```swift
-// Login → these tools become available
-_ = try await kernel.registerTool(senderId: "auth", name: "get_user_profile", ...)
-_ = try await kernel.registerTool(senderId: "auth", name: "post_message", ...)
+```bash
+# Login → these tools become available
+$FANTASTIC tools register sender=auth name=get_user_profile ...
+$FANTASTIC tools register sender=auth name=post_message ...
 
-// Logout → drop them all
-_ = try await kernel.unregisterToolsBySender(senderId: "auth")
+# Logout → drop them all
+$FANTASTIC tools unregister_by_sender sender=auth
 ```
 
 Use for: state-gated capabilities (logged-in tools, mode-specific
@@ -399,11 +355,11 @@ tool-error feedback loop.
                      │
                      ▼
        ┌───────────────────────────┐
-       │ Swift Tool.call(args)     │
-       │  ↳ kernel.dispatchTool(   │
-       │      name, argsJson)      │
+       │ host Tool.call(args)      │
+       │  ↳ kernel.dispatch_tool(  │
+       │      name, args_json)     │
        └─────────────┬─────────────┘
-                     │  UniFFI
+                     │  in-process call
                      ▼
        ┌───────────────────────────┐
        │ tools.tools::dispatch     │
@@ -416,13 +372,13 @@ tool-error feedback loop.
        ┌───────────────────────────┐
        │ Dispatch target agent     │
        │ (could be a proxy_agent   │
-       │  backed by Swift, a Rust  │
-       │  bundle, or anything)     │
+       │  backed by the host, a    │
+       │  Rust bundle, or anything)│
        └─────────────┬─────────────┘
                      │  reply (JSON Value)
                      ▼
-            back through dispatchTool → Tool.call return →
-            LanguageModelSession continues → tokens stream → done
+            back through dispatch_tool → Tool.call return →
+            LLM session continues → tokens stream → done
 ```
 
 ## Failure modes

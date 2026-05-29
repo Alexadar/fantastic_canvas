@@ -31,8 +31,8 @@ pub fn reflect(kernel: &Arc<Kernel>, target: &Arc<Agent>, payload: &Value) -> Va
 
 /// Walk an agent and its descendants, producing a nested
 /// `{id, parent_id, handler_module, display_name, children:[...]}`
-/// dict. Matches the shape consumed by callers (and Swift's
-/// AgentLoader walker).
+/// dict. Matches the shape consumed by callers (and a
+/// consumer-side tree walker).
 pub fn tree_node(target: &Agent) -> Value {
     let mut obj = Map::new();
     obj.insert("id".to_string(), json!(target.id.0));

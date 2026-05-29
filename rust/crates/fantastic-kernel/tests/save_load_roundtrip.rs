@@ -4,9 +4,9 @@
 //! [`KernelState`] is a Rust value — never a file on disk. Disk mode
 //! mirrors agent records to per-agent `agent.json` files via
 //! [`persistence::persist`] / [`persistence::load_children`]; the
-//! `save()` / `load()` API is for IN-RAM export (e.g. the Swift
-//! brain kernel persisting state externally to UserDefaults /
-//! CloudKit / a file).
+//! `save()` / `load()` API is for IN-RAM export (e.g. an embedding
+//! brain kernel persisting state externally to an external
+//! store (key-value, cloud sync, or a file).
 
 use fantastic_kernel::bootstrap::{bootstrap, BootstrapOptions};
 use fantastic_kernel::bundle::{Bundle, BundleError, BundleRegistry, Reply};
