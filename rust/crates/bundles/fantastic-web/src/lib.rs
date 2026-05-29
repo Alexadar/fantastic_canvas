@@ -1440,9 +1440,77 @@ async fn handle_binary_frame(
     });
 }
 
-/// Handle one chunk of a chunked upload. Either appends to the
-/// reassembly buffer + acks (non-final), or assembles + dispatches
-/// (final). Per-WS state, no global locks.
+/// Pure (no-I/O) chunk-ingest step — inserts one chunk into the
+/// per-connection upload map and, once **all** `total_chunks` are
+/// present, removes the entry and returns the assembled
+/// `(base_header, full_blob)`. Assembly is **order-independent**: the
+/// `final` flag is informational, `total_chunks` is the contract, so an
+/// early `final` chunk is simply held until the rest arrive (chunks live
+/// in a `BTreeMap`, so concatenation is always index-ordered).
+///
+/// Returns `Ok(None)` to ack-and-wait, `Ok(Some(..))` when the upload is
+/// complete, or `Err` on a concurrent-cap / total-mismatch / size-cap
+/// violation (the map entry is dropped on Err). Extracted from
+/// `handle_chunked_frame` so it's unit-testable.
+fn ingest_chunk(
+    map: &mut std::collections::HashMap<String, ChunkBuffer>,
+    upload_id: &str,
+    chunk_index: u32,
+    total_chunks: u32,
+    blob: Vec<u8>,
+    base_header: &Value,
+) -> Result<Option<(Value, Vec<u8>)>, String> {
+    // Cap concurrent uploads BEFORE inserting a new id.
+    if !map.contains_key(upload_id) && map.len() >= MAX_CONCURRENT_UPLOADS {
+        return Err(format!(
+            "chunked upload: concurrent upload cap {MAX_CONCURRENT_UPLOADS} reached",
+        ));
+    }
+    let entry_existed = map.contains_key(upload_id);
+    let buf = map
+        .entry(upload_id.to_string())
+        .or_insert_with(|| ChunkBuffer {
+            chunks: std::collections::BTreeMap::new(),
+            total: total_chunks,
+            cumulative_bytes: 0,
+            base_header: base_header.clone(),
+        });
+
+    // total_chunks must agree across every chunk.
+    if entry_existed && buf.total != total_chunks {
+        let prior = buf.total;
+        map.remove(upload_id);
+        return Err(format!(
+            "chunked upload: total_chunks mismatch (saw {prior}, now {total_chunks})",
+        ));
+    }
+    let projected = buf.cumulative_bytes.saturating_add(blob.len());
+    if projected > MAX_UPLOAD_SIZE {
+        map.remove(upload_id);
+        return Err(format!(
+            "chunked upload: projected {projected} bytes exceeds total cap {MAX_UPLOAD_SIZE}",
+        ));
+    }
+    buf.cumulative_bytes = projected;
+    buf.chunks.insert(chunk_index, blob);
+
+    // Assemble once every chunk is present — regardless of arrival order
+    // or which frame carried `final`.
+    if buf.chunks.len() as u32 == buf.total {
+        let removed = map.remove(upload_id).expect("entry just inserted");
+        let mut full = Vec::with_capacity(removed.cumulative_bytes);
+        for (_, chunk) in removed.chunks {
+            full.extend_from_slice(&chunk);
+        }
+        Ok(Some((removed.base_header, full)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Handle one chunk of a chunked upload: validate, delegate assembly to
+/// `ingest_chunk`, ack non-final chunks, and dispatch once the upload is
+/// complete. Per-WS state, no global locks.
 #[allow(clippy::too_many_arguments)]
 async fn handle_chunked_frame(
     state: &AppState,
@@ -1486,10 +1554,9 @@ async fn handle_chunked_frame(
             return;
         }
     };
-    let is_final = header
-        .get("final")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    // The header `final` flag is informational — assembly is triggered
+    // by chunk count vs `total_chunks` (the contract), so an early
+    // `final` is held until the remaining chunks arrive (order-agnostic).
 
     if chunk_index >= total_chunks {
         let _ = out_tx
@@ -1516,68 +1583,19 @@ async fn handle_chunked_frame(
         obj.remove("final");
     }
 
-    // Outcome of the locked block — either `Ok(Some(...))` (final chunk
-    // ready to dispatch), `Ok(None)` (non-final, expect ack), or
-    // `Err(msg)` (validation failure; map entry already cleaned up).
+    // Ingest under the per-connection lock. `ingest_chunk` returns the
+    // assembled (base_header, blob) once every chunk is present, `None`
+    // to ack-and-wait, or `Err` on a cap/mismatch violation.
     let outcome: Result<Option<(Value, Vec<u8>)>, String> = {
         let mut map = pending_uploads.lock().expect("pending_uploads poisoned");
-
-        // Cap concurrent uploads BEFORE inserting a new id.
-        if !map.contains_key(&upload_id) && map.len() >= MAX_CONCURRENT_UPLOADS {
-            Err(format!(
-                "chunked upload: concurrent upload cap {MAX_CONCURRENT_UPLOADS} reached",
-            ))
-        } else {
-            // Insert if missing, then validate against any prior state.
-            let entry_existed = map.contains_key(&upload_id);
-            let buf = map.entry(upload_id.clone()).or_insert_with(|| ChunkBuffer {
-                chunks: std::collections::BTreeMap::new(),
-                total: total_chunks,
-                cumulative_bytes: 0,
-                base_header: header.clone(),
-            });
-
-            // total_chunks must agree across every chunk.
-            if entry_existed && buf.total != total_chunks {
-                let prior = buf.total;
-                map.remove(&upload_id);
-                Err(format!(
-                    "chunked upload: total_chunks mismatch (saw {prior}, now {total_chunks})",
-                ))
-            } else {
-                let projected = buf.cumulative_bytes.saturating_add(blob.len());
-                if projected > MAX_UPLOAD_SIZE {
-                    map.remove(&upload_id);
-                    Err(format!(
-                        "chunked upload: projected {projected} bytes exceeds total cap {MAX_UPLOAD_SIZE}",
-                    ))
-                } else {
-                    buf.cumulative_bytes = projected;
-                    buf.chunks.insert(chunk_index, blob);
-
-                    if is_final {
-                        let total_seen = buf.chunks.len() as u32;
-                        let total_expected = buf.total;
-                        if total_seen != total_expected {
-                            map.remove(&upload_id);
-                            Err(format!(
-                                "chunked upload: final received but {} chunk(s) missing",
-                                total_expected - total_seen,
-                            ))
-                        } else {
-                            let removed = map.remove(&upload_id).expect("entry just inserted");
-                            let mut full = Vec::with_capacity(removed.cumulative_bytes);
-                            for (_, chunk) in removed.chunks {
-                                full.extend_from_slice(&chunk);
-                            }
-                            Ok(Some((removed.base_header, full)))
-                        }
-                    } else {
-                        Ok(None)
-                    }
-                }
-            }
-        }
+        ingest_chunk(
+            &mut map,
+            &upload_id,
+            chunk_index,
+            total_chunks,
+            blob,
+            &header,
+        )
     };
 
     let assembled: Option<(Value, Vec<u8>)> = match outcome {

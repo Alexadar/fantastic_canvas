@@ -570,14 +570,17 @@ async fn chunked_upload_handles_out_of_order_chunks() {
         .expect("ws connect");
 
     let upload_id = "u_ooo1";
-    // Order: 2 (final), then 0, then 1. The final flag on chunk 2
-    // doesn't dispatch until all 3 are present.
+    // Out-of-order with the `final`-flagged chunk arriving FIRST.
+    // Regression (fixed): the server must HOLD the early `final` and
+    // assemble once all chunks are present — it must NOT error+drop.
+    // Assembly triggers on count == total_chunks, so order is irrelevant.
     let chunks = [
-        (2u32, &[3u8; 4] as &[u8], true),
+        (2u32, &[3u8; 4] as &[u8], true), // final flag, arrives first
         (0, &[1u8; 4], false),
         (1, &[2u8; 4], false),
     ];
-    let mut got_reply = false;
+    let mut saw_error = false;
+    let mut reply: Option<Value> = None;
     for (idx, blob, is_final) in chunks {
         let header = json!({
             "target": "nonexistent",
@@ -589,30 +592,30 @@ async fn chunked_upload_handles_out_of_order_chunks() {
             "final": is_final,
         });
         let frame = build_binary_frame(&header, blob);
-        let frames = send_binary_and_drain(&mut ws, frame).await;
-        if let Some(r) = frames.iter().find(|f| f["id"] == "ooo1") {
-            // Could be on the first "final" or after the last needed chunk.
-            assert_eq!(r["type"], "error");
-            got_reply = true;
+        for f in send_binary_and_drain(&mut ws, frame).await {
+            if f["id"] == "ooo1" {
+                match f["type"].as_str() {
+                    Some("error") => saw_error = true,
+                    Some("reply") => reply = Some(f.clone()),
+                    _ => {}
+                }
+            }
         }
     }
-    // Send the final-flag chunk LAST when all 3 are present.
-    let header = json!({
-        "target": "nonexistent",
-        "type": "noop",
-        "id": "ooo1b",
-        "upload_id": upload_id,
-        "chunk_index": 2,
-        "total_chunks": 3,
-        "final": true,
-    });
-    let frame = build_binary_frame(&header, &[3u8; 4]);
-    // This may dispatch (if previous final-flag triggered missing-chunks
-    // error and cleared the map, this re-uploads chunk 2; in that case
-    // we need the other 2 chunks again). Either way the wire is asserted
-    // by got_reply above for the assembled path.
-    let _ = send_binary_and_drain(&mut ws, frame).await;
-    assert!(got_reply, "expected a dispatch reply for chunked upload");
+    assert!(
+        !saw_error,
+        "early `final` must be held, not error+drop (out-of-order regression)"
+    );
+    let reply = reply.expect("dispatch reply once all 3 chunks assembled");
+    // Reassembled (12-byte) blob dispatched to a nonexistent agent →
+    // reply.data carries the kernel's `no agent` error.
+    assert!(
+        reply["data"]["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no agent"),
+        "expected 'no agent' in dispatch reply, got {reply}"
+    );
 
     kernel
         .send(&AgentId::from(web_id), json!({"type": "stop"}))
@@ -969,4 +972,52 @@ async fn assets_carry_immutable_cache_control() {
     kernel
         .send(&AgentId::from(web_id), json!({"type": "stop"}))
         .await;
+}
+
+// ── ingest_chunk unit tests (pure assembly, no WS) ──────────────────
+
+#[test]
+fn ingest_chunk_assembles_out_of_order() {
+    // Regression: a `final`/last-index chunk arriving BEFORE its peers
+    // must be held + assembled once all are present — not dropped with
+    // "final received but N missing". Chunks concatenate in index order
+    // (BTreeMap) regardless of arrival order.
+    let mut map = std::collections::HashMap::new();
+    let hdr = json!({"target": "x", "type": "upload"});
+    // Arrive last-index first, then 0, then 1.
+    assert!(ingest_chunk(&mut map, "u", 2, 3, b"C".to_vec(), &hdr)
+        .expect("early last chunk acks, not errors")
+        .is_none());
+    assert!(ingest_chunk(&mut map, "u", 0, 3, b"A".to_vec(), &hdr)
+        .unwrap()
+        .is_none());
+    let (header, blob) = ingest_chunk(&mut map, "u", 1, 3, b"B".to_vec(), &hdr)
+        .unwrap()
+        .expect("assembled once all 3 present");
+    assert_eq!(blob, b"ABC", "index-ordered concat regardless of arrival");
+    assert_eq!(header, json!({"target": "x", "type": "upload"}));
+    assert!(map.is_empty(), "entry removed on completion");
+}
+
+#[test]
+fn ingest_chunk_total_mismatch_errors_and_drops() {
+    let mut map = std::collections::HashMap::new();
+    let hdr = json!({"type": "upload"});
+    assert!(ingest_chunk(&mut map, "u", 0, 2, b"A".to_vec(), &hdr)
+        .unwrap()
+        .is_none());
+    let err = ingest_chunk(&mut map, "u", 1, 3, b"B".to_vec(), &hdr)
+        .expect_err("total_chunks mismatch must error");
+    assert!(err.contains("total_chunks mismatch"), "{err}");
+    assert!(map.is_empty(), "mismatched entry dropped");
+}
+
+#[test]
+fn ingest_chunk_single_chunk_completes_immediately() {
+    let mut map = std::collections::HashMap::new();
+    let hdr = json!({"type": "upload"});
+    let (_h, blob) = ingest_chunk(&mut map, "u", 0, 1, b"solo".to_vec(), &hdr)
+        .unwrap()
+        .expect("a 1-chunk upload assembles on the first frame");
+    assert_eq!(blob, b"solo");
 }

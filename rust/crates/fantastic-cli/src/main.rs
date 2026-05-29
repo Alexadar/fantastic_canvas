@@ -247,10 +247,13 @@ async fn sigterm() {
     std::future::pending::<()>().await
 }
 
-/// Crude k=v parser: try bool, then i64, then leave as string. Mirrors
-/// what the Python CLI does for one-shot `fantastic <id> <verb> k=v`.
+/// k=v value coercion for one-shot `fantastic <id> <verb> k=v`. Mirrors
+/// the canonical Python CLI's `_coerce` (kernel/_modes.py): case-
+/// insensitive bool → int → float → JSON object/array literal → string.
+/// The JSON case lets callers pass nested payloads, e.g.
+/// `payload={"type":"list_agents"}` or `tags=[1,2]`.
 fn parse_kv(v: &str) -> Value {
-    match v {
+    match v.to_ascii_lowercase().as_str() {
         "true" => return json!(true),
         "false" => return json!(false),
         _ => {}
@@ -258,5 +261,46 @@ fn parse_kv(v: &str) -> Value {
     if let Ok(n) = v.parse::<i64>() {
         return json!(n);
     }
+    if let Ok(f) = v.parse::<f64>() {
+        return json!(f);
+    }
+    // Only attempt JSON when it *looks* like an object/array, so a plain
+    // string with a stray brace doesn't get misparsed (matches Python).
+    let looks_json =
+        (v.starts_with('{') && v.ends_with('}')) || (v.starts_with('[') && v.ends_with(']'));
+    if looks_json {
+        if let Ok(parsed) = serde_json::from_str::<Value>(v) {
+            return parsed;
+        }
+    }
     Value::String(v.to_string())
+}
+
+#[cfg(test)]
+mod parse_kv_tests {
+    use super::parse_kv;
+    use serde_json::json;
+
+    #[test]
+    fn coerces_like_python() {
+        // bool (case-insensitive, matching Python's `v.lower()`).
+        assert_eq!(parse_kv("true"), json!(true));
+        assert_eq!(parse_kv("True"), json!(true));
+        assert_eq!(parse_kv("FALSE"), json!(false));
+        // int then float.
+        assert_eq!(parse_kv("42"), json!(42));
+        assert_eq!(parse_kv("1.5"), json!(1.5));
+        // JSON object/array literal — regression: previously stayed a
+        // string, so `payload={...}` reached handlers as text and the
+        // scheduler errored "payload.type required".
+        assert_eq!(
+            parse_kv("{\"type\":\"list_agents\"}"),
+            json!({"type": "list_agents"})
+        );
+        assert_eq!(parse_kv("[1,2,3]"), json!([1, 2, 3]));
+        // plain strings (incl. a stray brace) stay strings.
+        assert_eq!(parse_kv("hello"), json!("hello"));
+        assert_eq!(parse_kv("a{b"), json!("a{b"));
+        assert_eq!(parse_kv("web.tools"), json!("web.tools"));
+    }
 }
