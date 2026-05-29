@@ -72,6 +72,24 @@ def swift_binary() -> Path:
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
+@pytest.fixture(scope="session")
+def rust_binary() -> Path:
+    """Path to the Rust kernel binary (`fantastic-cli` → `fantastic`).
+    Skips if not built (run `cd rust && cargo build`). Prefers release
+    over debug when both exist, by mtime."""
+    candidates = [
+        _REPO_ROOT / "rust" / "target" / "release" / "fantastic",
+        _REPO_ROOT / "rust" / "target" / "debug" / "fantastic",
+    ]
+    existing = [c for c in candidates if c.exists()]
+    if not existing:
+        pytest.skip(
+            f"rust kernel binary not built: tried {[str(c) for c in candidates]} "
+            f"(run `cd rust && cargo build`)"
+        )
+    return max(existing, key=lambda p: p.stat().st_mtime)
+
+
 @pytest.fixture
 def free_port() -> Callable[[], int]:
     """Returns a callable that grabs a fresh OS-assigned port each
@@ -164,6 +182,23 @@ async def swift_kernel(swift_binary):
 
     async def _spawn(workdir: Path, port: int) -> KernelProc:
         kp = spawn(swift_binary, workdir, port, label="swift")
+        spawned.append(kp)
+        await kp.wait_ready()
+        return kp
+
+    yield _spawn
+
+    for kp in spawned:
+        kp.terminate()
+
+
+@pytest.fixture
+async def rust_kernel(rust_binary):
+    """Mirror of `python_kernel` but for the Rust daemon."""
+    spawned: list[KernelProc] = []
+
+    async def _spawn(workdir: Path, port: int) -> KernelProc:
+        kp = spawn(rust_binary, workdir, port, label="rust")
         spawned.append(kp)
         await kp.wait_ready()
         return kp

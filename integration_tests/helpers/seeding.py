@@ -66,10 +66,20 @@ def seed_create(
         return {}
     try:
         return json.loads(out)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(
-            f"seed_create returned non-JSON: {out!r} ({e})"
-        ) from e
+    except json.JSONDecodeError:
+        # Some kernels emit tracing/log lines to stdout before the
+        # pretty-printed JSON reply (e.g. rust's tracing WARN on a
+        # seed-time auto-boot that can't reach a not-yet-up peer).
+        # The reply is the trailing JSON object — extract from the
+        # last top-level `{`.
+        brace = out.rfind("\n{")
+        candidate = out[brace + 1 :] if brace != -1 else out[out.find("{") :]
+        try:
+            return json.loads(candidate)
+        except (json.JSONDecodeError, ValueError) as e:
+            raise RuntimeError(
+                f"seed_create returned non-JSON: {out!r} ({e})"
+            ) from e
 
 
 def _render(v: Any) -> str:
