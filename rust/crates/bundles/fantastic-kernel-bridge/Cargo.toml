@@ -4,7 +4,7 @@ name = "fantastic-kernel-bridge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Cross-kernel bridge — forwards send envelopes over memory/WS/HTTP transports."
+description = "Cross-kernel bridge — WS-only, asymmetric; ships raw call frames over memory/WS/SSH+WS transports."
 
 [dependencies]
 fantastic-kernel = { path = "../../fantastic-kernel" }

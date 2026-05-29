@@ -234,6 +234,17 @@ async def _read_loop(id: str, kernel: Any) -> None:
                 fut = st.pending.pop(frame.get("id"), None)
                 if fut is not None and not fut.done():
                     fut.set_result(frame.get("data"))
+            elif ftype == "error":
+                # The remote's web_ws emits `{type:"error", id, error}`
+                # when its dispatch RAISES (vs a verb-level error dict,
+                # which rides back as a `reply`). Fail the pending
+                # forward promptly instead of letting it hang to the
+                # timeout. Matches the Rust bridge's `error` branch.
+                fut = st.pending.pop(frame.get("id"), None)
+                if fut is not None and not fut.done():
+                    fut.set_result(
+                        {"error": f"remote error: {frame.get('error')}"}
+                    )
             elif ftype == "event":
                 try:
                     await kernel.emit(id, frame.get("payload") or {})

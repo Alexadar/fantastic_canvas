@@ -64,8 +64,7 @@ impl std::error::Error for TransportError {}
 #[async_trait]
 pub trait BridgeTransport: Send + Sync {
     /// Push a frame to the peer. Returns when the bytes are
-    /// queued (memory) / sent over the socket (ws) / the HTTP
-    /// round-trip is complete (http).
+    /// queued (memory) / sent over the socket (ws).
     async fn send_frame(&self, frame: Value) -> Result<(), TransportError>;
 
     /// Pull the next inbound frame. Blocks until one arrives.

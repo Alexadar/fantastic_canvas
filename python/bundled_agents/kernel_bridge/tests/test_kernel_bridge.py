@@ -258,6 +258,51 @@ async def test_inbound_call_to_unknown_target_replies_error(two_kernels):
     assert "error" in reply["data"]
 
 
+async def test_inbound_error_frame_fails_forward_promptly(two_kernels):
+    """A remote `web_ws` emits `{type:"error", id, error}` when its
+    dispatch RAISES (vs a verb-level error dict, which rides back as a
+    `reply`). The bridge's read loop must fail the pending forward
+    PROMPTLY with that error — not let it hang to the timeout. Regression
+    for the cross-runtime error-frame gap (rust handled it; py/swift
+    didn't)."""
+    ka, _ = two_kernels
+    rec_a = await ka.send(
+        "core",
+        {
+            "type": "create_agent",
+            "handler_module": "kernel_bridge.tools",
+            "transport": "memory",
+            "peer_id": "stand_in",
+        },
+    )
+    a_id = rec_a["id"]
+    mt_a, mt_peer = MemoryTransport.pair()
+    kb._test_transport_inject[a_id] = mt_a
+    await ka.send(a_id, {"type": "boot"})
+
+    # Fire a forward with a long timeout; if the error frame isn't
+    # handled, this would hang ~30s. The test's wait_for(2s) guards.
+    fwd = asyncio.create_task(
+        ka.send(
+            a_id,
+            {
+                "type": "forward",
+                "target": "whatever",
+                "payload": {"type": "reflect"},
+                "timeout": 30.0,
+            },
+        )
+    )
+    # Read A's outbound call frame to learn the corr id, then echo an
+    # error frame with the same id (what a raising remote produces).
+    call = await asyncio.wait_for(mt_peer.recv(), timeout=2.0)
+    assert call["type"] == "call"
+    await mt_peer.send({"type": "error", "id": call["id"], "error": "boom"})
+
+    reply = await asyncio.wait_for(fwd, timeout=2.0)
+    assert "error" in reply and "boom" in reply["error"], reply
+
+
 async def test_unknown_verb_errors(two_kernels):
     ka, _ = two_kernels
     bid = await _make_bridge(ka, peer_id="x", transport="memory")

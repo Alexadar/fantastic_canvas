@@ -513,8 +513,8 @@ async fn read_loop(agent_id: AgentId, state: Arc<BridgeState>, kernel: Arc<Kerne
                 }
             }
             _ => {
-                // Unused frame types (event, etc.) — ignore so the
-                // loop stays robust.
+                // Unknown frame type — ignore so the loop stays robust.
+                // (call/reply/error/event are handled above.)
             }
         }
     }

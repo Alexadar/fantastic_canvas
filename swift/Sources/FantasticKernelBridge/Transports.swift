@@ -29,6 +29,11 @@ public actor WebSocketTransport {
     private var pending: [String: CheckedContinuation<JSON, Never>] = [:]
     private var nextId: UInt64 = 1
 
+    /// Per-forward timeout — a forward whose reply/error never arrives
+    /// fails after this rather than hanging forever (matches Python's
+    /// 30s DEFAULT_FORWARD_TIMEOUT).
+    private let forwardTimeoutSeconds: Double = 30.0
+
     /// Set by the bundle after `attachWebSocket(agentId:endpoint:kernel:)`.
     /// Inbound `event` frames re-emit `payload` on this agent's local
     /// inbox via `kernel.emit(eventSink, payload)`. nil → events
@@ -97,6 +102,23 @@ public actor WebSocketTransport {
         }
         return await withCheckedContinuation { cont in
             pending[id] = cont
+            // Guard against an indefinite hang: if no reply/error/drop
+            // resolves this within the timeout, fail it. The actor
+            // serializes `pending`, so exactly one of {reply, error,
+            // drop, timeout} resumes the continuation.
+            Task { await self.timeoutPending(id: id) }
+        }
+    }
+
+    private func timeoutPending(id: String) async {
+        try? await Task.sleep(nanoseconds: UInt64(forwardTimeoutSeconds * 1_000_000_000))
+        if let cont = pending.removeValue(forKey: id) {
+            cont.resume(
+                returning: .object([
+                    "error": .string(
+                        "kernel_bridge.forward: timeout after \(Int(forwardTimeoutSeconds))s"),
+                    "reason": .string("timeout"),
+                ]))
         }
     }
 
@@ -176,6 +198,17 @@ public actor WebSocketTransport {
                         // template) and the Swift web server itself
                         // (FantasticWeb/WebSocket.swift).
                         cont.resume(returning: parsed["data"])
+                    }
+                } else if ftype == "error", let id = parsed["id"].asString {
+                    // The remote's web_ws emits `{type:"error", id, error}`
+                    // when its dispatch RAISES. Fail the pending forward
+                    // promptly instead of hanging. Matches Python/Rust.
+                    if let cont = pending.removeValue(forKey: id) {
+                        cont.resume(
+                            returning: .object([
+                                "error": .string(
+                                    "remote error: \(parsed["error"].asString ?? "unknown")")
+                            ]))
                     }
                 } else if ftype == "event" {
                     // Re-emit on the bridge's local inbox so
