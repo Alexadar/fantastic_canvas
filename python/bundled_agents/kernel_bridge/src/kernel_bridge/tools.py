@@ -242,9 +242,7 @@ async def _read_loop(id: str, kernel: Any) -> None:
                 # timeout. Matches the Rust bridge's `error` branch.
                 fut = st.pending.pop(frame.get("id"), None)
                 if fut is not None and not fut.done():
-                    fut.set_result(
-                        {"error": f"remote error: {frame.get('error')}"}
-                    )
+                    fut.set_result({"error": f"remote error: {frame.get('error')}"})
             elif ftype == "event":
                 try:
                     await kernel.emit(id, frame.get("payload") or {})
