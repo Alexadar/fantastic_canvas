@@ -27,6 +27,7 @@ fn register_default_bundles() -> BundleRegistry {
     // dependency the kernel cares about; everything below is pure-Rust
     // async over axum/tokio.
     reg.register("file.tools", fantastic_file::FileBundle);
+    reg.register("yaml_state.tools", fantastic_yaml_state::YamlStateBundle);
     reg.register("web.tools", fantastic_web::WebBundle);
     reg.register("web_ws.tools", fantastic_web_ws::WebWsBundle);
     reg.register("web_rest.tools", fantastic_web_rest::WebRestBundle);

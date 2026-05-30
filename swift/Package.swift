@@ -36,6 +36,7 @@ let package = Package(
         .library(name: "FantasticKernel", targets: ["FantasticKernel"]),
         .library(name: "FantasticBundles", targets: [
             "FantasticFile",
+            "FantasticYamlState",
             "FantasticProxyAgent",
             "FantasticTools",
             "FantasticHtmlAgent",
@@ -68,6 +69,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
+        .package(url: "https://github.com/jpsim/Yams.git", from: "5.1.0"),
     ],
     targets: [
         // ── Core ─────────────────────────────────────────────────
@@ -95,6 +97,12 @@ let package = Package(
             name: "FantasticFile",
             dependencies: ["FantasticKernel", "FantasticJSON",
                            .product(name: "OrderedCollections", package: "swift-collections")]
+        ),
+        .target(
+            name: "FantasticYamlState",
+            dependencies: ["FantasticKernel", "FantasticJSON",
+                           .product(name: "OrderedCollections", package: "swift-collections"),
+                           .product(name: "Yams", package: "Yams")]
         ),
         .target(
             name: "FantasticProxyAgent",
@@ -225,6 +233,7 @@ let package = Package(
                 "FantasticAiChatWebapp", "FantasticTerminalWebapp",
                 "FantasticTelemetryPane", "FantasticCliBundle",
                 "FantasticKernelBridge", "FantasticWeb", "FantasticWebWS", "FantasticWebRest",
+                "FantasticYamlState",
                 "FantasticOllamaBackend", "FantasticNvidiaNimBackend",
                 "FantasticFoundationModelsBackend",
                 "FantasticLocalRunner", "FantasticPythonRuntime",
@@ -295,6 +304,8 @@ let package = Package(
                 "FantasticAiChatWebapp", "FantasticTerminalWebapp",
                 "FantasticTelemetryPane", "FantasticCliBundle",
                 "FantasticKernelBridge", "FantasticWeb", "FantasticWebWS", "FantasticWebRest",
+                "FantasticYamlState", "FantasticKernelStartup",
+                "FantasticFoundationModelsBackend",
             ]
         ),
     ]

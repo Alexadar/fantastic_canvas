@@ -130,6 +130,7 @@ agent answers them natively for its own children, so there's no
 | `bundled_agents/web/web_rest/selftest.md` | http, web, web_rest | REST diagnostic surface — `POST /<rest_id>/<target_id>` body=payload |
 | `bundled_agents/scheduler/selftest.md` | kernel, persistence, time | schedule/tick/fire, history.jsonl, file_agent_id failfast |
 | `bundled_agents/file/selftest.md` | kernel, persistence | read/write/list/delete/rename/mkdir, path safety |
+| `bundled_agents/yaml_state/selftest.md` | kernel, persistence | durable YAML memory agent — read/keys/set/delete/replace/state_yaml, mode (mem/data), disk-is-truth, cascade cleanup |
 | `bundled_agents/terminal/terminal_backend/selftest.md` | kernel, pty | PTY spawn, shell done-token, timeout recovery |
 | `bundled_agents/terminal/terminal_webapp/selftest.md` | webapp, web | get_webapp + xterm UI in browser |
 | `bundled_agents/ai/ollama/ollama_backend/selftest.md` | kernel, ai, persistence | reflect-driven assembly, native tool-calls, multi-step loop |

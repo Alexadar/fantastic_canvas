@@ -136,6 +136,7 @@ public final class FoundationModelsBackendBundle: AgentBundle, @unchecked Sendab
                 ] as JSON,
             ] as JSON
         case "boot":
+            await mountMemoryAgents(agentId: agentId, kernel: kernel)
             return .object(["ok": .bool(true)])
         case "shutdown":
             return .object(["ok": .bool(true)])
@@ -343,6 +344,53 @@ public final class FoundationModelsBackendBundle: AgentBundle, @unchecked Sendab
         agent.metaValue(forKey: "instructions")?.asString ?? ""
     }
 
+    /// Idempotently mount `mem` + `data` yaml_state memory agents under
+    /// this backend at boot, so the model's durable memory exists — and
+    /// is auto-injected — before turn one. No-op if an agent of each mode
+    /// already exists (children rehydrate from disk on reboot).
+    func mountMemoryAgents(agentId: AgentId, kernel: Kernel) async {
+        let have = Set(
+            memoryAgents(agentId: agentId, kernel: kernel).compactMap {
+                kernel.agent($0)?.metaValue(forKey: "mode")?.asString
+            })
+        for mode in ["mem", "data"] where !have.contains(mode) {
+            _ = await kernel.send(
+                agentId,
+                .object([
+                    "type": .string("create_agent"),
+                    "handler_module": .string("yaml_state.tools"),
+                    "mode": .string(mode),
+                ]))
+        }
+    }
+
+    /// Agent ids of this backend's mounted yaml_state memory agents.
+    func memoryAgents(agentId: AgentId, kernel: Kernel) -> [AgentId] {
+        guard let agent = kernel.agent(agentId) else { return [] }
+        return agent.childIds().filter {
+            kernel.agent($0)?.handlerModule == "yaml_state.tools"
+        }
+    }
+
+    /// The system-prompt body + each mounted yaml_state memory agent's current
+    /// `state_yaml` spliced in. Because the FM session is rebuilt per
+    /// send, this single hook covers boot + every turn + post-compaction
+    /// for free — the model's durable memory is ALWAYS present, never
+    /// recalled (the "always inject" principle). Substrate-enforced
+    /// recall: the model supplies content via `set`; reading is structural.
+    func fullInstructions(agent: Agent, kernel: Kernel) async -> String {
+        var blocks: [String] = []
+        let base = instructions(agent: agent)
+        if !base.isEmpty { blocks.append(base) }
+        for memAgentId in memoryAgents(agentId: agent.id, kernel: kernel) {
+            let reply = await kernel.send(memAgentId, .object(["type": .string("state_yaml")]))
+            guard let yaml = reply["yaml"].asString, !yaml.isEmpty else { continue }
+            let mode = kernel.agent(memAgentId)?.metaValue(forKey: "mode")?.asString ?? "data"
+            blocks.append("## Your \(mode) memory (\(memAgentId.value)):\n\(yaml)")
+        }
+        return blocks.joined(separator: "\n\n")
+    }
+
     /// Generation temperature in [0, 2]. Read from the agent's
     /// `meta.temperature` field; defaults to 0.4 (WWDC25 guidance
     /// for tool-grounded factual answers). Anything outside the
@@ -451,7 +499,7 @@ public final class FoundationModelsBackendBundle: AgentBundle, @unchecked Sendab
                 )
                 return
             }
-            let inst = instructions(agent: agent)
+            let inst = await fullInstructions(agent: agent, kernel: kernel)
             let temp = temperature(agent: agent)
 
             // Snapshot the epoch BEFORE building the session — fixes

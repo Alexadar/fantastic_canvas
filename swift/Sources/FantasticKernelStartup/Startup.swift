@@ -32,6 +32,7 @@ import FantasticTools
 import FantasticWeb
 import FantasticWebRest
 import FantasticWebWS
+import FantasticYamlState
 import Foundation
 
 #if os(macOS)
@@ -47,6 +48,7 @@ import Foundation
 public func defaultBundleRegistry() -> BundleRegistry {
     let r = BundleRegistry()
     r.register("file.tools", FileBundle())
+    r.register("yaml_state.tools", YamlStateBundle())
     r.register("proxy_agent.tools", ProxyAgentBundle())
     r.register("tools.tools", ToolsBundle())
     r.register("html_agent.tools", HtmlAgentBundle())
