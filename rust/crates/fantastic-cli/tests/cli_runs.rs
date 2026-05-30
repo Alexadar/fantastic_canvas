@@ -26,7 +26,7 @@ fn no_args_in_virgin_dir_exits_zero_silently() {
 }
 
 #[test]
-fn reflect_returns_primer_json() {
+fn reflect_returns_uniform_json() {
     let tmp = tempfile::TempDir::new().unwrap();
     let output = Command::new(fantastic_bin())
         .arg("reflect")
@@ -39,16 +39,36 @@ fn reflect_returns_primer_json() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // Uniform reflect: id + tree (default all). No primer keys.
     assert!(
-        stdout.contains("\"primitive\""),
-        "reflect missing primitive key: {stdout}"
-    );
-    assert!(
-        stdout.contains("send(target_id"),
-        "reflect missing send signature"
+        stdout.contains("\"id\""),
+        "reflect missing id key: {stdout}"
     );
     assert!(stdout.contains("\"tree\""), "reflect missing tree key");
-    assert!(stdout.contains("\"available_bundles\""));
+    assert!(
+        !stdout.contains("\"transports\""),
+        "transports should have moved to the readme: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"available_bundles\""),
+        "available_bundles is now the bundles flag: {stdout}"
+    );
+}
+
+#[test]
+fn reflect_bundles_all_lists_catalog() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let output = Command::new(fantastic_bin())
+        .args(["reflect", "bundles=all"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run fantastic reflect bundles=all");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"bundles\"") && stdout.contains("\"handler_module\""),
+        "reflect bundles=all missing catalog: {stdout}"
+    );
 }
 
 #[test]

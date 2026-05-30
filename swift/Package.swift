@@ -82,7 +82,8 @@ let package = Package(
             dependencies: [
                 "FantasticJSON",
                 .product(name: "OrderedCollections", package: "swift-collections"),
-            ]
+            ],
+            resources: [.copy("Resources/root_readme.md")]
         ),
         .testTarget(
             name: "FantasticKernelTests",

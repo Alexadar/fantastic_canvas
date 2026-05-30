@@ -152,11 +152,11 @@ async def test_memory_transport_pair_round_trip(two_kernels):
         },
     )
     # The reply is what kernel B's root returns for reflect — the
-    # substrate primer.
+    # uniform identity + tree (transports moved to the readme).
     assert isinstance(r, dict), f"non-dict reply: {r!r}"
-    assert "transports" in r, f"reply not the primer: {r}"
-    assert "tree" in r
-    assert "available_bundles" in r
+    assert r["id"] == "core", f"reply not B's root reflect: {r}"
+    assert r["tree"]["id"] == "core"
+    assert "transports" not in r
 
 
 async def test_forward_before_boot_errors(two_kernels):

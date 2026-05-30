@@ -31,7 +31,7 @@ sleep 2
 curl -sf -X POST -H "Content-Type: application/json" \
   -d '{"type":"reflect"}' \
   http://localhost:$PORT/wr/kernel \
-  | jq -e '.primitive == "send(target_id, payload) -> reply | None"'
+  | jq -e '.id == "core" and .tree.id == "core"'
 ```
 
 ### Test 2: error on unknown target

@@ -155,8 +155,8 @@ impl BundleRegistry {
         self.by_handler.get(handler_module).cloned()
     }
 
-    /// Iterate registered (handler_module, bundle) pairs. Used by
-    /// `reflect` to enumerate `available_bundles`.
+    /// Iterate registered (handler_module, bundle) pairs. Used by the
+    /// `reflect bundles=all|ids` flag to enumerate the bundle catalog.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Arc<dyn Bundle>)> {
         self.by_handler.iter().map(|(k, v)| (k.as_str(), v))
     }

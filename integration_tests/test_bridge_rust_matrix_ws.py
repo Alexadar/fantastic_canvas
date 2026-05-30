@@ -44,9 +44,11 @@ async def _forward_reflect(
     reply = await ka.call("bridge", "forward", target="core", payload={"type": "reflect"})
     assert isinstance(reply, dict), f"expected dict, got {type(reply)}: {reply}"
     assert "error" not in reply, f"forward returned error: {reply}"
-    assert any(
-        k in reply for k in ("sentence", "tree", "verbs", "id", "primitive")
-    ), f"reply lacks reflect/primer fields: {list(reply.keys())}"
+    # Uniform reflect carries id + sentence + tree (transports/primitive
+    # moved to the readme).
+    assert all(
+        k in reply for k in ("id", "sentence", "tree")
+    ), f"reply lacks uniform reflect fields: {list(reply.keys())}"
 
 
 @pytest.mark.asyncio

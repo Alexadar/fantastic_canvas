@@ -123,6 +123,7 @@ public final class FoundationModelsBackendBundle: AgentBundle, @unchecked Sendab
         case "reflect":
             return [
                 "id": .string(agent.id.value),
+                "sentence": .string("Apple Foundation Models LLM agent (on-device, native tool-calling)."),
                 "kind": .string("foundation_models_backend"),
                 "provider": .string("apple_foundation_models"),
                 "available": .bool(isAvailable()),

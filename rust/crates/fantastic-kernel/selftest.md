@@ -28,8 +28,10 @@ jq -e '.id == "core"' .fantastic/agent.json
 ```
 
 Expect: `.fantastic/agent.json` exists with `id=core` after first
-invocation. Reflect returns the primer (transports + tree +
-available_bundles).
+invocation. Reflect returns the uniform identity + tree (default
+`tree=all`); `reflect bundles=all` lists the installable catalog and
+`reflect readme=true` attaches the root readme. Transport/wire docs
+live in the readme, not the reflect JSON.
 
 ### Test 2: persistence round-trip — merge-only
 

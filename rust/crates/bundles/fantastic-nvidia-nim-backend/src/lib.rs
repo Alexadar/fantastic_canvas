@@ -1088,7 +1088,7 @@ async fn assemble_messages(
     kernel: &Arc<Kernel>,
     client_id: &str,
 ) -> Result<Vec<Value>, String> {
-    // Pull primer + self reflect.
+    // Pull root reflect (tree) + self reflect.
     let primer = kernel
         .send(&AgentId::from("kernel"), json!({"type": "reflect"}))
         .await;

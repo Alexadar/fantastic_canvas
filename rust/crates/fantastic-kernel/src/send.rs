@@ -111,28 +111,14 @@ impl Kernel {
         })
         .await;
 
-        // Universal post-process: when reflect is called with
-        // `return_readme: true`, attach the target's readme.md content
-        // as `reply["readme"]` (or null if absent). Mirrors Python's
-        // `Agent._maybe_attach_readme` — readme stays opt-in so the
-        // default reflect surface stays lean. Only wraps object
-        // replies; verb errors / Null replies pass through unchanged.
-        if verb == "reflect"
-            && payload
-                .get("return_readme")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        {
-            if let Some(obj) = reply.as_object_mut() {
-                let readme = std::fs::read_to_string(target.readme_file()).ok();
-                obj.insert(
-                    "readme".to_string(),
-                    match readme {
-                        Some(s) => Value::String(s),
-                        None => Value::Null,
-                    },
-                );
-            }
+        // Universal post-process: compose every reflect reply with the
+        // tree/bundles/readme flags (mirrors Python's
+        // `Agent._apply_reflect_flags`). Bundle reflects and bare-agent
+        // reflects alike get the tree (default all) + the optional
+        // bundles catalog + the optional readme. Errors / Null replies
+        // pass through unchanged.
+        if verb == "reflect" {
+            crate::reflect::apply_reflect_flags(self, &target, &payload, &mut reply);
         }
 
         // State event + watcher fanout (synchronous; cheap subscribers).
@@ -293,7 +279,7 @@ async fn dispatch(kernel: &Arc<Kernel>, target: Arc<Agent>, payload: &Value) -> 
         // Universal answers for bare agents.
         return match verb {
             "boot" | "shutdown" => Value::Null,
-            "reflect" => crate::reflect::reflect(kernel, &target, payload),
+            "reflect" => crate::reflect::reflect_identity(&target),
             _ => json!({
                 "error": format!(
                     "agent {:?} has no handler_module; cannot answer verb {:?}",

@@ -667,7 +667,7 @@ async fn serve_root_index() -> impl IntoResponse {
 async fn serve_root_index_dynamic(State(state): State<AppState>) -> impl IntoResponse {
     let kernel = Arc::clone(&state.kernel);
 
-    // Pull the substrate primer to get the tree.
+    // Pull the root's reflect to get the tree (default tree=all).
     let primer = kernel
         .send(
             &AgentId::from("kernel"),

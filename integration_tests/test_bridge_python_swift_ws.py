@@ -65,8 +65,7 @@ async def test_python_swift_ws_forward_reflect(
 
     assert isinstance(reply, dict), f"expected dict, got {type(reply)}: {reply}"
     assert "error" not in reply, f"forward returned error: {reply}"
-    # Swift's core.reflect carries a `sentence` (and/or other primer
-    # fields). Accept either the primer shape or a reflect body.
+    # Uniform reflect carries id + sentence + tree (default tree=all).
     assert (
-        "sentence" in reply or "tree" in reply or "verbs" in reply or "id" in reply
-    ), f"reply lacks reflect/primer fields: {list(reply.keys())}"
+        "id" in reply and "tree" in reply
+    ), f"reply lacks uniform reflect fields: {list(reply.keys())}"

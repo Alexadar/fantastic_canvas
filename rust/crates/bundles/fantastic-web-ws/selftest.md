@@ -46,7 +46,7 @@ PY
 ### Test 1: WS handshake at /<agent>/ws
 
 ```bash
-call w kernel '{"type":"reflect"}' | jq -e '.primitive == "send(target_id, payload) -> reply | None"'
+call w kernel '{"type":"reflect"}' | jq -e '.id == "core" and .tree.id == "core"'
 ```
 
 ### Test 2: call frame returns reply

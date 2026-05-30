@@ -10,7 +10,7 @@
 //! Routes mounted:
 //!
 //! - `POST /<self_id>/{target_id}` body=payload → kernel.send → JSON
-//! - `GET  /<self_id>/_reflect` → kernel.reflect (substrate primer)
+//! - `GET  /<self_id>/_reflect` → kernel.reflect (root tree)
 //! - `GET  /<self_id>/_reflect/{target_id}` → reflect on a specific agent
 //!
 //! Verbs:

@@ -126,22 +126,33 @@ async fn dispatch(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     // Seed `.fantastic/readme.md` if missing, regardless of which mode
     // we're about to run. Python's bootstrap does this universally —
     // an LLM that walks into a workdir's `.fantastic/` always finds
-    // the substrate primer next to `agent.json`/`lock.json`. Idempotent
+    // the root readme.md next to `agent.json`/`lock.json`. Idempotent
     // (preserves user-edited content). Best-effort: if the workdir
     // can't be written to, the verb may still work.
     let _ = fantastic_core::seed_root_readme(&workdir);
 
-    // Mode 2: `reflect [<id>]`
+    // Mode 2: `reflect [<id>] [k=v ...]`. The first token after `reflect`
+    // is the target unless it's a `k=v` pair (then target defaults to the
+    // root); remaining `k=v` compose the reflect payload — `tree=ids`,
+    // `bundles=all`, `readme=true`, etc. (mirrors the Python CLI).
     if args.first().map(String::as_str) == Some("reflect") {
         let opts = BootstrapOptions::one_shot(&workdir);
         let booted = bootstrap::bootstrap(register_default_bundles(), opts)?;
-        let target = args
-            .get(1)
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_ROOT_ID.to_string());
+        let rest = &args[1..];
+        let (target, kvs): (String, &[String]) = match rest.first() {
+            Some(first) if !first.contains('=') => (first.clone(), &rest[1..]),
+            _ => (DEFAULT_ROOT_ID.to_string(), rest),
+        };
+        let mut payload = Map::new();
+        payload.insert("type".to_string(), json!("reflect"));
+        for kv in kvs {
+            if let Some((k, v)) = kv.split_once('=') {
+                payload.insert(k.to_string(), parse_kv(v));
+            }
+        }
         let reply = booted
             .kernel
-            .send(&AgentId::from(target.as_str()), json!({"type": "reflect"}))
+            .send(&AgentId::from(target.as_str()), Value::Object(payload))
             .await;
         println!("{}", serde_json::to_string_pretty(&reply)?);
         return Ok(());

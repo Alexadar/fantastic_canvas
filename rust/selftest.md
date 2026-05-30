@@ -29,12 +29,14 @@ Strict rules:
   remaining tests and flag it.
 - Do not invent expected output — ask if the spec is unclear.
 - A correctly-deployed `fantastic` answers `kernel.reflect` over WS
-  with every URL/transport/bundle/agent you need to issue your first
-  send. Open `ws://host/<any-agent>/ws` and send `{"type":"call",
-  "target":"kernel","payload":{"type":"reflect"},"id":"1"}`. If you
-  find yourself reading `crates/fantastic-kernel/src/` or
-  `crates/bundles/fantastic-web/src/` to figure out a transport URL
-  — that's a primer regression. Stop and flag it.
+  with the agent tree, the bundle catalog (`bundles=all`), and the root
+  readme (`readme=true`) — the readme carries the transport/wire docs
+  you need to issue your first send. Open `ws://host/<any-agent>/ws` and
+  send `{"type":"call","target":"kernel","payload":{"type":"reflect",
+  "readme":true},"id":"1"}`. If you find yourself reading
+  `crates/fantastic-kernel/src/` or `crates/bundles/fantastic-web/src/`
+  to figure out a transport URL — that belongs in the root readme. Stop
+  and flag it.
 
 ## Stateful crates need a running `fantastic` daemon
 

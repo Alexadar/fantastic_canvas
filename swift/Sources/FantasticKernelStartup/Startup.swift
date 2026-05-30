@@ -142,6 +142,10 @@ public func startKernel(
     )
     let dotFantastic = url.appendingPathComponent(".fantastic")
     try? fm.createDirectory(at: dotFantastic, withIntermediateDirectories: true)
+    // Seed `.fantastic/readme.md` (the substrate doc) if missing — the
+    // root has no handler_module, so per-bundle readme seeding skips it.
+    // Mirrors Rust's `seed_root_readme` / Python's `Core._seed_root_readme`.
+    RootReadme.seed(workdir: url)
 
     // Register a bare `core` root agent. If the workdir has a
     // persisted `core` record, `kernel.load()` below will replace

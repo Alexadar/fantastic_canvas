@@ -28,12 +28,15 @@ Strict rules:
 - If a regression signal in a test triggers, **STOP** that file's
   remaining tests and flag it.
 - Do not invent expected output — ask if the spec is unclear.
-- A correctly-deployed `fantastic` answers `kernel.reflect` over WS
-  with every URL/transport/bundle/agent you need to issue your first
-  send. Open `ws://host/<any-agent>/ws` and send `{"type":"call",
-  "target":"kernel","payload":{"type":"reflect"},"id":"1"}`. If you
-  find yourself reading `kernel/` source or `web/app.py` to figure
-  out a transport URL — that's a primer regression. Stop and flag it.
+- A correctly-deployed `fantastic` hands you the whole substrate in one
+  call: `reflect readme=true` returns the addressed agent's identity +
+  the root readme (every transport URL / bundle / agent you need to
+  issue your first send). Over WS: open `ws://host/<any-agent>/ws` and
+  send `{"type":"call","target":"kernel","payload":{"type":"reflect",
+  "readme":true,"bundles":"all"},"id":"1"}`. The transport/wire prose
+  lives in that readme now, not in the reflect JSON. If you find
+  yourself reading `kernel/` source or `web/app.py` to figure out a
+  transport URL — that's a regression. Stop and flag it.
 
 ## Stateful bundles need a running `serve`
 

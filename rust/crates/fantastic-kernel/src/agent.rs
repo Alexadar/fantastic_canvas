@@ -139,6 +139,18 @@ impl Agent {
             .map(str::to_string)
     }
 
+    /// Optional short `description` (best-effort, from meta) — a one-line
+    /// "what this agent does", surfaced in every reflect. Set via
+    /// create_agent / update_agent.
+    pub fn description(&self) -> Option<String> {
+        self.meta
+            .read()
+            .expect("meta lock poisoned")
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
     /// Merge new key/value pairs into meta and return the updated record.
     pub fn update_meta(&self, patch: Map<String, Value>) -> AgentRecord {
         {

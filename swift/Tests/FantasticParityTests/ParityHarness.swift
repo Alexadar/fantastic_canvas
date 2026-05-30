@@ -74,12 +74,17 @@
     /// Run `fantastic reflect [<id>]` against the Python kernel's
     /// dedicated shorthand mode.
     private func pythonReflect(
-        binary: URL, workdir: URL, agentId: String = "core"
+        binary: URL, workdir: URL, agentId: String = "core",
+        args: [String: String] = [:]
     ) throws -> JSON {
         let proc = Process()
         proc.executableURL = binary
         proc.currentDirectoryURL = workdir
-        proc.arguments = ["reflect", agentId]
+        var argList = ["reflect", agentId]
+        for (k, v) in args.sorted(by: { $0.key < $1.key }) {
+            argList.append("\(k)=\(v)")
+        }
+        proc.arguments = argList
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = Pipe()
@@ -186,6 +191,101 @@
                     #expect(entry["id"].asString != nil, "agent entry missing 'id': \(entry.serialize())")
                 }
             }
+        }
+
+        /// The new uniform reflect contract: both runtimes return
+        /// `{id, sentence, tree, ...}` with NONE of the old primer keys,
+        /// and `bundles` omitted by default.
+        @Test func reflectContractParity() async throws {
+            guard let binary = pythonBinaryURL() else { return }
+            let tmp = makeTempDir()
+            defer { try? FileManager.default.removeItem(at: tmp) }
+
+            let pyReply = try pythonReflect(binary: binary, workdir: tmp)
+            let kernel = try await startKernelInMemory(portHint: 0)
+            let swReply = await kernel.send(
+                AgentId("core"), .object(["type": .string("reflect")]))
+
+            let gone = [
+                "transports", "primitive", "envelope", "universal_verb",
+                "binary_protocol", "browser_bus", "well_known",
+                "agent_count", "available_bundles",
+            ]
+            for (label, r) in [("python", pyReply), ("swift", swReply)] {
+                #expect(r["id"].asString == "core", "\(label) reflect id != core")
+                #expect(r["sentence"].asString != nil, "\(label) reflect lacks sentence")
+                #expect(r["tree"]["id"].asString == "core", "\(label) reflect tree.id != core")
+                #expect(r["bundles"].asArray == nil, "\(label) reflect has bundles by default")
+                for k in gone {
+                    #expect(r[k] == nil || r[k] == .null, "\(label) reflect still has primer key \(k)")
+                }
+            }
+        }
+
+        /// `reflect tree=ids` → a flat string-id list (root first) on
+        /// both runtimes; `reflect bundles=all` → a `{name, handler_module}`
+        /// array on both (don't pin the set — bundle lists differ).
+        @Test func reflectTreeIdsAndBundlesParity() async throws {
+            guard let binary = pythonBinaryURL() else { return }
+            let tmp = makeTempDir()
+            defer { try? FileManager.default.removeItem(at: tmp) }
+
+            let pyIds = try pythonReflect(
+                binary: binary, workdir: tmp, args: ["tree": "ids"])
+            let kernel = try await startKernelInMemory(portHint: 0)
+            let swIds = await kernel.send(
+                AgentId("core"),
+                .object(["type": .string("reflect"), "tree": .string("ids")]))
+            for (label, r) in [("python", pyIds), ("swift", swIds)] {
+                let arr = r["tree"].asArray
+                #expect(arr != nil, "\(label) tree=ids not an array")
+                #expect(arr?.first?.asString == "core", "\(label) tree=ids root not first")
+            }
+
+            let pyB = try pythonReflect(
+                binary: binary, workdir: tmp, args: ["bundles": "all"])
+            let swB = await kernel.send(
+                AgentId("core"),
+                .object(["type": .string("reflect"), "bundles": .string("all")]))
+            for (label, r) in [("python", pyB), ("swift", swB)] {
+                let arr = r["bundles"].asArray
+                #expect(arr != nil && !(arr!.isEmpty), "\(label) bundles=all empty")
+                #expect(
+                    arr?.first?["name"].asString != nil
+                        && arr?.first?["handler_module"].asString != nil,
+                    "\(label) bundles=all entry missing name/handler_module")
+            }
+        }
+
+        /// `reflect readme=true` returns the canonical root readme on
+        /// BOTH runtimes — and Swift's embedded copy is byte-identical to
+        /// Python's. This is the cross-runtime readme parity sentinel.
+        @Test func rootReadmeByteIdenticalParity() async throws {
+            guard let binary = pythonBinaryURL() else { return }
+            let tmp = makeTempDir()
+            defer { try? FileManager.default.removeItem(at: tmp) }
+
+            let pyReply = try pythonReflect(
+                binary: binary, workdir: tmp, args: ["readme": "true"])
+            let pyReadme = pyReply["readme"].asString
+            #expect(pyReadme != nil, "python reflect readme=true lacks readme")
+            #expect(
+                pyReadme?.hasPrefix("# This is a Fantastic kernel.") == true,
+                "python readme not the canonical doc")
+
+            // Swift's embedded readme must equal Python's, byte-for-byte.
+            #expect(
+                RootReadme.text == pyReadme,
+                "Swift RootReadme.text diverged from Python's canonical readme")
+
+            // And Swift's reflect readme=true returns the same bytes.
+            let kernel = try await startKernelInMemory(portHint: 0)
+            let swReply = await kernel.send(
+                AgentId("core"),
+                .object(["type": .string("reflect"), "readme": .bool(true)]))
+            #expect(
+                swReply["readme"].asString == pyReadme,
+                "Swift reflect readme=true diverged from Python")
         }
 
         @Test func reflectErrorEnvelopeShape() async throws {
