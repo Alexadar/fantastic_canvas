@@ -49,8 +49,16 @@ function getPath(obj: unknown, path: string): unknown {
   return cur;
 }
 
+// Reject prototype-polluting keys in a dotted path before any assignment — a
+// remote peer could otherwise smuggle `__proto__` / `constructor` / `prototype`
+// through a state-patch path and poison Object.prototype.
+function isUnsafeKey(k: string): boolean {
+  return k === "__proto__" || k === "constructor" || k === "prototype";
+}
+
 function setPath(obj: unknown, path: string, value: unknown): void {
   const parts = path.split(".");
+  if (parts.some(isUnsafeKey)) return;
   let cur: unknown = obj;
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i] as string;
