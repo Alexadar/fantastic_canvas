@@ -2,11 +2,11 @@
 OpenAI-compatible LLM backend. api_key stored out-of-band via `file_agent_id` sidecar; rate-limit retry. Same surface as ollama_backend.
 
 This crate implements the **LLM backend contract** documented in
-`fantastic-ollama-backend`. Transport differs (HTTPS + Bearer auth +
-SSE + per-index tool-call argument aggregation + 429 rate-limit retry)
-but verbs and emitted events are byte-for-byte identical so the chat
-UI (`fantastic-ai-chat-webapp`) can swap providers by changing one
-`handler_module` field on the agent's record.
+`fantastic-ollama-backend`. The provider connection differs (HTTPS +
+Bearer auth + SSE + per-index tool-call argument aggregation + 429
+rate-limit retry) but verbs and emitted events are byte-for-byte
+identical, so any client can swap providers by changing one
+`handler_module` field on the agent's record — no client-side change.
 
 Extras beyond the contract:
 
@@ -19,5 +19,6 @@ Extras beyond the contract:
 On HTTP 429 BEFORE any chunk has been yielded, the bundle retries
 once after sleeping `min(60s, max(1s, Retry-After || 5s))`. A `say`
 event + `status(thinking, waiting_on=rate_limit)` event surface the
-wait so the chat UI can pulse "waiting on provider". Mid-stream 429
-(rare — quota usually checked up front) propagates as an error.
+wait on this agent's own inbox so any watcher can reflect "waiting on
+provider". Mid-stream 429 (rare — quota usually checked up front)
+propagates as an error.

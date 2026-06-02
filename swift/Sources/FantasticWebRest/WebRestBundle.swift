@@ -29,7 +29,7 @@ public final class WebRestBundle: AgentBundle, @unchecked Sendable {
         """
         web_rest — HTTP verb channel (diagnostic). Child of a web agent.
         POST /<self_id>/<target_id> body=payload → kernel.send → JSON. \
-        Browser-pastable shortcuts: GET /<self_id>/_reflect[/<target>][?readme=1]. \
+        Address-bar-friendly GET shortcuts: GET /<self_id>/_reflect[/<target>][?readme=1]. \
         Multiple instances coexist.
         """
     }
@@ -46,7 +46,7 @@ public final class WebRestBundle: AgentBundle, @unchecked Sendable {
                 "id": .string(agentId.value),
                 "kind": .string("web_rest"),
                 "sentence": .string(
-                    "REST diagnostic surface — POST /<self>/<target> (verb in body) + GET /<self>/_reflect[/<target>]; mounted on the parent web."
+                    "REST verb-invocation surface; POST /<self>/<target_id> body=payload."
                 ),
                 "verbs": [
                     "get_routes":

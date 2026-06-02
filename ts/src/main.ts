@@ -29,6 +29,32 @@ kernel.registerBundle("canvas.ts", () => null); // the compositor root (rendered
 kernel.registerBundle("terminal_view.ts", () => null);
 kernel.registerBundle("ai_view.ts", () => null);
 
+// Each frontend bundle declares its role via reflect (readme=true): the view
+// CLIENTS name the host CAPABILITY + verb surface they front (an LLM weaves the
+// pairing from this + the host's capability readme — no hardcoded pairing);
+// content agents say what they hold. Direction is frontend→host: the JS knows
+// it fronts a host capability; the host stays ignorant of the frontend.
+kernel.setBundleReadme(
+  "canvas.ts",
+  "Canvas compositor (frontend root). Renders the frontend's own member tree; mounts each member inline via its view bundle, or as an iframe for external content. Not a host client.",
+);
+kernel.setBundleReadme(
+  "html_agent.ts",
+  "Frontend HTML content agent. Holds a mutable `html` body in its record, rendered in a sandboxed frame; the injected connector relays send/emit/watch/onMessage to the kernel. Content, not a host client.",
+);
+kernel.setBundleReadme(
+  "gl_agent.ts",
+  "Frontend WebGL content agent. Renders its record's `gl_source` shader and reacts to events it watches by id. Content, not a host client.",
+);
+kernel.setBundleReadme(
+  "terminal_view.ts",
+  "HTML/xterm CLIENT for a host PTY. Fronts any agent answering the PTY verb surface (boot/write/ack/resize/interrupt/stop) and emitting output/exited, bound by `backend_id`: watches the backend's output, renders it, sends keystrokes via write.",
+);
+kernel.setBundleReadme(
+  "ai_view.ts",
+  "HTML chat CLIENT for a host LLM backend. Fronts any agent answering send/history/interrupt/status, bound by `backend_id`: renders streamed token/done events, sends user turns via send.",
+);
+
 new WsBridge(kernel, { origin, controlEndpoint: LOADER });
 // The ONE auto-added agent in the JS runtime — its single autoagent (the loader),
 // mirroring the host root loader. Everything else below is explicit.

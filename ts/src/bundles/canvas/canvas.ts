@@ -23,13 +23,13 @@ function viewFor(handlerModule: unknown): ViewBundle | undefined {
   return VIEW_BUNDLES.find((b) => b.handles.includes(handlerModule));
 }
 
-// The only HOST-bundle identities the canvas names, hoisted so they're documented
-// + overridable in one place rather than inline. `fs_loader` is the documented,
-// stable host ROOT-loader id (where host peers are created — a contracted entry
-// point like `kernel`/`web_loader`, not a reach into internals). `TERMINAL_BACKEND`
-// is the default backend the dblclick-spawn instantiates via create_agent.
-const HOST_ROOT_LOADER = "fs_loader";
-const TERMINAL_BACKEND = "terminal_backend.tools";
+// The canvas names NO host bundle id or type. To spawn a host peer it calls the
+// HOST ROOT via `host.callHost("kernel", …)` — the host resolves `kernel` to its
+// OWN root (`fs_loader`/`core`) — and it DISCOVERS which bundle provides a
+// capability from the live host catalog (`reflect bundles=all`) by matching a
+// capability name, instead of hardcoding a handler_module. (An LLM does the same
+// from the host + view readmes; this dblclick is just the deterministic shortcut.)
+const PTY_HINT = /(^|[._/-])(terminal_backend|pty)([._]|$)/i;
 
 export interface MountOptions {
   kernel: Kernel;
@@ -316,9 +316,15 @@ export async function mountCanvas(opts: MountOptions): Promise<void> {
         console.warn("[canvas] delete refused — delete_lock on", rec.id);
         return;
       }
-      // Remove the VIEW from the local tree (proxy_loader forgets it on the
-      // host). The host backend it fronted is a PEER — left running; reopening
-      // re-attaches.
+      // If this view SPAWNED its host backend (owns_backend — e.g. the dblclick
+      // terminal), delete that peer too so the pair is removed TOGETHER (the
+      // backend's on_delete tears down its PTY/process). A view bound to a
+      // PRE-EXISTING / shared backend leaves it running (weak peer — reopening
+      // re-attaches).
+      const backendId = str(r, "backend_id");
+      if (bool(r, "owns_backend") && backendId) {
+        void host.callHost("kernel", { type: "delete_agent", id: backendId });
+      }
       kernel.remove(rec.id);
     });
     return {
@@ -467,9 +473,21 @@ export async function mountCanvas(opts: MountOptions): Promise<void> {
   canvas.addEventListener("dblclick", async (e) => {
     if ((e.target as Element).closest(".agent-frame")) return;
     const w = screenToWorld(e.clientX, e.clientY);
-    const created = (await host.call(HOST_ROOT_LOADER, {
+    // Discover a PTY-capable bundle from the live host catalog (no hardcoded
+    // handler_module), then create it on the host root.
+    const cat = (await host.callHost("kernel", { type: "reflect", bundles: "all" })) as {
+      bundles?: Array<{ name?: string; handler_module?: string }>;
+    };
+    const pty = (cat?.bundles ?? []).find(
+      (b) => PTY_HINT.test(b.handler_module ?? "") || PTY_HINT.test(b.name ?? ""),
+    );
+    if (!pty || typeof pty.handler_module !== "string") {
+      console.warn("[canvas] no PTY-capable bundle in host catalog; skipping terminal spawn");
+      return;
+    }
+    const created = (await host.callHost("kernel", {
       type: "create_agent",
-      handler_module: TERMINAL_BACKEND,
+      handler_module: pty.handler_module,
     })) as { id?: string; error?: string };
     if (!created || created.error || typeof created.id !== "string") {
       console.error("[canvas] backend create failed:", created);
@@ -482,6 +500,7 @@ export async function mountCanvas(opts: MountOptions): Promise<void> {
         handlerModule: "terminal_view.ts", // a real frontend bundle; viewFor → terminalView
         meta: {
           backend_id: created.id, // weak peer ref to the host terminal_backend
+          owns_backend: true, // dblclick spawned it → delete removes the pair together
           x: Math.round(w.x),
           y: Math.round(w.y),
         },

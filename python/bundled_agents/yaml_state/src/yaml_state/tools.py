@@ -37,9 +37,9 @@ _MEM_SENTENCE = (
     "don't re-fetch."
 )
 _DATA_SENTENCE = (
-    "Your durable scratch-state (UI state, hyperparams, current selection). "
-    "One value per key, overwrite-in-place; auto-loaded into your context on "
-    "boot."
+    "Your durable scratch-state (component state, config, run params, current "
+    "selection). One value per key, overwrite-in-place; auto-loaded into your "
+    "context on boot."
 )
 
 

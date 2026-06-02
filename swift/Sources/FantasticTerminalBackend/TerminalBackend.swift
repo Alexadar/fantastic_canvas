@@ -33,7 +33,7 @@
         public var readme: String? {
             """
             terminal_backend — PTY shell session as an agent. One PTY per agent; process-memory state only.
-            Verbs: reflect, boot, input/write, ack, resize, paste_image, shutdown/stop. Output streams to this agent's own inbox as {type:"output", chunk} (the xterm UI watches it).
+            Verbs: reflect, boot, input/write, ack, resize, paste_image, shutdown/stop. Output streams to this agent's own inbox as {type:"output", chunk} (a client watches it).
             """
         }
 
@@ -51,7 +51,7 @@
                 return [
                     "id": .string(agent.id.value),
                     "kind": .string("terminal_backend"),
-                    "sentence": .string("PTY-backed shell session."),
+                    "sentence": .string("PTY shell session."),
                     "running": .bool(sessionFor(agent.id) != nil),
                     "verbs": [
                         "boot": "Spawns the shell (defaults to $SHELL or /bin/zsh).",

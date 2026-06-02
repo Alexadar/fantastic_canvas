@@ -70,7 +70,12 @@ export function applyReflectFlags(
 
   if (payload["readme"] === true || payload["return_readme"] === true) {
     const rd = target.meta["readme"];
-    obj["readme"] = typeof rd === "string" ? rd : null;
+    obj["readme"] =
+      typeof rd === "string"
+        ? rd
+        : target.handlerModule !== null
+          ? (kernel.bundleReadme(target.handlerModule) ?? null)
+          : null;
   }
 
   return obj;

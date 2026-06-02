@@ -23,6 +23,14 @@ export class Host {
     return this.kernel.send(target, payload);
   }
 
+  /** Call the HOST ROOT (or any host id) over the bridge, bypassing local
+   *  resolution — pass `"kernel"` and the host resolves it to its own root
+   *  (`fs_loader`/`core`). Used to read the host bundle catalog + create host
+   *  peers without naming a host-specific id. */
+  callHost(target: string, payload: Payload): Promise<Json> {
+    return this.kernel.callHost(target, payload);
+  }
+
   /** Fire-and-forget emit to a host agent's inbox (e.g. reload_html). */
   emit(target: string, payload: Payload): void {
     this.kernel.emitRemote(target, payload);

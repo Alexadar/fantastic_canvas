@@ -40,6 +40,11 @@ export class Kernel {
 
   /** handler_module -> the JS handler that runs that view bundle locally. */
   private readonly handlers: Map<string, Handler> = new Map();
+  /** handler_module -> the bundle's capability/client readme. Surfaced by
+   *  reflect readme=true when an agent of that type carries no per-record
+   *  readme — the frontend's self-description, mirroring how host bundles
+   *  attach a bundle-level readme. */
+  private readonly bundleReadmes: Map<string, string> = new Map();
   /** src id -> watcher ids subscribed to its inbox. */
   private readonly watchers: Map<string, Set<string>> = new Map();
   /** id -> inbox listeners (a view-agent observing an agent's events). */
@@ -52,6 +57,17 @@ export class Kernel {
   /** Register a JS view bundle by its handler_module name. */
   registerBundle(handlerModule: string, handler: Handler): void {
     this.handlers.set(handlerModule, handler);
+  }
+
+  /** Attach a bundle-level readme (a frontend bundle's self-description —
+   *  e.g. "html client for a host PTY"). Surfaced by reflect readme=true. */
+  setBundleReadme(handlerModule: string, readme: string): void {
+    this.bundleReadmes.set(handlerModule, readme);
+  }
+
+  /** The bundle-level readme for a handler_module, if one was registered. */
+  bundleReadme(handlerModule: string): string | undefined {
+    return this.bundleReadmes.get(handlerModule);
   }
 
   /** Add an agent to the tree, wiring it under its parent and (if its
@@ -256,6 +272,19 @@ export class Kernel {
       return Promise.resolve({ error: `no bridge to forward to '${targetId}'` });
     }
     return this.bridge.forwardBinary(this.resolve(targetId), payload);
+  }
+
+  /** Call the HOST directly over the bridge, bypassing LOCAL resolution. The
+   *  frontend's `resolve` maps `"kernel"` to the LOCAL root (the canvas), so a
+   *  plain `send("kernel", …)` would dispatch locally; this forwards the
+   *  LITERAL target so the HOST resolves `"kernel"` to ITS OWN root
+   *  (`fs_loader` on python, `core` on rust/swift). Used to create host peers +
+   *  read the host bundle catalog without the frontend naming a host id. */
+  callHost(target: string, payload: Payload): Promise<Json> {
+    if (this.bridge === null) {
+      return Promise.resolve({ error: `no bridge to reach host '${target}'` });
+    }
+    return this.bridge.forward(target, payload);
   }
 
   /** connect/disconnect notifications for a remote endpoint's socket. */
