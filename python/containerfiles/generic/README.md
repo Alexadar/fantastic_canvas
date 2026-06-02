@@ -55,8 +55,10 @@ workspace.
   `EXPOSE 8080`, copies + chmods the shared entrypoint, applies OCI
   labels for GHCR, sets `ENTRYPOINT`.
 
-The entrypoint seeds `web + web_ws + web_rest + canvas_backend` on
-first boot, then `exec fantastic`. Identical across variants — the
-base image is the only thing that changes. The TypeScript frontend is
-served weakly through generic agents (a `file` agent rooted at the
-built `ts/dist` + an `html_agent` mount page) — see `ts/SERVE.md`.
+The entrypoint seeds the host transport stack — `web + web_ws +
+web_rest` — on first boot, then `exec fantastic`. Identical across
+variants; the base image is the only thing that changes. The UI is the
+TypeScript frontend kernel (top-level `ts/`), served weakly through
+generic agents (a `file` agent rooted at the built `ts/dist` + a mount
+page) and federated to the host over the same `web_ws` wire — Python
+ships no view/canvas bundle of its own. See `ts/SERVE.md`.

@@ -32,7 +32,9 @@ from kernel._kernel import (
     Kernel,
     _current_sender,
     _summarize_payload,
+    sender_context,
 )
+from kernel._state import CURRENT_VERSION
 from kernel._lock import (
     LOCK_FILE,
     FantasticLock,
@@ -49,6 +51,8 @@ __all__ = [
     # Constants
     "INBOX_BOUND",
     "BUNDLE_ENTRY_GROUP",
+    "CURRENT_VERSION",
+    "sender_context",
     "_current_sender",
     "_summarize_payload",
     # Lock

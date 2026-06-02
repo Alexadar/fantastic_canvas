@@ -32,7 +32,7 @@ PTY output is decoded with a per-session incremental UTF-8 decoder
 boundary is reassembled — no replacement-char (`<?>`) litter or column-
 shift line breaks on resize. Mirrors what node-pty does for VSCode.
 
-Events emitted to the **parent**'s inbox (the terminal_webapp UI watches it):
+Events emitted to this agent's **OWN** inbox (an xterm UI watches it):
 
 - `{type:"data", text:str}` — decoded output (per read chunk)
 - `{type:"exited", exit_code:i32}` — child died

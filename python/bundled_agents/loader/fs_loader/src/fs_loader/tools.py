@@ -31,7 +31,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from kernel._state import CURRENT_VERSION
+from kernel import CURRENT_VERSION
 
 
 # ─── pure disk I/O (no kernel needed — the bootstrap calls these) ──

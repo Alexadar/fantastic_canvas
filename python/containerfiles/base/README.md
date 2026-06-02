@@ -2,11 +2,14 @@
 
 ## What this is
 
-A containerized Fantastic Kernel. The image ships with the **full
-canvas stack pre-seeded** on first boot (`web` on port 8080 + `web_ws`
-+ `web_rest` + `canvas_backend`) and all 20+ standard bundles installed
+A containerized Fantastic Kernel. The image ships with the **host
+transport stack pre-seeded** on first boot (`web` on port 8080 +
+`web_ws` + `web_rest`) and all 20+ standard bundles installed
 in the image's venv — they're
-available, just not yet *added* to the tree. The container's `.fantastic/`
+available, just not yet *added* to the tree. The host is pure
+data/compute/transport; the UI is the TS frontend kernel (`ts/`),
+served weakly and federated over `web_ws` (see "The canvas" below).
+The container's `.fantastic/`
 schema is identical to running `~/.local/bin/fantastic` locally in the
 workdir, so the bind-mounted state is portable between container and
 local-CLI modes (just not concurrently — the kernel's `lock.json`
@@ -124,21 +127,27 @@ from.
 ## The canvas
 
 The canvas is rendered by the **TypeScript frontend kernel** (the
-repo's top-level `ts/` package), served weakly through generic agents
-— a `file` agent rooted at the built `ts/dist` plus an `html_agent`
-mount page. Python knows nothing of the `ts/` package; the serving
-recipe lives in `ts/SERVE.md`. Find the mount id and open it:
+repo's top-level `ts/` package), NOT by any host bundle — the host is
+pure data/compute/transport. The frontend is served weakly through a
+generic `file` agent rooted at the built `ts/dist` plus a mount page,
+and federates back to the host over the same `web_ws` wire. Python
+knows nothing of the `ts/` package; the serving recipe (the `file`-agent
+seed + node build of `ts/dist`) lives in `ts/SERVE.md`. Once seeded,
+find the mount id and open it:
 
 ```bash
-CANVAS_ID=$(podman exec "$NAME" ls /workdir/.fantastic/agents | grep '^html_agent_')
-open "http://localhost:8080/$CANVAS_ID/"   # macOS; use xdg-open on Linux
+MOUNT_ID=$(podman exec "$NAME" ls /workdir/.fantastic/agents | grep '^file_')
+open "http://localhost:8080/$MOUNT_ID/"   # macOS; use xdg-open on Linux
 ```
 
-You get an empty Liquid-Glass canvas. **Double-click on empty canvas**
-spawns a `terminal_backend` tile via `canvas_backend.add_agent` —
-that's the operator's main interaction loop. Terminals, html_agents,
-and gl_agents land on the canvas this way (or via REST / WS
-`add_agent` calls against the `canvas_backend` id).
+You get the Liquid-Glass canvas. Composition happens inside the
+frontend kernel: the canvas compositor and its view/content agents are
+`*.ts` bundles that run in the browser and persist back to host disk
+under `.fantastic/web/<session>/` via the frontend's `proxy_loader`.
+Host-side compute the canvas drives — PTY shells (`terminal_backend`),
+Python jobs (`python_runtime`), AI backends — is reached by id over
+`web_ws` / `web_rest`, the same `send` calls a frontend view-agent
+makes against any host agent.
 
 ## Install more bundles
 

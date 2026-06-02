@@ -29,9 +29,15 @@ integration_tests/
     kernel_proc.py    subprocess wrapper for fantastic kernels
     seeding.py        one-shot CLI seeding (web / web_ws / bridge_ws)
     ws.py             minimal WS client: ws_call, ws_emit, ws_session
-  test_bridge_*.py    cross-runtime bridge tests (WS-only)
-  py_ts/              Python<->TS tests (node-driven, real browser over the
-                      bridge) + the heavy e2e emergence layer — see py_ts/README.md
+  bridge/             cross-runtime kernel_bridge tests (WS-only) — the
+                      python/swift/rust forward + watch_remote matrix
+  decoupling/         part-1 decoupling guards — the bundle catalog drops the
+                      view bundles; a host serves the ts/ frontend generically
+  web/                host HTTP surface tests (web_rest)
+  py_ts/              Python<->TS tests (node-driven, real browser) + the
+                      heavy e2e emergence layer — see py_ts/README.md
+  rust_ts/ swift_ts/  browser-e2e scaffolds for the rust/swift hosts (not yet
+                      wired — see their README.md)
   tmp/                per-run scratch workdirs (gitignored)
 ```
 
@@ -58,10 +64,12 @@ isn't built yet.
 
 ```bash
 cd integration_tests
-uv run pytest                                  # everything
-uv run pytest test_bridge_python_python_ws.py  # one file
-uv run pytest -k swift                          # filter by name
-uv run pytest -s                               # streamed stdout (verbose)
+uv run pytest                                         # everything
+uv run pytest bridge/                                 # one subsuite (the bridge matrix)
+uv run pytest bridge/test_bridge_python_python_ws.py  # one file
+uv run pytest decoupling/                             # the decoupling guards
+uv run pytest -k swift                                # filter by name
+uv run pytest -s                                      # streamed stdout (verbose)
 ```
 
 ## What's tested
@@ -85,7 +93,9 @@ state + `lock.json` to see what the kernel had).
 
 ## Adding a test
 
-1. Drop a `test_*.py` in this directory.
+1. Drop a `test_*.py` in the matching subfolder (`bridge/`, `decoupling/`,
+   `web/`, or a new topical one). The root `conftest.py` + `helpers/`
+   resolve from any depth (conftest puts `integration_tests/` on `sys.path`).
 2. Use the `python_kernel` / `swift_kernel` fixtures to spawn instances
    (spawn the **server** first — the client bridge connects eagerly).
 3. Seed with `helpers.seeding`: `seed_web` + `seed_web_ws` (Python

@@ -102,7 +102,10 @@ cargo check  -p fantastic-cli    --no-default-features --features embedded
 Passes clean — that's the contract the sandboxed/no-subprocess tier
 ships against.
 
-## Bundle map (21 of 21)
+## Bundle map (17 of 17)
+
+The frontend ships no native view bundles — it is served generically
+from `ts/dist` via a `file` agent (the host never names the frontend).
 
 iOS-safe bundles (compile under either tier):
 
@@ -114,14 +117,7 @@ iOS-safe bundles (compile under either tier):
 | `fantastic-web`             | axum HTTP host + WS + REST (dynamic mounting)                 |
 | `fantastic-web-ws`          | WS verb-channel routes (mounted onto parent web)              |
 | `fantastic-web-rest`        | REST verb-channel routes (mounted onto parent web)            |
-| `fantastic-html-agent`      | UI-as-record; html_content stored on agent.json               |
-| `fantastic-canvas-backend`  | spatial UI host (DOM iframes + GL layers)                     |
-| `fantastic-canvas-webapp`   | the canvas page itself, with transport.js + canvas.js         |
 | `fantastic-scheduler`       | tokio-tick recurring tasks via file_agent_id persistence      |
-| `fantastic-gl-agent`        | GLSL-on-a-record with set/get + get_gl_view                   |
-| `fantastic-telemetry-pane`  | embedded GL view of the kernel state stream                   |
-| `fantastic-ai-chat-webapp`  | provider-agnostic chat UI (works against any LLM backend)     |
-| `fantastic-terminal-webapp` | xterm-based terminal UI iframe (dormant without backend)      |
 | `fantastic-ollama-backend`  | local LLM via ollama; LLM contract reference impl             |
 | `fantastic-nvidia-nim-backend` | NVIDIA NIM LLM (OpenAI-compatible, api_key sidecar, 429 retry) |
 | `fantastic-kernel-bridge`   | cross-kernel comms over memory / WS (asymmetric, WS-only)      |
@@ -152,14 +148,7 @@ rust/
 │       ├── fantastic-web/                 axum host + WS/REST router
 │       ├── fantastic-web-ws/              WS verb channel
 │       ├── fantastic-web-rest/            REST verb channel
-│       ├── fantastic-html-agent/          html-as-record
-│       ├── fantastic-canvas-backend/      canvas host
-│       ├── fantastic-canvas-webapp/       canvas page
 │       ├── fantastic-scheduler/           recurring tasks
-│       ├── fantastic-gl-agent/            GLSL-on-record
-│       ├── fantastic-telemetry-pane/      live kernel-state GL view
-│       ├── fantastic-ai-chat-webapp/      provider-agnostic chat UI
-│       ├── fantastic-terminal-webapp/     xterm UI
 │       ├── fantastic-ollama-backend/      local LLM
 │       ├── fantastic-nvidia-nim-backend/  NVIDIA NIM LLM
 │       ├── fantastic-kernel-bridge/       cross-kernel comms

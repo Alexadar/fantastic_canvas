@@ -38,9 +38,9 @@ answers `{type:"reflect"}` — the universal discovery verb.
    ┌─────────────────────────────────────────────────────────────────────┐
    │                    BROWSER — FRONTEND KERNEL                         │
    │  A pure peer (top-level `ts/`, `*.ts` bundles) that federates to the │
-   │  host over the SAME WS wire (web_ws). The VIEW-agents live HERE:     │
-   │  canvas compositor · terminal_view · ai_view · gl_agent ·       │
-   │  html_agent. Their records persist back to host disk under           │
+   │  host over the SAME WS wire (web_ws). The VIEW + content agents live │
+   │  HERE (canvas compositor + its `*.ts` view/content bundles). Their   │
+   │  records persist back to host disk under                             │
    │  `.fantastic/web/<session>/` via the frontend's `proxy_loader`.     │
    └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -89,7 +89,7 @@ browser JS, peers over one WS):
   holds the live kernel and relays (child → spawner → kernel; never a direct host
   dial — the no-bypass rule). A host `python_runtime` job's spawned code gets a
   `kernel` object (send/emit/reflect/watch/on_message over a socketpair); a browser
-  `html_agent`'s JS gets `fantastic` (the same surface over postMessage). Different
+  view-agent's JS gets `fantastic` (the same surface over postMessage). Different
   wire, one protocol — exactly like `web_ws` and the pipe are two transports of the
   one envelope. So from EITHER side a routine reads memory anywhere, calls an AI,
   spawns a job, pushes to a panel — by id, regardless of which kernel owns the
@@ -176,10 +176,10 @@ the frontend's `proxy_loader`. See "Two kernels" in the root readme.
 | `ssh_runner` | remote `fantastic` lifecycle over SSH — start/stop/restart/status + local SSH tunnel for canvas iframing. Pure subprocess ssh; composes with `kernel_bridge` for messaging |
 
 **View bundles live in the FRONTEND kernel (`ts/`), not here.** The
-canvas compositor, `terminal_view`, `ai_view`, and the content
-agents `gl_agent` / `html_agent` are `*.ts` bundles that run in the
-browser and persist back via `proxy_loader` (see "Two kernels" in the
-root readme). The host holds only data/compute/transport bundles.
+canvas compositor and its view/content agents are `*.ts` bundles that
+run in the browser and persist back via `proxy_loader` (see "Two
+kernels" in the root readme). The host holds only data/compute/transport
+bundles.
 
 Each bundle is a real Python package with its own `pyproject.toml`,
 declaring `[project.entry-points."fantastic.bundles"]`. `fantastic`
@@ -215,8 +215,8 @@ scanned at process start.
   transport/wire docs live in the root readme (`reflect readme=true`).
 - **`render_html`** — duck-typed presentation. Any agent returning
   `{html:str}` from `render_html` can be rendered by a view. This is now
-  a FRONTEND pattern (`html_agent.ts` holds the body in its record); the
-  host web still exposes a generic `/<id>/` route but ships no host
+  a FRONTEND pattern (a `*.ts` content agent holds the body in its
+  record); the host web still exposes a generic `/<id>/` route but ships no host
   implementer. Bodies reach the kernel via the frontend's own typed WS
   bridge (`ts/`) — no transport script injected.
 - **`get_webapp`** — duck-typed UI discovery. The TS canvas compositor

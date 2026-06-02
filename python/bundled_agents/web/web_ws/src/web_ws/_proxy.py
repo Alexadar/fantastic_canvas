@@ -36,7 +36,7 @@ import secrets
 import struct
 from typing import Any
 
-from kernel import _current_sender
+from kernel import sender_context
 
 logger = logging.getLogger(__name__)
 
@@ -189,21 +189,16 @@ async def run(ws, kernel, host_agent_id: str, web_agent_id: str) -> None:
         target = frame.get("target", "")
         payload = frame.get("payload", {})
         fid = frame.get("id", "")
-        token = _current_sender.set(web_agent_id)
         try:
-            reply = await kernel.send(target, payload)
+            with sender_context(web_agent_id):
+                reply = await kernel.send(target, payload)
             await _send_envelope({"type": "reply", "id": fid, "data": reply})
         except Exception as e:
             await _send_envelope({"type": "error", "id": fid, "error": str(e)})
-        finally:
-            _current_sender.reset(token)
 
     async def _on_emit(frame):
-        token = _current_sender.set(web_agent_id)
-        try:
+        with sender_context(web_agent_id):
             await kernel.emit(frame.get("target", ""), frame.get("payload", {}))
-        finally:
-            _current_sender.reset(token)
 
     async def _on_watch(frame):
         src = frame.get("src", "")

@@ -27,6 +27,7 @@ concurrent handlers don't trample each other.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import importlib
 import json
@@ -49,6 +50,22 @@ if TYPE_CHECKING:
 _current_sender: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_current_sender", default=None
 )
+
+
+@contextlib.contextmanager
+def sender_context(sender_id: str):
+    """Attribute nested send/emit to `sender_id` for the duration of the
+    block. A web/REST surface — which dispatches browser-originated traffic
+    from OUTSIDE any handler — uses this to tag external calls with its own
+    agent id so telemetry rays originate from its sprite. Mirrors the
+    substrate's per-dispatch tagging in `Agent._dispatch`. This is the
+    PUBLIC, non-underscore entry point bundles bind to; `_current_sender`
+    itself stays a kernel internal."""
+    token = _current_sender.set(sender_id)
+    try:
+        yield
+    finally:
+        _current_sender.reset(token)
 
 
 _SUMMARY_MAX_LEN = 160

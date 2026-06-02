@@ -139,14 +139,16 @@ async def test_records_carry_handler_module(seeded_kernel):
     to pick a view (inline by handler_module, else iframe via get_webapp)."""
     a = (
         await seeded_kernel.send(
-            "fs_loader", {"type": "create_agent", "handler_module": "html_agent.tools"}
+            "fs_loader",
+            {"type": "create_agent", "handler_module": "frontend_view.tools"},
         )
     )["id"]
     b = (
         await seeded_kernel.send(
-            "fs_loader", {"type": "create_agent", "handler_module": "html_agent.tools"}
+            "fs_loader",
+            {"type": "create_agent", "handler_module": "frontend_view.tools"},
         )
     )["id"]
     a_rec = seeded_kernel.get(a)
     b_rec = seeded_kernel.get(b)
-    assert a_rec["handler_module"] == b_rec["handler_module"] == "html_agent.tools"
+    assert a_rec["handler_module"] == b_rec["handler_module"] == "frontend_view.tools"

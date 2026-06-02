@@ -117,7 +117,9 @@ port yourself):
     fantastic <web_id> create_agent handler_module=fs_loader.tools \
         root=.fantastic/web watch=false alias=web_loader      # the frontend store (see "Two kernels")
     fantastic web_loader persist_record \
-        record='{"id":"canvas","handler_module":"canvas.ts"}' # the frontend ROOT panels parent to
+        record='{"id":"<root_id>","handler_module":"<frontend-root>.ts"}' # seed the frontend
+        # compositor ROOT (an opaque `.ts` record) that panels parent to; reflect the TS
+        # frontend kernel served from ts/dist over the bridge for its actual root/view kinds
 ...then they restart the daemon.
 
 ## Mental model
@@ -144,26 +146,31 @@ renders all UI. The `handler_module` SUFFIX says where an agent runs:
 There is NO server-side page/render route, no `mount` verb, no per-verb REST
 surface — don't invent those. The host serves only STATIC files (via a `file`
 agent) and carries `send()`/events over the WS bus. ALL UI is `*.ts` agents the
-browser renders. A "web panel" is an `html_agent.ts` record — never a `web.tools`
-page.
+browser renders. A "web panel" is a frontend view record (`handler_module`
+ending in `.ts`) the frontend kernel renders — never a `web.tools` page.
 
 ### Recipe: add an interactive panel
 `web_loader` is a second `fs_loader` rooted at `.fantastic/web/` (alias
 `web_loader`; created once — see "Reach this kernel"). The browser `load_tree`s
-it on boot and `persist_record`s changes back. The store holds ONE root the
-canvas renders: `canvas` (`handler_module: canvas.ts`), seeded once at setup —
+it on boot and `persist_record`s changes back. These records are stored OPAQUELY
+here (`handler_module` ending in `.ts` → inert on the host); the TS frontend
+kernel served from `ts/dist` is what hydrates + renders them. Reflect that
+frontend over the bridge to discover its compositor root and view-agent kinds.
+The store holds ONE compositor root the frontend renders, seeded once at setup —
 `load_tree` and look for it. Panels are its children. (A child of a dir with no
-`agent.json` is unreachable, so the `canvas` record MUST exist before you parent
-to it — that's why setup seeds it.) Then:
+`agent.json` is unreachable, so the compositor root record MUST exist before you
+parent to it — that's why setup seeds it.) Then persist a frontend view record
+(a `.ts` `handler_module`) parented to that root — e.g.:
 
     send web_loader {"type":"persist_record","record":{
-      "id":"panel1", "handler_module":"html_agent.ts", "parent_id":"canvas",
+      "id":"panel1", "handler_module":"<frontend-view>.ts", "parent_id":"<root_id>",
       "html":"<button id=run>Run</button> <pre id=out></pre><script>…</script>"
     }}
 
 The `html` IS the panel BODY (a fragment — frontend state in the record). The
-canvas renders it as a sandboxed iframe automatically (no mount), and INJECTS a
-`fantastic` connector the body uses to reach the JS kernel — no import, no URL:
+frontend compositor renders it as a sandboxed iframe automatically (no mount),
+and INJECTS a `fantastic` connector the body uses to reach the JS kernel — no
+import, no URL:
 
     let job = null;
     fantastic.watch("<python_runtime_id>", (ev) => {          // live progress, host → here
@@ -205,7 +212,7 @@ Frontend code NEVER addresses the host directly — always the JS kernel.
 
 Every routine reaches every agent by id through its connector — a host
 `python_runtime` job (its spawned code gets a `kernel`: send/emit/reflect/watch/
-on_message) and a browser `html_agent`'s JS (its injected `fantastic`) alike. So
+on_message) and a browser view-agent's JS (its injected `fantastic`) alike. So
 from EITHER kernel a routine can: read memory from anywhere (`send(<state_id>,
 {type:"read"})`), run an inference turn (`send(<ai_id>, {type:"send",
 system_prompt, text})`), and/or spawn a compute job (`send(<py_id>,
@@ -223,9 +230,9 @@ system prompt carries the `send` signature, and the model routes its own output
 You may be `claude` in a `terminal_backend` PTY on this host. The view
 rendering you (`terminal_view`) lives in the browser frontend, not the
 agent tree — reflect yourself and walk `parent_id` up to see what you're
-under. To add FRONTEND views beside yourself (an `html_agent.ts` panel, a
-`gl_agent.ts` view), `persist_record` them to `web_loader` (see "Recipe"
-above); to add HOST agents, `create_agent` here. (Lost your own id?
+under. To add FRONTEND views beside yourself (any frontend view record —
+`handler_module` ending in `.ts`), `persist_record` them to `web_loader` (see
+"Recipe" above); to add HOST agents, `create_agent` here. (Lost your own id?
 `reflect tree=ids` lists every one — find the `terminal_backend` whose PTY
 is yours.)
 

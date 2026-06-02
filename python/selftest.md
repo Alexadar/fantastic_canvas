@@ -139,10 +139,9 @@ agent answers them natively for its own children, so there's no
 
 The root selftest is the `fs_loader` one (id `"fs_loader"`) — the
 persistence/hydration root that owns `.fantastic/`; there's no `core`
-selftest anymore. The view/content selftests (canvas compositor,
-`terminal_view`, `ai_view`, `gl_agent`, `html_agent`) live with
-the FRONTEND kernel in `ts/`, NOT here — they're `*.ts` bundles, not
-host bundles.
+selftest anymore. The view/content selftests (the canvas compositor and
+its view/content agents) live with the FRONTEND kernel in `ts/`, NOT
+here — they're `*.ts` bundles, not host bundles.
 
 ## Selection examples
 

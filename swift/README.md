@@ -22,8 +22,10 @@ env var; skipped cleanly when unset.
   variant so on-disk JSON matches Python's `dict` key order
 - 1 bootstrap target (`FantasticKernelStartup`) — `startKernel(...)`
   / `startKernelInMemory(...)` entry points
-- 20 bundle targets (16 multi-platform + 4 macOS-Pro) — see
-  scoreboard below
+- 13 bundle targets (9 multi-platform + 4 macOS-Pro) — see
+  scoreboard below. The browser frontend is no longer a native
+  bundle: it is served generically from `ts/dist` via a `file`
+  agent (weak binding — the host never names the frontend)
 - 2 umbrella targets (`FantasticKernelEmbedded`,
   `FantasticKernelFull`) — Apple-app entry points
 - 1 CLI executable (`fantastic`)
@@ -63,14 +65,7 @@ kernel modules.
 | file | `FantasticFile` | both | sandboxed file storage |
 | proxy_agent | `FantasticProxyAgent` | both | host-implemented agents (LanguageModel, etc.) |
 | tools | `FantasticTools` | both | LLM tool registry |
-| html_agent | `FantasticHtmlAgent` | both | HTML surface agent |
-| gl_agent | `FantasticGlAgent` | both | WebGL surface agent |
 | scheduler | `FantasticScheduler` | both | cron / interval triggers |
-| canvas_backend | `FantasticCanvasBackend` | both | spatial workspace state |
-| canvas_webapp | `FantasticCanvasWebapp` | both | canvas frontend at `/<id>/` |
-| ai_chat_webapp | `FantasticAiChatWebapp` | both | chat UI, provider-agnostic |
-| terminal_webapp | `FantasticTerminalWebapp` | both | xterm.js frontend |
-| telemetry_pane | `FantasticTelemetryPane` | both | event firehose UI |
 | cli_bundle | `FantasticCliBundle` | both | scripted-CLI surface |
 | kernel_bridge | `FantasticKernelBridge` | both | in-memory + WS transports (asymmetric; WS targets remote `web_ws`) |
 | web | `FantasticWeb` | both | HTTP + WS server (Network.framework) |
@@ -117,9 +112,7 @@ swift/
     FantasticWeb/                      HTTP + WS server (Network.framework)
     FantasticOllamaBackend/            local LLM SSE
     FantasticNvidiaNimBackend/         hosted LLM SSE
-    Fantastic{Canvas,AiChat,Terminal,Telemetry}{Backend,Webapp,Pane}/
-                                       UI + state bundles
-    Fantastic{File,ProxyAgent,Tools,HtmlAgent,GlAgent,Scheduler,
+    Fantastic{File,ProxyAgent,Tools,Scheduler,
               CliBundle,KernelBridge}/
                                        supporting bundles
     Fantastic{Terminal,Local,Python,Ssh}{Backend,Runner,Runtime}/
@@ -150,8 +143,8 @@ breaking change to:
 - `ProxyAgent` protocol (`handle`, `onBoot`, `onDelete`)
 - HTTP routes (`/<agent_id>/`, `/<agent_id>/ws`, `/_assets/*`,
   `/transport.js`)
-- Bundle names: `proxy_agent.tools`, `tools.tools`,
-  `canvas_webapp.tools`, `canvas_backend.tools`, `web.tools`, etc.
+- Bundle names: `proxy_agent.tools`, `tools.tools`, `file.tools`,
+  `web.tools`, etc.
 
 ## Third-party dependencies
 
