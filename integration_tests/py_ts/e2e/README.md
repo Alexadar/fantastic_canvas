@@ -31,7 +31,7 @@ both gaps:
    PTY), **ai_view ↔ AI backend = 1:1** (bound by `backend_id` to shared compute), and
    **html_agent panel ↔ python_runtime = 1:N** (a content agent, no binding — its JS
    send/watches a many-jobs runtime by id). `pairing_verify.ts` asserts it structurally;
-   a mis-derivation is the signal to strengthen the readme nudge and re-run.
+   a wrong derivation is the signal to strengthen the readme nudge and re-run.
 
 ## Prerequisites
 

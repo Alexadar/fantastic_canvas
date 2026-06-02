@@ -173,7 +173,7 @@ node integration_tests/py_ts/e2e/pairing_verify.ts <REST_URL>
 
 PASS = `terminal_view`/`ai_view` each carry a `backend_id` to a distinct backend of the
 right type (1:1, no shared/orphan PTY); `html_agent` panels carry NO `backend_id` and
-their `html` send/watches a `python_runtime` (1:N). A mis-derivation (panel given a
+their `html` send/watches a `python_runtime` (1:N). A wrong derivation (panel given a
 `backend_id`, a shared PTY, a view with none) is the SIGNAL the self-description is
 insufficient → strengthen the still-implicit readme nudge (Phase A) and re-run. That
 iteration loop is the test's value.
