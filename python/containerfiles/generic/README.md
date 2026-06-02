@@ -11,10 +11,15 @@ containerfiles/
 │   ├── Containerfile                 the shared recipe (ARG BASE_IMAGE)
 │   ├── entrypoint.sh                 seeds .fantastic/ + execs fantastic
 │   └── README.md                     (this file)
-├── base/                             slim variant — Python 3.13-slim
-│   ├── build.sh                      podman build invocation
+├── base/                             slim variant — Python 3.11-slim
 │   ├── README.md                     operator guide
 │   └── selftest.md                   end-to-end probes
+├── base-amd64/                       slim wrapper — linux/amd64
+│   ├── build.sh                      podman build invocation
+│   └── push.sh                       build + push to GHCR
+├── base-arm64/                       slim wrapper — linux/arm64
+│   ├── build.sh                      podman build invocation
+│   └── push.sh                       build + push to GHCR
 └── gpubase/                          GPU variant — nvidia/cuda
     ├── build.sh
     └── ... (selftest + README when tested)
@@ -36,7 +41,7 @@ containerfiles/
 ```bash
 podman build \
   -f containerfiles/generic/Containerfile \
-  --build-arg BASE_IMAGE=python:3.13-slim \
+  --build-arg BASE_IMAGE=python:3.11-slim \
   -t fantastic-canvas-base:dev \
   .
 ```

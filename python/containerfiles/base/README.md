@@ -4,7 +4,7 @@
 
 A containerized Fantastic Kernel. The image ships with the **host
 transport stack pre-seeded** on first boot (`web` on port 8080 +
-`web_ws` + `web_rest`) and all 20+ standard bundles installed
+`web_ws` + `web_rest`) and all 16 standard bundles installed
 in the image's venv — they're
 available, just not yet *added* to the tree. The host is pure
 data/compute/transport; the UI is the TS frontend kernel (`ts/`),

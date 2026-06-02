@@ -24,15 +24,20 @@ Same goal — interop *between* kernels — different driver. See `py_ts/README.
 ```
 integration_tests/
   pyproject.toml      uv-managed; pytest + websockets + httpx
-  conftest.py         shared fixtures (free_port, parity_tmp, python/swift kernels)
+  conftest.py         shared fixtures: free_port, parity_tmp,
+                      python/swift/rust _binary + _kernel spawn factories
   helpers/
     kernel_proc.py    subprocess wrapper for fantastic kernels
-    seeding.py        one-shot CLI seeding (web / web_ws / bridge_ws)
+    seeding.py        one-shot CLI seeding (web / web_ws / web_rest /
+                      bridge_ws) + root_id() (resolve a kernel's literal root)
+    streaming.py      assert_watch_remote_streams — the shared watch_remote driver
     ws.py             minimal WS client: ws_call, ws_emit, ws_session
   bridge/             cross-runtime kernel_bridge tests (WS-only) — the
                       python/swift/rust forward + watch_remote matrix
-  decoupling/         part-1 decoupling guards — the bundle catalog drops the
-                      view bundles; a host serves the ts/ frontend generically
+  decoupling/         decoupling guards — part-1 (bundle catalog drops the
+                      view bundles; a host serves the ts/ frontend generically)
+                      + part-3 (readme-contract lint: host readmes describe
+                      capability only, never client tech)
   web/                host HTTP surface tests (web_rest)
   py_ts/              Python<->TS tests (node-driven, real browser) + the
                       heavy e2e emergence layer — see py_ts/README.md
@@ -56,6 +61,10 @@ looks for:
 
   Swift kernel:  `swift/.build/debug/fantastic` (run `cd ../swift &&
   swift build` to compile)
+
+  Rust kernel:   `rust/target/{release,debug}/fantastic` (run `cd
+  ../rust && cargo build` to compile; release is preferred when both
+  exist, picked by mtime)
 
 A test is skipped (not failed) when its required kernel binary
 isn't built yet.
@@ -85,7 +94,12 @@ connects eagerly), so tests spawn the server kernel first.
 | `test_bridge_python_python_ws.py` | Python ↔ Python | `forward(reflect)` + `forward(list_agents)` |
 | `test_bridge_swift_python_ws.py`  | Swift → Python  | `forward(reflect)` (Swift client, Python server) |
 | `test_bridge_python_swift_ws.py`  | Python → Swift  | `forward(reflect)` (Python client, Swift server) |
+| `test_bridge_swift_swift_ws.py`   | Swift → Swift   | `forward(reflect)` (closest proxy for the Apple app) |
+| `test_bridge_rust_matrix_ws.py`   | rust→rust · rust→python · python→rust · rust→swift · swift→rust | `forward(reflect)` across the whole Rust matrix + rust↔rust `watch_remote` stream |
 | `test_bridge_stream_python_python_ws.py` | Python ↔ Python | `watch_remote` → `event` re-emit streaming |
+| `test_bridge_stream_python_swift_ws.py`  | Python → Swift  | `watch_remote` → `event` re-emit streaming |
+| `test_bridge_stream_swift_python_ws.py`  | Swift → Python  | `watch_remote` → `event` re-emit streaming |
+| `test_bridge_stream_swift_swift_ws.py`   | Swift ↔ Swift   | `watch_remote` → `event` re-emit streaming |
 
 Each test runs against fresh workdirs under `tmp/<test-name>/<uuid>/`.
 On failure the workdir is preserved for inspection (look for `agent.json`
@@ -99,9 +113,12 @@ state + `lock.json` to see what the kernel had).
 2. Use the `python_kernel` / `swift_kernel` fixtures to spawn instances
    (spawn the **server** first — the client bridge connects eagerly).
 3. Seed with `helpers.seeding`: `seed_web` + `seed_web_ws` (Python
-   server) and `seed_bridge_ws(..., peer_id="core", peer_port=<server>)`
-   on the client. Then call `kernel.call("bridge", "boot")` once as an
-   idempotent connect guard.
+   server) and `seed_bridge_ws(..., peer_id=<root>, peer_port=<server>)`
+   on the client. Don't hardcode `peer_id` — root ids differ by runtime
+   (`fs_loader` for python, `core` for rust/swift), so resolve the
+   server's literal root with `root_id(server_binary, server_workdir)`.
+   Then call `kernel.call("bridge", "boot")` once as an idempotent
+   connect guard.
 4. Make assertions about the wire shape; on drift, the test fails
    loudly with the divergent JSON included.
 
@@ -116,3 +133,7 @@ runtime** — Python is the canonical reference for the Fantastic protocol.
   alone — no subprocess, no cross-runtime.
 - These are different: they exercise the **interop surface between
   kernels**, which lives in neither tree.
+
+---
+
+*Part of **Aisixteen Fantastic** — open core, licensed **Apache-2.0** ([`../LICENSE`](../LICENSE)). "Aisixteen Fantastic" and "AISIXTEEN" (USPTO reg. 7,238,635) are trademarks of AISixteen; the license covers the code only, not the marks — forks must rename. See the [root README](../README.md#license--brand).*

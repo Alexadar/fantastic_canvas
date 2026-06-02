@@ -1,5 +1,5 @@
 # terminal_backend — PTY shell
-Verb: shell (`cmd`) runs a command in a persistent PTY, streams token/done. Per-agent interrupt/stop. The process running in the PTY (e.g. `claude`) reaches the kernel via `fantastic` CLI one-shots or the web surface.
+Verb: shell (`cmd`) runs a command in a persistent PTY, streams token/done. Per-agent interrupt/stop. One persistent PTY **session per agent** — a session is exclusive (it carries one process + its scrollback; it is not shared or multiplexed), so a client owns the backend it attaches to. The process running in the PTY (e.g. `claude`) reaches the kernel via `fantastic` CLI one-shots or the web surface.
 
 Streaming output is flow-controlled (VSCode's terminal model, ported): the PTY reader detaches once >100K emitted chars sit unacked and re-attaches once a consumer's `ack` verb drains the backlog — real backpressure so a flood can't lock up a tab. `write` is looped + per-agent serialized so large pastes land whole and bracketed-paste sequences can't interleave. `shell` is exempt (drains via scrollback).
 

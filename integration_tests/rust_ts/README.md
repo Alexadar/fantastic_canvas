@@ -6,9 +6,9 @@ in a real browser — the same story `py_ts/` proves for Python.
 **Status: GENERATED scaffold, not run.** The pytest integration layer
 already proves the decoupling on the rust binary without a browser:
 
-- `../test_decoupling_bundle_catalog.py` — the rust catalog no longer
+- `../decoupling/test_decoupling_bundle_catalog.py` — the rust catalog no longer
   registers the 7 view bundles.
-- `../test_serve_frontend.py` — the rust binary serves a static `dist/`
+- `../decoupling/test_serve_frontend.py` — the rust binary serves a static `dist/`
   generically through a `file` agent (`GET /<id>/file/<path>`).
 
 The browser layer (headless Chrome loading the rust-served frontend +
@@ -29,3 +29,7 @@ weight. To wire it:
 
 Prereqs to run: `cd rust && cargo build`, `cd ts && npm run build`, system
 Chrome. Skips (never fails) when any is absent.
+
+---
+
+*Part of **Aisixteen Fantastic** — open core, licensed **Apache-2.0** ([`../../LICENSE`](../../LICENSE)). "Aisixteen Fantastic" and "AISIXTEEN" (USPTO reg. 7,238,635) are trademarks of AISixteen; the license covers the code only, not the marks — forks must rename. See the [root README](../../README.md#license--brand).*

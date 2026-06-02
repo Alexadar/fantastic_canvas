@@ -49,7 +49,16 @@ missing; nothing hangs or silently "passes".
   only in halves.
 - `html_agent.browser.itest.ts`, `two_tree.browser.itest.ts` — panels render +
   hydrate in a browser against the host.
+- `canvas_terminal.browser.itest.ts` — the Part-3 discover-and-pair lifecycle: a
+  canvas dblclick **discovers** a PTY-capable `terminal_backend` from the host
+  catalog (no hardcoded handler), pairs a `terminal_view` 1:1, then closing the
+  frame **cascades** removal of both — the frontend view *and* the host backend it
+  owns — over the bridge.
 - `scheduler_ai_html.browser.itest.ts` — the deep cross-kernel cascade
   (scheduler ⇄ python ⇄ AI ⇄ JS panels); `A` + `G` are deterministic, `B–J` need
   `ANTHROPIC_KEY`.
 - `llm_e2e.browser.itest.ts` — a live-LLM browser round-trip.
+
+---
+
+*Part of **Aisixteen Fantastic** — open core, licensed **Apache-2.0** ([`../../LICENSE`](../../LICENSE)). "Aisixteen Fantastic" and "AISIXTEEN" (USPTO reg. 7,238,635) are trademarks of AISixteen; the license covers the code only, not the marks — forks must rename. See the [root README](../../README.md#license--brand).*

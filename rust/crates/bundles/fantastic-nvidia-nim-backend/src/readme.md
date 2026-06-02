@@ -1,5 +1,5 @@
 # nvidia_nim_backend — NVIDIA NIM LLM agent
-OpenAI-compatible LLM backend. api_key stored out-of-band via `file_agent_id` sidecar; rate-limit retry. Same surface as ollama_backend.
+OpenAI-compatible LLM backend. api_key stored out-of-band via `file_agent_id` sidecar; rate-limit retry. Same surface as ollama_backend: a per-`client_id` SHARED-compute inference unit reached by id — callers `send` by id and any watcher consumes the stream (verbs `send`/`history`/`interrupt`/`status`/`reflect`).
 
 This crate implements the **LLM backend contract** documented in
 `fantastic-ollama-backend`. The provider connection differs (HTTPS +

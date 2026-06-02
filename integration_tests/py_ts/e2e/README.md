@@ -25,6 +25,13 @@ both gaps:
 2. **Emergence from zero** — a spawned, readme-only agent discovers the agents via
    `reflect` and **composes the whole workflow itself**, proving the
    self-description is sufficient for capability to *emerge* (the north-star).
+3. **Pairing cardinality (Phase 2.5 — the pinnacle)** — a readme-only agent derives the
+   *cardinality* of the four unit kinds from self-description alone, never told a number:
+   **terminal_view ↔ terminal_backend = 1:1** (bound by `backend_id` to an exclusive
+   PTY), **ai_view ↔ AI backend = 1:1** (bound by `backend_id` to shared compute), and
+   **html_agent panel ↔ python_runtime = 1:N** (a content agent, no binding — its JS
+   send/watches a many-jobs runtime by id). `pairing_verify.ts` asserts it structurally;
+   a mis-derivation is the signal to strengthen the readme nudge and re-run.
 
 ## Prerequisites
 
@@ -54,4 +61,14 @@ spawns the builder agent with the prompt in `RUN.md`, verifies the result with
 - `boot_bare_host.sh` — boots a BARE substrate daemon (web + web_ws + web_rest +
   web_loader + a seeded `canvas` + the served frontend; **no** workflow agents).
 - `verify_panel.ts` — headless-Chrome check that a canvas panel shows the answer.
+- `pairing_verify.ts` — the Phase 2.5 pinnacle assertion: checks the builder *derived*
+  the pairing cardinality (terminal_view/ai_view each 1:1 via `backend_id`; html_agent
+  panels 1:N with no binding) from readmes alone.
+- `dawee_verify.ts` — headless-Chrome check of the dawee port: panels render and the
+  `dawee-mixer` BroadcastChannel bus crosses sandboxed iframes through the host
+  `mixerbus` agent.
 - `teardown_host.sh` — kill the daemon + remove its temp dir.
+
+---
+
+*Part of **Aisixteen Fantastic** — open core, licensed **Apache-2.0** ([`../../../LICENSE`](../../../LICENSE)). "Aisixteen Fantastic" and "AISIXTEEN" (USPTO reg. 7,238,635) are trademarks of AISixteen; the license covers the code only, not the marks — forks must rename. See the [root README](../../../README.md#license--brand).*

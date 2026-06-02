@@ -172,7 +172,9 @@ the frontend's `proxy_loader`. See "Two kernels" in the root readme.
 | `terminal_backend` | PTY shell backend (at `bundled_agents/terminal/`). VSCode-ported terminal robustness: streaming flow control (reader pauses past 100K unacked chars, resumes on the `ack` verb), incremental UTF-8 decode (no split-char `<?>` litter across `os.read` chunks), serialized full-buffer writes (bracketed-paste-safe), image-paste bridge (browser-clipboard image → `paste_image` → file saved + path typed into the PTY for a CLI like `claude`). The xterm view (`terminal_view`) lives in the TS frontend kernel (`ts/`). |
 | `ai/ollama/ollama_backend` | local LLM agent (ollama); per-client chat threads, FIFO lock, menu cache |
 | `ai/nvidia/nvidia_nim_backend` | NVIDIA NIM LLM agent (OpenAI-compatible); api_key sidecar via `file_agent_id`; rate-limit retry; same surface as ollama_backend |
+| `ai/anthropic/anthropic_backend` (`anthropic_backend.tools`) | Claude LLM agent — Anthropic Messages API (default model `claude-opus-4-8`); key from `ANTHROPIC_KEY`/`ANTHROPIC_API_KEY` (env / `.env`); per-client chat threads, FIFO lock, native tool-calls, menu cache; same surface as ollama_backend |
 | `kernel_bridge` | cross-kernel comms — **WS-only, asymmetric**. A bridge agent opens a WS to the remote's `web_ws` surface and ships raw `{type:"call", target, payload}` frames; the remote dispatches `kernel.send` exactly like a browser frame and replies over the same socket — **no peer bridge needed**. Transports: memory (test backbone) / ws / ssh+ws. Streaming via `watch_remote` (`{type:"watch", src}` out, `{type:"event"}` back, re-emitted on the bridge's own inbox). All transports are **weak binding** — addressed by URL + path only; no shared Python types with the remote kernel. Weak proxy: local→local stays direct. |
+| `local_runner` (`local_runner.tools`) | local sub-`fantastic` lifecycle — `start`/`stop`/`restart`/`status`/`get_webapp` for one project dir; truth read from the project's `.fantastic/lock.json` (PID) + its web agent record (port) |
 | `ssh_runner` | remote `fantastic` lifecycle over SSH — start/stop/restart/status + local SSH tunnel for canvas iframing. Pure subprocess ssh; composes with `kernel_bridge` for messaging |
 
 **View bundles live in the FRONTEND kernel (`ts/`), not here.** The
@@ -377,8 +379,9 @@ These existed in an older codebase iteration; deferred, replaced, or moved:
   kernel (`ts/`, `*.ts`). See "Two kernels".
 - `telemetry_pane` — discarded entirely (a throwaway test agent; gone
   from every runtime, not moved).
-- openai / anthropic / integrated AI bundles (only `ollama` ships).
-  Pattern: mirror `ollama_backend`. Recoverable from git history.
+- `openai` AI bundle — not shipped (`ollama` / `anthropic` /
+  `nvidia_nim` backends ship). Pattern: mirror `ollama_backend`.
+  Recoverable from git history.
 - `register_template` / `list_templates` — replaced by per-agent
   reflect (single source of truth).
 - `content_alias_file` registry — replaced by the URL convention

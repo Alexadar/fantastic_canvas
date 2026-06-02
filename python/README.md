@@ -100,6 +100,10 @@ the kernel's lock file prevents that).
   `progress`/`job_done` events; `status` / `stop` / `interrupt` / `clear`
   by job id; each job gets an injected `kernel` connector. Per-agent venv
   resolution (record `python` / `venv` fields override the interpreter).
+- **yaml_state** — durable YAML key-value memory agent; mount anywhere
+  (`mode=mem|data`). A write-through `state.yaml` sidecar it owns
+  directly. Reached like any other unit by id (`send(<id>, {...})`), so
+  compute, inference, and memory share one calling convention.
 - **terminal_backend** — PTY shell session. The browser xterm view
   (`terminal_view`) lives in the TS frontend kernel. The backend
   ports VSCode's terminal robustness: streaming **flow control** (the
@@ -215,10 +219,10 @@ curl -X POST -H 'content-type: application/json' \
 ```
 
 The protocol IS the API — no client library. Send
-`{"type":"call","target":"kernel","payload":{"type":"reflect"}}`
-to either surface to get the substrate primer (transports,
-`available_bundles`, agent `tree`, `well_known` singletons,
-`binary_protocol`). Any LLM CLI dropped in cold can
+`{"type":"call","target":"kernel","payload":{"type":"reflect","readme":true,"bundles":"all"}}`
+to either surface to discover the substrate (agent `tree`, the
+installable-bundle catalog, and the root readme with the
+transport/wire docs). Any LLM CLI dropped in cold can
 bootstrap from one WS or HTTP round-trip.
 
 **Weak binding for bridges.** `kernel_bridge` reaches a remote
@@ -262,7 +266,7 @@ shows up in `kernel.reflect → available_bundles`, and you can
 Two complementary layers:
 
 - **Unit/integration via `pytest`** — fast, parallel, in-process.
-  453+ tests including substrate cascade + persistence + reboot.
+  447+ tests including substrate cascade + persistence + reboot.
   ```bash
   uv run --active pytest -n auto         # ~4s parallel
   ```
@@ -303,14 +307,16 @@ uv run pytest -n auto
 ├── conftest.py                               # pytest fixtures
 ├── tests/                                    # substrate-level tests
 └── bundled_agents/
-    ├── fs_loader/                            # the ROOT agent + persistence/hydration root (owns .fantastic/)
+    ├── loader/fs_loader/                     # the ROOT agent + persistence/hydration root (owns .fantastic/)
     ├── cli/                                  # stdout renderer (ephemeral — composed when isatty)
     ├── web/                                  # HTTP+WS transport (uvicorn) + favicon
     ├── file/, scheduler/                     # filesystem + recurring tasks
     ├── python_runtime/                       # exec Python in subprocess
+    ├── yaml_state/                           # durable YAML key-value memory (yaml_state.tools)
     ├── terminal/                             # PTY shell (handler_module terminal_backend.tools; xterm view lives in ts/)
     ├── ai/ollama/ollama_backend              # local LLM (ollama)
     ├── ai/nvidia/nvidia_nim_backend          # NVIDIA NIM (OpenAI-compatible)
+    ├── ai/anthropic/anthropic_backend        # Anthropic LLM (anthropic_backend.tools)
     ├── kernel_bridge/                        # cross-kernel WS bridge (asymmetric)
     └── runner/{local_runner, ssh_runner}     # spawn local / remote `fantastic`
 ```
@@ -321,14 +327,23 @@ served weakly through generic agents — see [`ts/SERVE.md`](ts/SERVE.md).
 
 ## Universal verb
 
-Every agent answers `{type:"reflect"}`. Returns `{id, sentence,
-verbs:{name:doc}, …flat state}`. Reflect on the kernel itself
-(`send("kernel", {reflect})`) returns the substrate primer —
-transports, available bundles, agent tree, plus binary protocol
-details. The only thing an external tool needs to bootstrap.
+Every agent answers `{type:"reflect"}`, returning the addressed agent
+uniformly: `{id, sentence, verbs:{name:doc}, …flat state}`. Root is NOT
+special. Compose the reply with flags:
 
-`reflect` on root supports parameters: `depth=N` (limit recursion),
-`flat=true` (flat list with parent_id), `details=true` (full
-per-agent reflect inline). Defaults: full depth, nested tree,
-distilled per-node summary — enough for a caller to navigate and
-choose; deep details fetched on demand.
+- `tree=all|ids|none` (default `all`) — nested distilled subtree;
+  `ids` = flat descendant-id index; `none` = just this agent.
+- `bundles=all|ids|none` (default `none`) — the installable-bundle
+  catalog (what you can `create_agent` from); `ids` = names only.
+- `readme=true` (legacy `return_readme` honored) — attach the agent's
+  readme.md. On the kernel/root this is the root readme: every
+  transport, the wire/binary-protocol details, the `kernel` alias, the
+  two-kernel model. Transport docs live there now, NOT in the reflect
+  JSON — reach them with `reflect readme=true`.
+
+The defaults give a caller enough to navigate and choose; deep details
+are fetched on demand.
+
+---
+
+*Part of **Aisixteen Fantastic** — open core, licensed **Apache-2.0** ([`../LICENSE`](../LICENSE)). "Aisixteen Fantastic" and "AISIXTEEN" (USPTO reg. 7,238,635) are trademarks of AISixteen; the license covers the code only, not the marks — forks must rename. See the [root README](../README.md#license--brand).*

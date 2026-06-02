@@ -1,9 +1,12 @@
-# fantastic-canvas
+# Aisixteen Fantastic
 
-A medium that unifies humans and AIs into a single workspace.
+*A medium that unifies humans and AIs into a single workspace.*
+Repo codename: `fantastic-canvas` — the open-core kernels + browser frontend.
+
 Recursive `Agent` nodes, one primitive (`send`), compile-time-linked
 bundles. Every agent answers `{"type":"reflect"}` — the universal
-discovery verb. No client library: the protocol IS the API.
+discovery verb. No client library: the protocol IS the API. The on-disk
+`.fantastic/` workdir format is part of the product.
 
 ## Four runtimes, one workdir
 
@@ -139,6 +142,17 @@ are in the respective READMEs.
 
 Commits and pushes require explicit consent per project convention.
 
-## License
+## License & brand
 
-Apache-2.0. See [`LICENSE`](LICENSE) at the repo root.
+The source in this repository — the kernels (`python/`, `swift/`, `rust/`)
+and the browser frontend (`ts/`) — is the **open core**, licensed
+**Apache-2.0** ([`LICENSE`](LICENSE) at the repo root). Apache-2.0 carries a
+patent grant and, deliberately, grants **no trademark rights**.
+
+**"Aisixteen Fantastic"** and the **AISIXTEEN** word mark (USPTO reg.
+7,238,635) are trademarks. The license covers the code only — it does not
+license these marks, so a fork must ship under a different name. The
+`.fantastic` workdir format is treated as a brand asset of the project.
+
+Any managed cloud / relay / sync layer is a separate offering, separately
+licensed, and is not part of this repository.
