@@ -112,6 +112,14 @@ browser JS, peers over one WS):
   it falls out of `send`/`reflect` + each agent's readme. An LLM given only the
   readmes can weave the wiring itself — that's the test bar, not bespoke glue.
 
+- **Validated — emergent memory with judgment.** Told ONLY that a `yaml_state`
+  memory agent exists, an AI saves salient facts, withholds trivia (no excess
+  writes), recalls them on a FRESH history-less turn, updates them, and prunes
+  precisely — managing durable memory through `send` alone; the which-verb/when is
+  derived, not coded. Proof: `integration_tests/memory/test_ai_memory_judgment.py`
+  (asserts on the store, not prose). NOTE: today only the Swift FM backend
+  auto-injects memory each turn; the Python backends reach it on demand by id.
+
 ## Run
 
 ```bash

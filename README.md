@@ -8,6 +8,12 @@ bundles. Every agent answers `{"type":"reflect"}` — the universal
 discovery verb. No client library: the protocol IS the API. The on-disk
 `.fantastic/` workdir format is part of the product.
 
+Capabilities **emerge from that self-description**: given only the readmes, an
+AI weaves the wiring itself — e.g. told merely that a `yaml_state` memory agent
+exists, it manages durable memory with judgment (saves salient facts, recalls
+them on a fresh turn, prunes the rest), entirely through `send`. Proof:
+[`integration_tests/memory/`](integration_tests/memory/test_ai_memory_judgment.py).
+
 ## Four runtimes, one workdir
 
 Four kernels share the same `send`/`reflect` protocol and wire format:
