@@ -55,6 +55,8 @@ workspace.
   `EXPOSE 8080`, copies + chmods the shared entrypoint, applies OCI
   labels for GHCR, sets `ENTRYPOINT`.
 
-The entrypoint seeds `web + web_ws + web_rest + canvas_webapp` on
+The entrypoint seeds `web + web_ws + web_rest + canvas_backend` on
 first boot, then `exec fantastic`. Identical across variants — the
-base image is the only thing that changes.
+base image is the only thing that changes. The TypeScript frontend is
+served weakly through generic agents (a `file` agent rooted at the
+built `ts/dist` + an `html_agent` mount page) — see `ts/SERVE.md`.

@@ -4,8 +4,8 @@
 
 A containerized Fantastic Kernel. The image ships with the **full
 canvas stack pre-seeded** on first boot (`web` on port 8080 + `web_ws`
-+ `web_rest` + `canvas_webapp` + its auto-spawned `canvas_backend`)
-and all 20+ standard bundles installed in the image's venv — they're
++ `web_rest` + `canvas_backend`) and all 20+ standard bundles installed
+in the image's venv — they're
 available, just not yet *added* to the tree. The container's `.fantastic/`
 schema is identical to running `~/.local/bin/fantastic` locally in the
 workdir, so the bind-mounted state is portable between container and
@@ -123,15 +123,19 @@ from.
 
 ## The canvas
 
-Find the canvas id and open it:
+The canvas is rendered by the **TypeScript frontend kernel** (the
+repo's top-level `ts/` package), served weakly through generic agents
+— a `file` agent rooted at the built `ts/dist` plus an `html_agent`
+mount page. Python knows nothing of the `ts/` package; the serving
+recipe lives in `ts/SERVE.md`. Find the mount id and open it:
 
 ```bash
-CANVAS_ID=$(podman exec "$NAME" ls /workdir/.fantastic/agents | grep '^canvas_webapp_')
+CANVAS_ID=$(podman exec "$NAME" ls /workdir/.fantastic/agents | grep '^html_agent_')
 open "http://localhost:8080/$CANVAS_ID/"   # macOS; use xdg-open on Linux
 ```
 
 You get an empty Liquid-Glass canvas. **Double-click on empty canvas**
-spawns a `terminal_webapp` tile via `canvas_backend.add_agent` —
+spawns a `terminal_backend` tile via `canvas_backend.add_agent` —
 that's the operator's main interaction loop. Terminals, html_agents,
 and gl_agents land on the canvas this way (or via REST / WS
 `add_agent` calls against the `canvas_backend` id).
@@ -179,9 +183,11 @@ podman logs "$NAME"                                             # kernel stdout/
 `reflect readme=true` returns the bootstrap an LLM needs to drive the
 system: the addressed agent's identity, the live agent `tree`, and the
 root readme (every transport, the bundle catalog behind `bundles=all`,
-the binary protocol, the browser bus) — same shape as the WS bootstrap.
-The transport/wire prose lives in that readme now, not in the reflect
-JSON. (`return_readme=true` is still honored as a legacy alias.)
+the binary protocol) — same shape as the WS bootstrap. The TS frontend
+kernel (`ts/`) brings its own typed WS bridge and federates over the
+same `web_ws` wire. The transport/wire prose lives in that readme now,
+not in the reflect JSON. (`return_readme=true` is still honored as a
+legacy alias.)
 
 ## One container = one workdir
 

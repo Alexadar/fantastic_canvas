@@ -15,6 +15,10 @@ wire-level interop end-to-end.
 combination of `python/.venv/bin/fantastic` and
 `swift/.build/{debug,release}/fantastic`.
 
+The **`py_ts/`** subsuite is the exception: it's **node-driven** (`node --test`
++ a headless Chrome), because the TS frontend kernel only runs in a browser.
+Same goal — interop *between* kernels — different driver. See `py_ts/README.md`.
+
 ## Layout
 
 ```
@@ -26,6 +30,8 @@ integration_tests/
     seeding.py        one-shot CLI seeding (web / web_ws / bridge_ws)
     ws.py             minimal WS client: ws_call, ws_emit, ws_session
   test_bridge_*.py    cross-runtime bridge tests (WS-only)
+  py_ts/              Python<->TS tests (node-driven, real browser over the
+                      bridge) + the heavy e2e emergence layer — see py_ts/README.md
   tmp/                per-run scratch workdirs (gitignored)
 ```
 

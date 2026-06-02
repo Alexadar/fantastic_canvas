@@ -1,0 +1,129 @@
+# E2E runbook — live integration + emergence from zero → a connected system
+
+> scope: whole stack (host Python + browser JS + live Anthropic + a spawned builder)
+> cost: real tokens + minutes. Run RARELY. See `README.md`.
+> The operating agent (Claude Code) executes the phases below in order.
+
+## Phase 0 — preflight
+
+- `ls python/.venv/bin/fantastic` exists (`uv sync` if not).
+- `ls ts/dist/main.js` exists (`cd ts && npm run build` if not).
+- `chromeAvailable()` (system Chrome) — else Phase 1/2c skip.
+- `ANTHROPIC_KEY` (or `ANTHROPIC_API_KEY`) in repo `.env` — else Phase 1 (B–E) and
+  Phase 2 skip (the deterministic Phase-1 A still runs).
+
+## Phase 1 — live integration (scripted)
+
+Run the heavy browser tests against a live model:
+
+```bash
+cd integration_tests/py_ts && node --test --test-force-exit scheduler_ai_html.browser.itest.ts
+```
+
+Expect **10/10 pass** with a key present: A (scheduler→python→panel, deterministic);
+B (scheduler→AI→panel, "apples or bananas"); C (AI→panel by tool-call); D (AI→python);
+E (AI→AI leaf); F (a python JOB calls an AI via its kernel connector — host-side
+meta-orchestration); G (ai_view renders inline fronting a backend — keyless); H (AI
+*composes* a schedule → AI→scheduler→python); I (scheduler→python-job→AI via connector,
+deep cascade); J (scheduler tick → JS panel → AI). These last three close the deep
+cross-kernel cascade (AI→scheduler, scheduler→PY→AI, scheduler→JS→AI). Without a key,
+**A + G pass** and the rest skip. Record the result.
+
+## Phase 2 — emergence from zero → a CONNECTED system
+
+The point: prove an LLM can build a *connected* workflow system from **nothing but
+the running system + its readmes**. Nobody hands it the wiring.
+
+### 2a. Boot a bare substrate
+
+```bash
+bash integration_tests/py_ts/e2e/boot_bare_host.sh 8930
+```
+
+Prints `TMP=… PID=… PORT=8930 WEB=… REST=… REST_URL=… CANVAS_URL=…`. This daemon has
+web / web_ws / web_rest / web_loader / a seeded `canvas` / the served frontend — and
+**no** `python_runtime`, scheduler, AI, or panels. The builder creates all of those.
+
+### 2b. Spawn the readme-only builder agent
+
+Spawn a sub-agent (general-purpose) with **exactly** this prompt, substituting the
+`REST_URL` from 2a. It gets **only** `curl` + what the system tells it — it must NOT
+read this repo's source or use any kernel tools.
+
+> You are wiring a live agent system you've never seen, through ONE door: HTTP at
+> `<REST_URL>`. `POST <REST_URL>/<target_id>` with a JSON body `{"type":"<verb>",
+> ...}` sends a verb to an agent; `GET <REST_URL>/_reflect[/<id>][?readme=1]` reads
+> the tree / an agent / its readme. Do NOT read any source files on disk and do NOT
+> use any tool other than `curl` (via Bash) — the system describes itself; learn it
+> only from `reflect` and readmes.
+>
+> GOAL — build, from zero, a small but fully CONNECTED workflow system where every
+> piece talks to the others by id:
+>   1. a **scheduler** that periodically wakes a **"router" AI agent**;
+>   2. the router, each tick, must DISPATCH work — call a **python_runtime** job to
+>      compute something AND consult a **second AI** agent — then write the outcome
+>      into a shared **memory** agent (yaml_state);
+>   3. surface results on **two HTML panels** on the `canvas` (one for the router's
+>      answer, one reading the shared memory), each a frontend `html_agent.ts`
+>      record persisted under `canvas` via the `web_loader` store, watching the host
+>      agent(s) by id.
+> Use the AI bundle `anthropic_backend.tools` (each AI needs its own history `file`
+> agent via `file_agent_id`); the scheduler needs a `file` agent too. Keep prompts
+> tiny (one-word / one-number answers) to stay cheap. Make the schedule recurring
+> with a modest interval (~8s) so a browser opened later catches a fresh fire.
+>
+> First `GET <REST_URL>/_reflect?readme=1` and read the kernel readme end-to-end —
+> it tells you the transports, how memory/AI/compute are addressed, how panels are
+> persisted, and how an AI worker's completion is routed. Then build it.
+>
+> VERIFY before returning: poll the router AI's `history` (and the memory agent's
+> `read`) over curl to confirm a scheduled tick actually produced an answer. Then
+> REPORT: every agent id you created with its handler_module + one-line role; the
+> exact panel records you persisted (id, what each watches, the gist of its JS); and
+> the router's most recent answer + the memory contents. Be concrete and exhaustive.
+
+### 2c. Verify the panels render (headless Chrome)
+
+```bash
+node integration_tests/py_ts/e2e/verify_panel.ts 8930
+```
+
+Opens `CANVAS_URL`, waits for the panels to hydrate, and dumps what each shows.
+Acceptance: at least one panel displays the live workflow output (e.g. matches
+`/apples|bananas/i` or a computed number), no uncaught page errors.
+
+### 2d. Capture the final tree + tear down
+
+```bash
+curl -s "<REST_URL>/_reflect" | python3 -m json.tool   # the system the builder grew
+bash integration_tests/py_ts/e2e/teardown_host.sh <PID> <TMP>
+```
+
+## Phase 3 — OUTPUT (what the operator gets back)
+
+After the run, the operating agent emits, **inline in chat**:
+
+1. **Agents created** — a compact tree/list from the final `_reflect`: `id —
+   handler_module — role`, grouped by workflow.
+2. **Sequence diagrams (super simple)** — one tiny ASCII diagram per workflow chain,
+   e.g.:
+
+   ```
+   scheduler ──every 8s──▶ ai_router
+                              ├──▶ python_runtime   (compute N)
+                              ├──▶ ai_helper        (classify)
+                              ├──▶ memory           (write result)
+                              └──▶ panel_answer / panel_memory  (show)
+   ```
+
+3. **What it does for you** — ONE plain-language paragraph: what this self-built
+   system actually does, in human terms, no jargon.
+
+## Results
+
+| Phase | What | Pass/Skip/Fail | Notes |
+|---|---|---|---|
+| 1 | live browser itests (A–E) | | |
+| 2 | builder wired the connected system from zero (curl+readmes only) | | |
+| 2c | panels render the live output | | |
+| 3 | agents + diagrams + paragraph emitted | | |

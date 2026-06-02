@@ -9,9 +9,12 @@ identical:
 
 Disk-is-truth: its state is a YAML file (`state.yaml`) in the agent's own
 dir under `.fantastic` — human-editable, git-diffable, atomic-write
-(temp + os.replace). The single-agent inbox serializes writes, so no
-locking. Cascade-delete removes the agent dir (and the file) for free —
-no `on_delete` needed.
+(temp + os.replace). It's a sidecar this bundle owns directly: `set`/
+`delete`/`replace` write through immediately (the single-agent inbox
+serializes them, so no locking), independent of the kernel — unlike the
+agent RECORD (agent.json), which a loader persists by observing the state
+stream. Cascade-delete detaches the agent; the loader rmtrees the dir
+(state.yaml included) on the `removed` event — so still no `on_delete`.
 
 Keys are flat namespaced strings (dotted convention:
 `domain.subject.attribute`, e.g. `user.name`, `decision.db`). Values are

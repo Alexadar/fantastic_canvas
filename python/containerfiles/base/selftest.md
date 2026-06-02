@@ -4,7 +4,7 @@
 > requires: `podman` on `$PATH`; repo cloned at cwd; host port `18080` free; Python 3 with `websockets` available to the operator (probe 5 only); outbound network for probe 8 (`install-bundle`)
 > drives the container end-to-end from OUTSIDE: build → run → probe → restart → stop. NOT pytest.
 
-Verifies that `containerfiles/base/Containerfile` + `entrypoint.sh` ship a working fantastic kernel — base image boots a full canvas stack (`web` + `web_ws` + `web_rest` + `canvas_webapp` → `canvas_backend`) on first run, exposes HTTP/WS/REST on port 8080, accepts canvas members, supports `install-bundle`, survives restart, and shuts down cleanly on SIGTERM.
+Verifies that `containerfiles/base/Containerfile` + `entrypoint.sh` ship a working fantastic kernel — base image boots a full canvas stack (`web` + `web_ws` + `web_rest` + `canvas_backend`) on first run, exposes HTTP/WS/REST on port 8080, accepts canvas members, supports `install-bundle`, survives restart, and shuts down cleanly on SIGTERM.
 
 Port `18080` is used on the host (mapped to container `8080`) to dodge collisions with anything already serving locally.
 
@@ -37,9 +37,8 @@ podman logs ft-test 2>&1 | grep -q "\[kernel\] up" || { echo "FAIL: kernel never
 # IDs the probes will reuse (top-level web + nested rest + canvas backend).
 WEB_ID=$(podman exec ft-test ls /workdir/.fantastic/agents | grep '^web_' | head -1)
 REST_ID=$(podman exec ft-test ls "/workdir/.fantastic/agents/$WEB_ID/agents" | grep '^web_rest_' | head -1)
-CANVAS_WEBAPP_ID=$(podman exec ft-test ls /workdir/.fantastic/agents | grep '^canvas_webapp_' | head -1)
-CANVAS_BACKEND_ID=$(podman exec ft-test ls "/workdir/.fantastic/agents/$CANVAS_WEBAPP_ID/agents" | grep '^canvas_backend_' | head -1)
-echo "WEB_ID=$WEB_ID REST_ID=$REST_ID CANVAS_WEBAPP_ID=$CANVAS_WEBAPP_ID CANVAS_BACKEND_ID=$CANVAS_BACKEND_ID"
+CANVAS_BACKEND_ID=$(podman exec ft-test ls /workdir/.fantastic/agents | grep '^canvas_backend_' | head -1)
+echo "WEB_ID=$WEB_ID REST_ID=$REST_ID CANVAS_BACKEND_ID=$CANVAS_BACKEND_ID"
 ```
 
 ## Probes
@@ -58,8 +57,8 @@ Failure-mode: build failed → check the build log for `uv sync` resolution erro
 podman logs ft-test 2>&1 | grep -E "\[kernel\] up"
 podman exec ft-test ls /workdir/.fantastic/agents | sort
 ```
-Expected: `[kernel] up` printed once; the `ls` lists at least one `web_<hex>` and one `canvas_webapp_<hex>` at the top level.
-Failure-mode: no `[kernel] up` → entrypoint failed during the seed step OR uvicorn never bound. Missing `canvas_webapp_` → `canvas_webapp.tools` seed line in `entrypoint.sh` regressed.
+Expected: `[kernel] up` printed once; the `ls` lists at least one `web_<hex>` and one `canvas_backend_<hex>` at the top level.
+Failure-mode: no `[kernel] up` → entrypoint failed during the seed step OR uvicorn never bound. Missing `canvas_backend_` → `canvas_backend.tools` seed line in `entrypoint.sh` regressed.
 
 ### 3. `http` — index served at `/`  [ http ]
 
@@ -116,16 +115,14 @@ PY
 Expected: `PASS`.
 Failure-mode: connection refused → `web_ws` didn't mount; `error` frame back → kernel reflect verb regressed.
 
-### 6. `canvas` — canvas page renders + member list is empty  [ canvas | http | rest ]
+### 6. `canvas` — backend reflects + member list is empty  [ canvas | rest ]
+
+The browser view (the `canvas` compositor view-agent) lives in the TS
+frontend kernel (top-level `ts/`), served weakly — Python no longer
+serves a canvas webapp page. The host-side check is the membership
+tracker: `canvas_backend` reflects and starts with no members.
 
 ```bash
-curl -sf "http://localhost:18080/$CANVAS_WEBAPP_ID/" | python3 -c "
-import sys
-body = sys.stdin.read()
-for needle in ('glViews', 'dblclick', 'canvas-world'):
-    assert needle in body, f'canvas HTML missing {needle!r}'
-print('PASS')
-"
 curl -sf -X POST -H 'content-type: application/json' \
   -d '{\"type\":\"list_members\"}' \
   "http://localhost:18080/$REST_ID/$CANVAS_BACKEND_ID" | python3 -c "
@@ -135,8 +132,8 @@ assert d.get('members') == [], f'expected empty members, got {d}'
 print('PASS')
 "
 ```
-Expected: two `PASS` lines.
-Failure-mode: missing needle → `canvas_webapp` template changed without updating the probe. Non-empty members on a fresh workdir → entrypoint accidentally seeded a member.
+Expected: one `PASS` line.
+Failure-mode: Non-empty members on a fresh workdir → entrypoint accidentally seeded a member.
 
 ### 7. `add-member` — REST add_agent lands a member  [ add-member | canvas | rest ]
 
@@ -225,7 +222,7 @@ rm -f /tmp/ft-member-id /tmp/ft-install.log /tmp/ft-shutdown.log
 | 3 | http | http | | |
 | 4 | rest (kernel reflect + ?bundles=all catalog) | rest | | |
 | 5 | ws | ws | | |
-| 6 | canvas | canvas, http, rest | | |
+| 6 | canvas | canvas, rest | | |
 | 7 | add-member | add-member, canvas, rest | | |
 | 8 | install-bundle | install-bundle | | |
 | 9 | persistence | persistence, canvas | | |
