@@ -135,8 +135,7 @@ reads `.fantastic` → `kernel.load(records)`. The ROOT agent IS an
 `fs_loader` (`id="fs_loader"`) — the persistence/hydration root that owns
 `.fantastic/`; a fresh dir seeds it. Then argv goes to `dispatch_argv`
 (`kernel/_modes.py`):
-  - one-shot: `<id> <verb> [k=v]` / `reflect [<id>]` / `install` /
-    `install-bundle`
+  - one-shot: `<id> <verb> [k=v]` / `reflect [<id>]`
   - long-running default: boots every persisted agent. If a `web`
     agent is among them, acquires lock + blocks (uvicorn lives via
     its asyncio task). If stdin is a tty, runs the REPL stdin loop.
@@ -197,19 +196,9 @@ discovers them uniformly via `importlib.metadata.entry_points` —
 works for in-tree workspace members AND `pip install` third-party
 plugins (drop in `installed_agents/`).
 
-Install a third-party bundle straight from a git URL (or PyPI, or
-a local path — anything `uv pip install` accepts):
-
-```bash
-fantastic install-bundle git+https://github.com/user/fantastic-bundle
-fantastic install-bundle git+https://github.com/user/repo@v0.2.1   # pin tag
-fantastic install-bundle git+https://github.com/user/repo --into /path/to/project
-```
-
-Default target is the kernel's own venv (sys.executable); `--into
-<project>` installs into that project's `.venv` instead. Restart
-any running `fantastic` after install — entry points are
-scanned at process start.
+Add a bundle by dropping its package under `bundled_agents/` (or
+`installed_agents/`) and running `uv sync`; its entry point is scanned at
+the next process start.
 
 ## Universal patterns
 
