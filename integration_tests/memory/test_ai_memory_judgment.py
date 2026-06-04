@@ -26,10 +26,12 @@ free deterministic suite. Run it manually:
     cd integration_tests && uv run pytest memory/ -s
 
 FINDING (documented, not fixed here): the Python backends (ollama/anthropic/nim)
-carry memory ONLY as the per-client chat transcript (file_agent_id); they do NOT
-mount/inject `yaml_state`. The Swift Apple-FM backend already does
-(mountMemoryAgents + always-inject). This test exercises the on-demand
-tool-call path, which works on every backend.
+carry conversational history ONLY as the per-client chat transcript keyed by
+`file_agent_id`. They do NOT auto-mount or auto-inject `yaml_state` into the
+prompt. The Swift Apple-FM backend already does (mountMemoryAgents +
+always-inject). This test exercises the on-demand tool-call path — the AI
+explicitly sends `{"type":"set"|"read"|"delete", ...}` to the `mem` agent — and
+confirms that path works correctly on the Python/Anthropic backend.
 """
 
 from __future__ import annotations
@@ -51,9 +53,11 @@ if str(_INTEG) not in sys.path:
 from helpers.seeding import seed_create, seed_web, seed_web_ws  # noqa: E402
 from helpers.ws import ws_call  # noqa: E402
 
-# Capable tool-use, cheaper than opus. Override with FANTASTIC_TEST_MODEL.
+# Capable tool-use model, cheaper than opus. Override with FANTASTIC_TEST_MODEL.
 _MODEL = __import__("os").environ.get("FANTASTIC_TEST_MODEL", "claude-sonnet-4-6")
-_TURN_TIMEOUT = 240.0  # an AI turn includes tool-calls; backend caps at 180s
+# Generous timeout per turn: an AI turn includes multiple tool-call round-trips;
+# the backend's own HTTP deadline is 180 s, so we cap the WS wait at 240 s.
+_TURN_TIMEOUT = 240.0
 
 
 def _anthropic_key() -> str | None:
@@ -99,7 +103,14 @@ def _sys_prompt(mem_id: str) -> str:
 
 
 async def _say(port: int, ai: str, text: str, client_id: str, mem: str) -> dict:
-    """One full AI turn over WS (the reply lands after its tool-calls finish)."""
+    """One full AI turn over WS; waits until the model's reply lands
+    (after any tool-calls it chooses to make).
+
+    `client_id` is forwarded to the `file_agent_id` transcript store so
+    separate client ids yield separate conversation histories — the
+    recall test (turn 3) exploits this by using a fresh `client_id` that
+    has no prior transcript, forcing the AI to read from `yaml_state`.
+    """
     return await asyncio.wait_for(
         ws_call(
             port,
@@ -114,11 +125,14 @@ async def _say(port: int, ai: str, text: str, client_id: str, mem: str) -> dict:
 
 
 async def _mem_dump(port: int, mem: str) -> str:
+    """Read the full yaml_state store and return it as a lower-cased JSON
+    string for substring assertions."""
     r = await asyncio.wait_for(ws_call(port, mem, "read"), timeout=30.0)
     return json.dumps(r).lower()
 
 
-async def _mem_keys(port: int, mem: str) -> list:
+async def _mem_keys(port: int, mem: str) -> list[str]:
+    """Return the list of keys currently held in the yaml_state store."""
     r = await asyncio.wait_for(ws_call(port, mem, "keys"), timeout=30.0)
     ks = r.get("keys")
     return ks if isinstance(ks, list) else []
@@ -137,7 +151,10 @@ async def test_ai_uses_memory_when_needed_not_excessively(
 
     port = free_port()
 
-    # seed: WS surface + file(history) + AI(anthropic) + yaml_state(memory)
+    # Seed WS surface + file-history store + AI (anthropic) + yaml_state memory.
+    # Agent ids 'ai' and 'mem' are concrete/literal — NOT the "kernel" routing
+    # alias. Using literal ids here is correct: the test explicitly targets
+    # these named agents, not the runtime root.
     seed_web(python_binary, wd, port)
     seed_web_ws(python_binary, wd)
     seed_create(
@@ -166,7 +183,7 @@ async def test_ai_uses_memory_when_needed_not_excessively(
     await python_kernel(wd, port)
     ai, mem = "ai", "mem"
 
-    # 1) SALIENT -> should SAVE
+    # Turn 1 — SALIENT: the AI should SAVE a lasting fact to memory.
     await _say(
         port, ai, "Hi! I'm Ada, and from now on I'd like all answers in metric units.", "chat", mem
     )
@@ -175,7 +192,7 @@ async def test_ai_uses_memory_when_needed_not_excessively(
     assert "ada" in dump, f"expected the AI to remember 'Ada'; store={dump}"
     keys_after_save = await _mem_keys(port, mem)
 
-    # 2) TRIVIA -> should NOT save (non-excessive)
+    # Turn 2 — TRIVIA: the AI should NOT store throwaway arithmetic (non-excessive).
     await _say(port, ai, "Quick one: what is 2 + 2?", "chat", mem)
     keys_after_trivia = await _mem_keys(port, mem)
     print(f"[after trivia] keys {keys_after_save} -> {keys_after_trivia}")
@@ -183,7 +200,10 @@ async def test_ai_uses_memory_when_needed_not_excessively(
         f"AI stored trivia (keys grew {keys_after_save} -> {keys_after_trivia})"
     )
 
-    # 3) RECALL on a FRESH client (no transcript) -> answer must come from memory
+    # Turn 3 — RECALL on a FRESH client (no transcript):
+    # `client_id="fresh"` means the file-transcript store for this client is
+    # empty — the AI has no conversation history to draw on. A correct answer
+    # ("Ada", "metric") can ONLY come from an explicit read of `yaml_state`.
     t3 = await _say(port, ai, "What's my name, and which units do I prefer?", "fresh", mem)
     resp3 = (t3.get("response") or "").lower()
     print(f"[recall reply] {resp3!r}")
@@ -192,13 +212,13 @@ async def test_ai_uses_memory_when_needed_not_excessively(
         f"from memory; reply={resp3!r}"
     )
 
-    # 4) UPDATE -> should overwrite the stored fact
+    # Turn 4 — UPDATE: the AI should overwrite the stored name with the full form.
     await _say(port, ai, "Actually, please use my full name: Ada Lovelace.", "chat", mem)
     dump4 = await _mem_dump(port, mem)
     print(f"[after update] store={dump4}")
     assert "lovelace" in dump4, f"update not stored; store={dump4}"
 
-    # 5) FORGET -> should DELETE it
+    # Turn 5 — FORGET: the AI should DELETE the name entry entirely.
     await _say(port, ai, "Please forget my name entirely.", "chat", mem)
     dump5 = await _mem_dump(port, mem)
     print(f"[after forget] store={dump5}")
