@@ -76,8 +76,8 @@ public final class NvidiaNimBundle: AgentBundle, @unchecked Sendable {
 
     public var readme: String? {
         """
-        nvidia_nim_backend — NVIDIA NIM LLM agent (OpenAI-compatible).
-        verbs: send, history, interrupt, backend_state; api_key stored out-of-band via file_agent sidecar; 429 rate-limit retry.
+        nvidia_nim_backend — NVIDIA NIM LLM agent (OpenAI-compatible); thin over FantasticAICore.
+        Verbs: send, history, interrupt, backend_state; api_key stored in agent meta (set via update_agent); 429 rate-limit retry.
         """
     }
 

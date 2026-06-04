@@ -226,9 +226,9 @@ let package = Package(
             ]
         ),
         // ── Cross-runtime parity (Phase 8J) ──────────────────────
-        // Spawns the Rust `fantastic` binary as a subprocess +
+        // Spawns the Python kernel binary as a subprocess +
         // fires identical verb payloads at both kernels; diffs the
-        // JSON replies. Skips when RUST_KERNEL_BIN env var is unset.
+        // JSON replies. Skips when PYTHON_KERNEL_BIN env var is unset.
         .testTarget(
             name: "FantasticParityTests",
             dependencies: ["FantasticKernel", "FantasticJSON", "FantasticKernelStartup"]

@@ -134,7 +134,7 @@ fantastic fs_loader create_agent handler_module=web.tools port=8888    # persist
 reads `.fantastic` → `kernel.load(records)`. The ROOT agent IS an
 `fs_loader` (`id="fs_loader"`) — the persistence/hydration root that owns
 `.fantastic/`; a fresh dir seeds it. Then argv goes to `dispatch_argv`
-(`kernel/_modes.py`):
+(`kernel/modes/`):
   - one-shot: `<id> <verb> [k=v]` / `reflect [<id>]`
   - long-running default: boots every persisted agent. If a `web`
     agent is among them, acquires lock + blocks (uvicorn lives via

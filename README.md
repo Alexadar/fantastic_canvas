@@ -54,8 +54,10 @@ fantastic_canvas/
 - **TS** (`ts/`) — the browser **frontend** kernel: the view layer
   (canvas, `html_agent`, `gl_agent`, the `ai` + `terminal` views) as
   agents in their own kernel, federated to a host over the WS bridge and
-  persisted back to the host's disk opaquely. Build with `cd ts && npm run
-  build`; served from `ts/dist`. See [`ts/SERVE.md`](ts/SERVE.md).
+  persisted back to the host's disk opaquely. Dev build: `cd ts && npm run
+  build` → `ts/dist/`. Sovereign artifact: `cd ts && sh scripts/pack.sh`
+  → `ts/dist/js_kernel.zip` (one inlined bundle, no npm at serve time).
+  See [`ts/readme.md`](ts/readme.md) and [`ts/SERVE.md`](ts/SERVE.md).
 
 ### The frontend is decoupled
 
@@ -65,7 +67,11 @@ in `ts/` (its own kernel — views are agents: `canvas`, `html_agent`,
 through a generic `file` agent rooted at the built `ts/dist`. The host
 never imports, names, or knows about the frontend (weak binding); it
 persists frontend records opaquely and weak-loads past them. The same
-recipe serves any view package. See [`ts/SERVE.md`](ts/SERVE.md).
+recipe serves any view package. The sovereign distribution artifact is
+`ts/dist/js_kernel.zip` (`cd ts && sh scripts/pack.sh`): one inlined
+`bundle.min.js` + `readme.md` + map, pulled on demand and served via a
+`file` agent — no import map, no CSS link (vendors + CSS are inlined).
+See [`ts/readme.md`](ts/readme.md) and [`ts/SERVE.md`](ts/SERVE.md).
 
 ## One runtime active per workdir
 

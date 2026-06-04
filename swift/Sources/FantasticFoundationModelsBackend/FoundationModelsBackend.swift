@@ -105,9 +105,11 @@ public final class FoundationModelsBackendBundle: AgentBundle, @unchecked Sendab
 
     public var readme: String? {
         """
-        foundation_models_backend — Apple on-device Foundation Models LLM backend.
+        foundation_models_backend — Apple on-device Foundation Models LLM backend; thin over FantasticAICore.
         Verbs: send/history/interrupt/backend_state. Same LLM backend contract as \
         ollama_backend; runs stateless against the native on-device model.
+        Durable memory: on boot, mem+data yaml_state agents are auto-mounted and their \
+        contents spliced into the model instructions on every send (always-on; no explicit recall needed).
         """
     }
 

@@ -100,11 +100,8 @@ into it; the running artifact is a function of its *descriptance*, not its code.
   kernel in the repo's top-level `ts/` package. It runs as a pure
   peer and federates to the host over the SAME WS bridge wire
   (`web_ws`) — bringing its own typed WS bridge, not a server-injected
-  script. View logic lives there as typed, reflectable **view-agents**:
-  a `canvas` compositor (DOM frames + a WebGL/three GL host),
-  `terminal_view` (inline xterm), `ai_view` (inline chat), and a
-  GL host that runs `gl_agent`'s `get_gl_view` source. xterm/three are
-  vendored hermetically (no CDN). Python knows
+  script. It is a canvas compositor + view-agents for terminal/chat/GL
+  content, vendored hermetically (no CDN). Python knows
   nothing of the `ts/` package — it's served weakly through a `file`
   agent rooted at the built `ts/dist`, which serves both the bundle and
   a static `index.html` mount page over the web host's
@@ -253,7 +250,7 @@ uv run pytest -n auto
 │   ├── __init__.py                          # public API re-exports
 │   ├── _agent.py                            # Agent (recursive) + ephemeral flag + on_delete hook
 │   ├── _kernel.py                           # Kernel ctx + tree-mgmt API (create/delete/update/list/send)
-│   ├── _modes.py                            # dispatch_argv + one-shots (install/reflect/call) + default (web@port + REPL)
+│   ├── modes/                               # dispatch_argv + one-shots (reflect/call) + default (boot + REPL)
 │   ├── _bundles.py                          # entry-point discovery (`fantastic.bundles`)
 │   ├── _lock.py                             # serve lock (.fantastic/lock.json)
 │   └── _env.py                              # .env autoloader
@@ -269,10 +266,12 @@ uv run pytest -n auto
     ├── python_runtime/                       # exec Python in subprocess
     ├── yaml_state/                           # durable YAML key-value memory (yaml_state.tools)
     ├── terminal/                             # PTY shell (handler_module terminal_backend.tools; xterm view lives in ts/)
-    ├── ai/ollama/ollama_backend              # local LLM (ollama)
-    ├── ai/nvidia/nvidia_nim_backend          # NVIDIA NIM (OpenAI-compatible)
-    ├── ai/anthropic/anthropic_backend        # Anthropic LLM (anthropic_backend.tools)
+    ├── ai/ai_core/                           # shared AI agent loop/state (queue/FIFO lock/menu cache, prompt assembly, agentic _run loop, verb bodies); all three AI backends bind to it
+    ├── ai/ollama/ollama_backend              # local LLM (ollama) — thin binding over ai_core
+    ├── ai/nvidia/nvidia_nim_backend          # NVIDIA NIM (OpenAI-compatible) — thin binding over ai_core + NIM-specific key/retry verbs
+    ├── ai/anthropic/anthropic_backend        # Anthropic LLM (anthropic_backend.tools) — thin binding over ai_core
     ├── kernel_bridge/                        # cross-kernel WS bridge (asymmetric)
+    ├── runner/runner_core/                   # shared runner lifecycle + Transport seam; local_runner and ssh_runner bind to it
     └── runner/{local_runner, ssh_runner}     # spawn local / remote `fantastic`
 ```
 

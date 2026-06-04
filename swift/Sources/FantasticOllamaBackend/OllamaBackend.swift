@@ -55,7 +55,7 @@ public final class OllamaBackendBundle: AgentBundle, @unchecked Sendable {
 
     public var readme: String? {
         """
-        ollama_backend — local LLM agent.
+        ollama_backend — local LLM agent; thin over FantasticAICore.
         Per-client chat threads, FIFO lock, native tool-calls; verbs: send, history, interrupt, backend_state.
         """
     }
