@@ -145,7 +145,7 @@ def test_get_reflect_target_returns_error_for_missing_agent(seeded_kernel):
 
 
 def test_get_reflect_readme_query_flag(seeded_kernel):
-    """`?readme=1` on the GET shortcut passes `return_readme:true` —
+    """`?readme=1` on the GET shortcut passes `readme:true` —
     the reply carries the agent's readme.md content."""
     app = FastAPI()
     app.add_api_route(

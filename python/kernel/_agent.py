@@ -276,7 +276,7 @@ class Agent:
         - `bundles=all|ids|none` (default none): `all` is the
           {name, handler_module} catalog; `ids` is bare names; `none`
           omits it.
-        - `readme=true` (legacy `return_readme` also honored): attach the
+        - `readme=true`: attach the
           agent's readme.md (string or null). Atomic — one agent.
 
         Transport/wire docs are NOT here — they live in the root readme
@@ -311,7 +311,7 @@ class Agent:
             reply["bundles"] = target._available_bundles()
         elif bundles == "ids":
             reply["bundles"] = [b["name"] for b in target._available_bundles()]
-        if payload.get("readme") or payload.get("return_readme"):
+        if payload.get("readme"):
             reply["readme"] = target._read_readme()
         return reply
 
