@@ -379,19 +379,6 @@ class Agent:
         cleanup)."""
         return self.ctx.inboxes
 
-    async def recv(self, agent_id: str | None = None):
-        """Async iterator over an agent's inbox. Default: self's
-        inbox. Pass an id to read another agent's inbox (compat with
-        Kernel.recv(id))."""
-        if agent_id is None or agent_id == self.id:
-            target = self
-        else:
-            target = self.ctx.agents.get(agent_id)
-            if target is None:
-                return
-        while True:
-            yield await target._inbox.get()
-
     # ─── public API: record CRUD ───────────────────────────────
 
     def get(self, agent_id: str) -> dict | None:

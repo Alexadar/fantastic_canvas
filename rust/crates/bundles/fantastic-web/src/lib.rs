@@ -669,13 +669,6 @@ async fn serve_rest_reflect_dynamic(
         .into_response()
 }
 
-/// Static fallback used by tests + by the dynamic handler when reflect
-/// fails. Kept for backwards-compat with the pre-dynamic-mount tests.
-#[allow(dead_code)]
-async fn serve_root_index() -> impl IntoResponse {
-    Html(ROOT_INDEX_HTML)
-}
-
 /// Dynamic root index: walks the substrate tree, probes each agent
 /// for `render_html` / `get_webapp` in parallel, renders the same
 /// nested-tree HTML Python's `_index_page` does. Template body is

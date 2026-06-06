@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from web_rest.tools import (
     _get_routes,
-    _make_endpoint,
+    _make_post_endpoint,
     _make_reflect_get,
     _make_reflect_root,
     _reflect,
@@ -46,7 +46,7 @@ def test_post_endpoint_mountable_on_fastapi(seeded_kernel):
     app = FastAPI()
     app.add_api_route(
         "/rest_xyz/{target_id}",
-        _make_endpoint("rest_xyz", seeded_kernel),
+        _make_post_endpoint("rest_xyz", seeded_kernel),
         methods=["POST"],
     )
     with TestClient(app) as c:
@@ -62,7 +62,7 @@ def test_post_endpoint_rejects_non_object_body(seeded_kernel):
     app = FastAPI()
     app.add_api_route(
         "/rest_xyz/{target_id}",
-        _make_endpoint("rest_xyz", seeded_kernel),
+        _make_post_endpoint("rest_xyz", seeded_kernel),
         methods=["POST"],
     )
     with TestClient(app) as c:
@@ -75,7 +75,7 @@ def test_post_endpoint_rejects_bad_json(seeded_kernel):
     app = FastAPI()
     app.add_api_route(
         "/rest_xyz/{target_id}",
-        _make_endpoint("rest_xyz", seeded_kernel),
+        _make_post_endpoint("rest_xyz", seeded_kernel),
         methods=["POST"],
     )
     with TestClient(app) as c:
