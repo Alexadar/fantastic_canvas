@@ -3,7 +3,9 @@
 All notable changes to `fantastic-canvas`. This project is pre-1.0 (alpha);
 the wire protocol and on-disk `.fantastic/` format may change between releases.
 
-## [Unreleased]
+## [0.5.5] - 2026-06-06
+
+First release under AGPL-3.0-or-later.
 
 ### Changed — License
 
@@ -21,6 +23,13 @@ the wire protocol and on-disk `.fantastic/` format may change between releases.
 
 - Community-health files: `SECURITY.md`, `CONTRIBUTING.md`, `NOTICE`,
   `CITATION.cff`, issue + PR templates.
+
+### Removed — Backward-compat (alpha; no BC kept)
+
+- The `return_readme` reflect alias (all four runtimes + producers); `readme`
+  is the sole flag. Cross-runtime reflect parity stays byte-identical.
+- Duplicate AI `say` events (per-tool-call + 429 retry path); structured
+  `status` events stay. The TS-consumed `queued`/`done` events are kept.
 
 ---
 
