@@ -218,13 +218,14 @@ async def test_transport_keepalive_is_dropped(monkeypatch):
 
 
 async def test_transport_pins_peer_cert_rejects_unapproved(monkeypatch):
-    # A trusts a THIRD party's cert, not B's → A fails the TLS handshake.
+    # A approves a THIRD party's pubkey, not B's → A fails the TLS handshake
+    # (the verify callback rejects B's pubkey).
     wrong = self_signed_cert(_ed())[0]
     (res), _, _ = await _connect_pair(monkeypatch, a_trusts=[wrong])
     ta, tb = res
-    import ssl
+    from OpenSSL import SSL
 
-    assert isinstance(ta, ssl.SSLError), ta  # cert verification failed
+    assert isinstance(ta, SSL.Error), ta  # pubkey pin mismatch → handshake fails
     assert isinstance(tb, Exception), tb  # peer torn down too
 
 
@@ -241,6 +242,55 @@ async def test_token_source_command_passes_context_via_env():
         "peer_id": "A",
     }
     assert await cb._resolve_token(rec, kernel=None) == "TOK-A"
+
+
+async def test_token_source_issue_url_posts_and_returns_token():
+    # A mock relay `/issue`: 200 token on the right credential, 401 otherwise. The
+    # request body carries the provider + credential + rendezvous context.
+    import http.server
+    import json
+    import threading
+
+    seen = {}
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.update(body)
+            if body.get("credential") != "hunter2":
+                self.send_response(401)
+                self.end_headers()
+                return
+            tok = f"TOK-{body['provider']}-{body['peer_id']}-{body['partner_peer_id']}-{body['rendezvous']}"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(tok.encode())
+
+        def log_message(self, *a):  # quiet
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/issue"
+    try:
+        rec = {
+            "issue_url": url,
+            "password": "hunter2",
+            "provider": "password",
+            "peer_id": "A",
+            "partner_peer_id": "B",
+            "rendezvous": "rv1",
+        }
+        assert await cb._resolve_token(rec, kernel=None) == "TOK-password-A-B-rv1"
+        # the issuer never sees a token, only the credential + context.
+        assert seen["credential"] == "hunter2" and "token" not in seen
+        # wrong credential → denied (401 → ValueError, fail closed).
+        rec["password"] = "wrong"
+        with pytest.raises(ValueError):
+            await cb._resolve_token(rec, kernel=None)
+    finally:
+        srv.shutdown()
 
 
 class _FakeKernel:

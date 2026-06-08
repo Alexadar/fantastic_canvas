@@ -3,18 +3,17 @@
 `CloudBridgeTransport` is a `bridge_core._BaseTransport`: it dials OUT (WSS) to the
 relay, authenticates the WS with a subprotocol token, is paired by
 `(tenant_id, rendezvous)`, then runs a **mutually-authenticated TLS 1.3 handshake
-over the relay's opaque byte pipe** (stdlib `ssl` + `MemoryBIO`, no socket — see
+over the relay's opaque byte pipe** (pyOpenSSL over a memory BIO, no socket — see
 `_tls.py`). After the handshake it tunnels the SAME kernel-bridge `call/reply/event`
 frames as **TLS application data**, length-delimited, shipped as opaque binary WS
 frames. The relay forwards ciphertext + sees nothing; a forged route fails the TLS
-handshake (the impostor can't present a pinned cert).
+handshake (the impostor can't prove control of an approved device's pinned key).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import ssl
 import struct
 from typing import Any
 
@@ -24,43 +23,55 @@ SUBPROTOCOL = "fantastic.relay.v1"
 KEEPALIVE_TYPE = "keepalive"
 HANDSHAKE_TIMEOUT = 15.0  # < the relay's 30s pair timeout
 MAX_FRAME = 16 * 1024 * 1024  # reassembly cap (matches the relay's 16 MiB)
-_LEN = struct.Struct(">I")  # 4-byte big-endian length prefix per frame
+_LEN = struct.Struct(">I")  # big-endian length prefix per frame
+_HDR = _LEN.size  # 4 — bytes of length prefix
 _READ = 65536
 
 
-async def _drive(ws: Any, sslobj: ssl.SSLObject, incoming, outgoing, fn):
-    """Run a TLS op (`do_handshake` / `write`) to completion over the WS pipe:
+def _drain(conn) -> bytes:
+    """Pull all available outbound ciphertext out of the connection's BIO."""
+    from OpenSSL import SSL
+
+    chunks = []
+    while True:
+        try:
+            chunks.append(conn.bio_read(_READ))
+        except SSL.WantReadError:
+            break
+    return b"".join(chunks)
+
+
+async def _drive(ws: Any, conn, fn):
+    """Run a TLS op (`do_handshake` / `send`) to completion over the WS pipe:
     flush outbound records the op produces, feed inbound records it needs."""
+    from OpenSSL import SSL
+
     while True:
         try:
             ret = fn()
-        except ssl.SSLWantReadError:
-            data = outgoing.read()
+        except SSL.WantReadError:
+            data = _drain(conn)
             if data:
                 await ws.send(data)
             raw = await ws.recv()
-            incoming.write(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
+            conn.bio_write(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
             continue
-        except ssl.SSLWantWriteError:
-            data = outgoing.read()
+        except SSL.WantWriteError:
+            data = _drain(conn)
             if data:
                 await ws.send(data)
             continue
         else:
-            data = outgoing.read()
+            data = _drain(conn)
             if data:
                 await ws.send(data)
             return ret
 
 
 class CloudBridgeTransport(_BaseTransport):
-    def __init__(
-        self, ws, sslobj, incoming, outgoing, peer_identity: dict, heartbeat: float
-    ) -> None:
+    def __init__(self, ws, conn, peer_identity: dict, heartbeat: float) -> None:
         self._ws = ws
-        self._ssl = sslobj
-        self._in = incoming
-        self._out = outgoing
+        self._conn = conn  # OpenSSL.SSL.Connection in memory-BIO mode
         self.peer_identity = peer_identity  # {"pubkey": bytes}
         self._send_lock = asyncio.Lock()
         self._rbuf = bytearray()
@@ -86,11 +97,12 @@ class CloudBridgeTransport(_BaseTransport):
         heartbeat: float = 30.0,
     ) -> "CloudBridgeTransport":
         import websockets
+        from OpenSSL import SSL
 
-        from cloud_bridge._tls import make_context, peer_pubkey_from_der
+        from cloud_bridge._tls import make_context
 
         ws = await websockets.connect(
-            relay_url, subprotocols=[SUBPROTOCOL, token], max_size=2**24
+            relay_url, subprotocols=[SUBPROTOCOL, token], max_size=MAX_FRAME
         )
         try:
             ctx = make_context(
@@ -99,18 +111,23 @@ class CloudBridgeTransport(_BaseTransport):
                 key_pem=key_pem,
                 approved_certs_pem=approved_certs_pem,
             )
-            incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
-            sslobj = ctx.wrap_bio(incoming, outgoing, server_side=server)
+            conn = SSL.Connection(ctx, None)  # None socket → memory BIO
+            conn.set_accept_state() if server else conn.set_connect_state()
             # Bounded handshake — a paired-but-silent peer must not hang boot forever.
+            # The verify callback already pinned the peer's pubkey; a forged/un-
+            # approved peer fails here.
             await asyncio.wait_for(
-                _drive(ws, sslobj, incoming, outgoing, sslobj.do_handshake),
-                HANDSHAKE_TIMEOUT,
+                _drive(ws, conn, conn.do_handshake), HANDSHAKE_TIMEOUT
             )
-            der = sslobj.getpeercert(binary_form=True)
-            peer_pub = peer_pubkey_from_der(der) if der else None
+            peer = conn.get_peer_certificate()
+            peer_pub = (
+                peer.to_cryptography().public_key().public_bytes_raw()
+                if peer is not None
+                else None
+            )
             if expected_partner_pubkey and peer_pub != expected_partner_pubkey:
                 raise ConnectionClosed("cloud_bridge: peer cert != expected partner")
-            return cls(ws, sslobj, incoming, outgoing, {"pubkey": peer_pub}, heartbeat)
+            return cls(ws, conn, {"pubkey": peer_pub}, heartbeat)
         except Exception:
             try:
                 await ws.close()
@@ -140,13 +157,7 @@ class CloudBridgeTransport(_BaseTransport):
         payload = _LEN.pack(len(data)) + data  # length-delimited inside the TLS stream
         async with self._send_lock:
             try:
-                await _drive(
-                    self._ws,
-                    self._ssl,
-                    self._in,
-                    self._out,
-                    lambda: self._ssl.write(payload),
-                )
+                await _drive(self._ws, self._conn, lambda: self._conn.sendall(payload))
             except Exception as e:
                 raise ConnectionClosed(str(e)) from e
 
@@ -154,35 +165,40 @@ class CloudBridgeTransport(_BaseTransport):
         """Pull one batch of decrypted bytes into `_rbuf`, feeding inbound WS
         records into the TLS engine as needed."""
         import websockets
+        from OpenSSL import SSL
 
         while True:
             try:
-                chunk = self._ssl.read(_READ)
-            except ssl.SSLWantReadError:
+                chunk = self._conn.recv(_READ)
+            except SSL.WantReadError:
                 try:
                     raw = await self._ws.recv()
                 except websockets.ConnectionClosed as e:
                     raise ConnectionClosed(str(e)) from e
-                self._in.write(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
+                self._conn.bio_write(
+                    raw if isinstance(raw, bytes) else raw.encode("utf-8")
+                )
                 continue
-            except ssl.SSLError as e:
+            except SSL.ZeroReturnError as e:
+                raise ConnectionClosed("cloud_bridge: peer closed TLS") from e
+            except SSL.Error as e:
                 raise ConnectionClosed(f"cloud_bridge TLS error: {e}") from e
-            if chunk == b"":
+            if not chunk:
                 raise ConnectionClosed("cloud_bridge: peer closed TLS")
             self._rbuf += chunk
-            if len(self._rbuf) > MAX_FRAME + 4:
+            if len(self._rbuf) > MAX_FRAME + _HDR:
                 raise ConnectionClosed("cloud_bridge: frame exceeds cap")
             return
 
     async def _recv_frame(self) -> dict:
         while True:
-            if len(self._rbuf) >= 4:
+            if len(self._rbuf) >= _HDR:
                 (n,) = _LEN.unpack_from(self._rbuf, 0)
                 if n > MAX_FRAME:
                     raise ConnectionClosed("cloud_bridge: frame exceeds cap")
-                if len(self._rbuf) >= 4 + n:
-                    data = bytes(self._rbuf[4 : 4 + n])
-                    del self._rbuf[: 4 + n]
+                if len(self._rbuf) >= _HDR + n:
+                    data = bytes(self._rbuf[_HDR : _HDR + n])
+                    del self._rbuf[: _HDR + n]
                     return json.loads(data)
             await self._fill()
 

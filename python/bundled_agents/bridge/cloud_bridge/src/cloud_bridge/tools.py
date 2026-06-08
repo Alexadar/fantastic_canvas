@@ -16,8 +16,10 @@ ciphertext, and a forged route fails the TLS handshake (impersonation impossible
                        self-signed cert IS the TLS identity (no separate key) (required)
   - `approved_peer_certs`  list of PEM device certs to PIN (the account device list) (required)
   - TokenSource (one of): `token` (literal) | `token_provider` (agent id answering
-                    `mint_token`) | `token_command` (subprocess printing a token —
-                    wraps the relay's `fantastic-issue token` CLI for headless/e2e) |
+                    `mint_token`) | `issue_url` (+ `password`/`provider`: POST the
+                    relay's `/issue` endpoint — native, provider-agnostic) |
+                    `token_command` (subprocess printing a token — wraps the relay's
+                    `fantastic-issue token` CLI for headless/e2e) |
                     `dev_token=true` (unsigned token for relay ROUTER_REQUIRE_AUTH=false)
   - role (one of): `tls_role` ("client"|"server") | `initiator` bool | derived
                     `peer_id < partner_peer_id` (initiator ⇒ TLS client)
@@ -83,12 +85,54 @@ async def _token_from_command(cmd, rec: dict) -> str:
     return token
 
 
+async def _token_from_issue(rec: dict) -> str:
+    """POST the relay's control-plane `/issue` endpoint and return the token.
+
+    Body: `{provider, credential, peer_id, partner_peer_id, rendezvous}` →
+    `200` token (text/plain), `401` denied. **Provider-agnostic**: the auth method
+    lives in `provider` (`"password"` today; Apple / Google later = the SAME call,
+    a different provider + credential). cloud_bridge still does not authenticate —
+    it just relays the credential to the issuer and presents the returned token."""
+    import asyncio
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    body = _json.dumps(
+        {
+            "provider": rec.get("provider") or "password",
+            "credential": rec.get("password") or "",
+            "peer_id": rec.get("peer_id"),
+            "partner_peer_id": rec.get("partner_peer_id") or "",
+            "rendezvous": rec.get("rendezvous"),
+        }
+    ).encode("utf-8")
+    url = rec["issue_url"]
+
+    def _post() -> str:
+        req = urllib.request.Request(
+            url, data=body, method="POST", headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                return resp.read().decode("utf-8").strip()
+        except urllib.error.HTTPError as e:
+            raise ValueError(f"issue endpoint denied (HTTP {e.code})") from e
+
+    token = await asyncio.to_thread(_post)
+    if not token:
+        raise ValueError("issue endpoint returned no token")
+    return token
+
+
 async def _resolve_token(rec: dict, kernel: Any) -> str:
     """The TokenSource seam — cloud_bridge does NOT authenticate or mint; it just
     obtains a control-plane token (the auth method — password / Apple / Google — is
     invisible here) and presents it. Sources, in priority order:
       - `token`          a literal token the host already holds;
       - `token_provider` an in-kernel issuer agent answering `mint_token` (prod);
+      - `issue_url`      POST the relay's `/issue` endpoint with `provider`/`password`
+                         (native HTTP control-plane call; provider-agnostic);
       - `token_command`  a subprocess that prints a token (headless/e2e — wraps the
                          relay's `fantastic-issue token` CLI);
       - `dev_token=true` an unsigned claims-only token for the relay's
@@ -112,6 +156,8 @@ async def _resolve_token(rec: dict, kernel: Any) -> str:
         if token:
             return token
         raise ValueError(f"token_provider {provider!r} returned no token")
+    if rec.get("issue_url"):
+        return await _token_from_issue(rec)
     cmd = rec.get("token_command")
     if cmd:
         return await _token_from_command(cmd, rec)
