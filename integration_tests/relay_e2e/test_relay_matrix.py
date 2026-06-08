@@ -236,6 +236,145 @@ async def _drive_pair(
     )
 
 
+async def _drive_password_pair(
+    rt_a: str,
+    rt_b: str,
+    relay: Relay,
+    kp_a: KernelProc,
+    kp_b: KernelProc,
+    leg_a: tuple,
+    leg_b: tuple,
+    *,
+    expect_denied: bool,
+) -> None:
+    """Both legs are kernel-GROUP members (`auth="password"` ⇒ the default
+    `FANTASTIC_GROUP_TOKEN`, injected into each daemon's env at spawn). When the two
+    daemons share the token, A→B and B→A both round-trip (the token is presented on
+    each call envelope, survives the relay+TLS, and is checked on arrival). When the
+    tokens differ (`expect_denied`), B refuses A's call `unauthorized`."""
+    bin_a, wd_a = leg_a
+    bin_b, wd_b = leg_b
+    idk_a, idk_b = new_id_key(), new_id_key()
+    cert_a = cloud_cert(rt_a, idk_a, bin_a, wd_a)
+    cert_b = cloud_cert(rt_b, idk_b, bin_b, wd_b)
+    rv = "rv-" + os.urandom(4).hex()
+
+    meta_a = _cb_meta(
+        handler_module=_HANDLER_MODULE[rt_a],
+        peer="A",
+        partner="B",
+        role="client",
+        relay_url=relay.url,
+        rendezvous=rv,
+        id_key=idk_a,
+        peer_cert_pem=cert_b,
+        issue_url=relay.issue_url,
+        auth="password",  # string form ⇒ default token_env FANTASTIC_GROUP_TOKEN
+    )
+    meta_b = _cb_meta(
+        handler_module=_HANDLER_MODULE[rt_b],
+        peer="B",
+        partner="A",
+        role="server",
+        relay_url=relay.url,
+        rendezvous=rv,
+        id_key=idk_b,
+        peer_cert_pem=cert_a,
+        issue_url=relay.issue_url,
+        auth="password",
+    )
+
+    created = await asyncio.gather(
+        kp_a.call("kernel", "create_agent", **meta_a),
+        kp_b.call("kernel", "create_agent", **meta_b),
+    )
+    rcb = await kp_a.call("cb", "reflect")
+    for _ in range(50):
+        if rcb.get("connected"):
+            break
+        await asyncio.sleep(0.1)
+        rcb = await kp_a.call("cb", "reflect")
+    assert rcb.get("connected") is True, (
+        f"A cloud_bridge not connected after 5s.\n  create replies: {created}\n  reflect: {rcb}"
+    )
+    # reflect surfaces only the policy NAME (never the env-var config).
+    assert rcb.get("auth") == "password", f"A reflect missing auth policy: {rcb}"
+
+    reply = await kp_a.call("cb", "forward", target="kernel", payload={"type": "reflect"})
+    assert isinstance(reply, dict), f"non-dict reply: {reply!r}"
+    if expect_denied:
+        # A presents a DIFFERENT group token than B expects → B refuses on arrival.
+        assert reply.get("reason") == "unauthorized", (
+            f"outsider (wrong group token) should be denied by B, got: {reply}"
+        )
+    else:
+        # Same group: A→B forward round-trips (token presented + accepted)…
+        assert "id" in reply and "tree" in reply, (
+            f"group member A→B forward failed: {list(reply.keys())}"
+        )
+        # …and symmetrically B→A (each runtime accepts the peer's group token).
+        reverse = await kp_b.call("cb", "forward", target="kernel", payload={"type": "reflect"})
+        assert isinstance(reverse, dict) and "id" in reverse and "tree" in reverse, (
+            f"group member B→A forward failed: {reverse}"
+        )
+
+
+async def _password_round_trip(
+    rt_a: str,
+    rt_b: str,
+    relay: Relay,
+    request: pytest.FixtureRequest,
+    parity_tmp: Callable[[str], Path],
+    free_port: Callable[[], int],
+    tag: str,
+    *,
+    token_a: str,
+    token_b: str,
+    expect_denied: bool,
+) -> None:
+    bin_a = request.getfixturevalue(f"{rt_a}_binary")
+    bin_b = request.getfixturevalue(f"{rt_b}_binary")
+
+    base = parity_tmp(tag)
+    wd_a, wd_b = base / "A", base / "B"
+    wd_a.mkdir(parents=True)
+    wd_b.mkdir(parents=True)
+    port_a, port_b = free_port(), free_port()
+
+    for binary, wd, port in [(bin_a, wd_a, port_a), (bin_b, wd_b, port_b)]:
+        seed_web(binary, wd, port)
+        seed_web_ws(binary, wd)
+
+    spawned: list[KernelProc] = []
+    try:
+        # Inject each daemon's group token via env — the production posture (the
+        # secret never touches the portable `.fantastic` workdir / agent records).
+        kp_a = bin_a.start_daemon(
+            wd_a, port_a, label=rt_a, extra_env={"FANTASTIC_GROUP_TOKEN": token_a}
+        )
+        spawned.append(kp_a)
+        await kp_a.wait_ready()
+        kp_b = bin_b.start_daemon(
+            wd_b, port_b, label=rt_b, extra_env={"FANTASTIC_GROUP_TOKEN": token_b}
+        )
+        spawned.append(kp_b)
+        await kp_b.wait_ready()
+
+        await _drive_password_pair(
+            rt_a,
+            rt_b,
+            relay,
+            kp_a,
+            kp_b,
+            (bin_a, wd_a),
+            (bin_b, wd_b),
+            expect_denied=expect_denied,
+        )
+    finally:
+        for kp in spawned:
+            kp.terminate()
+
+
 @pytest.mark.parametrize("rt_a,rt_b", PAIRS, ids=[f"{a}-{b}" for a, b in PAIRS])
 @pytest.mark.asyncio
 async def test_relay_any_to_any(
@@ -256,6 +395,78 @@ async def test_relay_any_to_any(
     try:
         await _pair_round_trip(
             rt_a, rt_b, relay, request, parity_tmp, free_port, f"relay_{rt_a}_{rt_b}"
+        )
+    finally:
+        relay.stop()
+
+
+@pytest.mark.parametrize("rt_a,rt_b", PAIRS, ids=[f"{a}-{b}" for a, b in PAIRS])
+@pytest.mark.asyncio
+async def test_relay_password_group_member(
+    rt_a: str,
+    rt_b: str,
+    request: pytest.FixtureRequest,
+    parity_tmp: Callable[[str], Path],
+    free_port: Callable[[], int],
+) -> None:
+    """Both legs are kernel-group members (`auth="password"`, SAME group token in
+    env): the token is presented on each call envelope, survives the relay+TLS, and
+    is checked on arrival — A→B and B→A both round-trip across every runtime pair."""
+    reason = _pair_skip_reason(rt_a, rt_b)
+    if reason:
+        pytest.skip(reason)
+
+    relay = Relay(*require_relay(), free_port()).start()
+    try:
+        await _password_round_trip(
+            rt_a,
+            rt_b,
+            relay,
+            request,
+            parity_tmp,
+            free_port,
+            f"relaypw_{rt_a}_{rt_b}",
+            token_a="grp-secret",
+            token_b="grp-secret",
+            expect_denied=False,
+        )
+    finally:
+        relay.stop()
+
+
+# B = each runtime in turn (the enforcing receiver); A = python presents a token.
+_REJECT_PAIRS = [("python", "python"), ("python", "rust"), ("python", "swift")]
+
+
+@pytest.mark.parametrize("rt_a,rt_b", _REJECT_PAIRS, ids=[f"{a}-{b}" for a, b in _REJECT_PAIRS])
+@pytest.mark.asyncio
+async def test_relay_password_rejects_outsider(
+    rt_a: str,
+    rt_b: str,
+    request: pytest.FixtureRequest,
+    parity_tmp: Callable[[str], Path],
+    free_port: Callable[[], int],
+) -> None:
+    """A presents a DIFFERENT group token than B expects (different kernel groups):
+    B's `password` gate refuses A's inbound call `unauthorized` on arrival. Covers
+    each runtime as the enforcing receiver (B)."""
+    reason = _pair_skip_reason(rt_a, rt_b)
+    if reason:
+        pytest.skip(reason)
+
+    relay = Relay(*require_relay(), free_port()).start()
+    try:
+        await _password_round_trip(
+            rt_a,
+            rt_b,
+            relay,
+            request,
+            parity_tmp,
+            free_port,
+            f"relaypwx_{rt_a}_{rt_b}",
+            token_a="grp-A",
+            token_b="grp-B",
+            expect_denied=True,
         )
     finally:
         relay.stop()

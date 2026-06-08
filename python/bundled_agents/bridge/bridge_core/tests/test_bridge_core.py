@@ -7,7 +7,13 @@ from __future__ import annotations
 import pytest
 
 from bridge_core import core
-from bridge_core._authorizer import Action, AllowAll, DenyInbound, make_authorizer
+from bridge_core._authorizer import (
+    Action,
+    AllowAll,
+    DenyInbound,
+    Password,
+    make_authorizer,
+)
 
 
 async def _noop_build(kind, rec, kernel, st):  # pragma: no cover - not invoked here
@@ -97,3 +103,61 @@ def test_make_authorizer_object_form_is_forward_compat():
 def test_make_authorizer_unknown_policy_raises():
     with pytest.raises(ValueError):
         make_authorizer({"auth": "nope"})
+
+
+# ─── password policy (kernel-group shared secret) ───────────────
+
+
+def _call(token):
+    # the token rides the frame envelope (Action.token), NOT the dispatched payload
+    return Action("call", "t", "reflect", {"type": "reflect"}, token=token)
+
+
+def test_password_allows_matching_token(monkeypatch):
+    monkeypatch.setenv("FANTASTIC_GROUP_TOKEN", "s3cret")
+    p = Password()
+    assert p.authorize(_call("s3cret")).allowed
+    # presents the same token on outbound calls (symmetric group membership)
+    assert p.credential() == "s3cret"
+
+
+def test_password_denies_wrong_and_missing_token(monkeypatch):
+    monkeypatch.setenv("FANTASTIC_GROUP_TOKEN", "s3cret")
+    p = Password()
+    assert not p.authorize(_call("nope")).allowed
+    assert not p.authorize(_call(None)).allowed  # no auth_token at all
+    # watch/unwatch are not gated (denied-by-omission in the read loop)
+    assert p.authorize(Action("watch", "t", "watch", {})).allowed
+
+
+def test_password_fails_closed_when_token_unset(monkeypatch):
+    monkeypatch.delenv("FANTASTIC_GROUP_TOKEN", raising=False)
+    p = Password()
+    d = p.authorize(_call("anything"))
+    assert not d.allowed and "unset" in d.reason  # misconfig must not allow
+    assert p.credential() is None  # nothing to present either
+
+
+def test_password_custom_token_env(monkeypatch):
+    monkeypatch.setenv("MY_GROUP", "abc")
+    p = Password(token_env="MY_GROUP")
+    assert p.authorize(_call("abc")).allowed
+    assert p.credential() == "abc"
+
+
+def test_make_authorizer_password_threads_token_env():
+    a = make_authorizer({"auth": {"policy": "password", "token_env": "MY_GROUP"}})
+    assert isinstance(a, Password) and a.token_env == "MY_GROUP"
+    # bare string form ⇒ default env var
+    assert make_authorizer({"auth": "password"}).token_env == "FANTASTIC_GROUP_TOKEN"
+
+
+def test_make_authorizer_tolerates_unknown_config_keys():
+    # an extra sibling key must not crash the boot (filtered to the policy's fields)
+    a = make_authorizer({"auth": {"policy": "password", "bogus": 1}})
+    assert isinstance(a, Password) and a.token_env == "FANTASTIC_GROUP_TOKEN"
+
+
+def test_non_password_policies_present_no_credential():
+    assert AllowAll().credential() is None
+    assert DenyInbound().credential() is None

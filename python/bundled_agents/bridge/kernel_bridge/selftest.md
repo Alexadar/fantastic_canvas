@@ -39,11 +39,16 @@ The headline correctness suite. Covered by the unit tests at
     refuses an inbound `call`, replying `{reason:"unauthorized"}` (directional /
     hub→spoke push); `test_allow_all_default_dispatches_inbound_call` is the
     back-compat no-op guard (absent `auth` ⇒ dispatch succeeds).
+  - `test_password_*` — a leg with `auth="password"` (kernel-group shared secret):
+    an inbound `call` with the matching envelope `auth_token` dispatches, a
+    wrong/missing token is refused `unauthorized`, the leg PRESENTS its group token
+    on its own outbound `forward`s, and a non-`password` leg attaches no token
+    (wire unchanged).
 
 ```bash
 uv run pytest bundled_agents/bridge/kernel_bridge/tests/ -v
 ```
-Expected: all 16 tests pass.
+Expected: all 20 tests pass.
 
 ## Test 2 — WS transport against a live `fantastic` (manual)
 
@@ -226,7 +231,7 @@ the `{type:'watch'}` (look in B's log); A's read loop never re-emits
 
 | # | Test | Pass |
 |---|------|------|
-| 1 | MemoryTransport + streaming + auth-policy unit suite (16 tests, in-process) | |
+| 1 | MemoryTransport + streaming + auth-policy (deny_inbound + password) unit suite (20 tests, in-process) | |
 | 2 (manual) | WS transport — A.bridge → B.web_ws round-trip | |
 | 3 (manual) | SSH+WS transport against a real remote | |
 | 4 (manual) | WS streaming — watch_remote re-emit | |

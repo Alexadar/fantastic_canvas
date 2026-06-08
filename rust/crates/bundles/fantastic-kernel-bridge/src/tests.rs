@@ -469,33 +469,36 @@ async fn cloud_bridge_pins_peer_cert_rejects_unapproved() {
 
 // ── authorization seam (the `auth` policy) ──────────────────────────
 
-#[test]
-fn allow_all_permits_call() {
-    let a = authorizer::AllowAll;
-    let d = a.authorize(&Action {
+/// Build a `call` Action carrying an optional envelope token, for the unit tests.
+fn call_action(token: Option<&str>) -> Action<'_> {
+    Action {
         kind: "call",
         target: "t",
         verb: "reflect",
-    });
-    assert!(matches!(d, Decision::Allow));
+        token,
+    }
+}
+
+#[test]
+fn allow_all_permits_call() {
+    let a = authorizer::AllowAll;
+    assert!(matches!(a.authorize(&call_action(None)), Decision::Allow));
+    assert!(a.credential().is_none()); // presents nothing
 }
 
 #[test]
 fn deny_inbound_refuses_call_allows_watch() {
     let a = authorizer::DenyInbound;
-    let call = a.authorize(&Action {
-        kind: "call",
-        target: "t",
-        verb: "reflect",
-    });
-    assert!(matches!(call, Decision::Deny(_)));
+    assert!(matches!(a.authorize(&call_action(None)), Decision::Deny(_)));
     // watch/unwatch are already ignored by the read loop → not gated here.
     let watch = a.authorize(&Action {
         kind: "watch",
         target: "t",
         verb: "watch",
+        token: None,
     });
     assert!(matches!(watch, Decision::Allow));
+    assert!(a.credential().is_none());
 }
 
 #[test]
@@ -506,25 +509,51 @@ fn make_authorizer_resolves_policies() {
     assert!(make_authorizer(Some(&json!(""))).is_ok());
     // string + object form
     let s = make_authorizer(Some(&json!("deny_inbound"))).unwrap();
-    assert!(matches!(
-        s.authorize(&Action {
-            kind: "call",
-            target: "t",
-            verb: "v"
-        }),
-        Decision::Deny(_)
-    ));
+    assert!(matches!(s.authorize(&call_action(None)), Decision::Deny(_)));
     let o = make_authorizer(Some(&json!({"policy": "deny_inbound"}))).unwrap();
-    assert!(matches!(
-        o.authorize(&Action {
-            kind: "call",
-            target: "t",
-            verb: "v"
-        }),
-        Decision::Deny(_)
-    ));
+    assert!(matches!(o.authorize(&call_action(None)), Decision::Deny(_)));
     // unknown ⇒ Err (fails the boot loudly)
     assert!(make_authorizer(Some(&json!("nope"))).is_err());
+}
+
+#[test]
+fn password_checks_and_presents_group_token() {
+    // Use a test-unique env var so parallel tests don't clobber each other.
+    let env = "FANTASTIC_GROUP_TOKEN_RS_UNIT";
+    std::env::set_var(env, "s3cret");
+    let p = make_authorizer(Some(&json!({"policy": "password", "token_env": env}))).unwrap();
+    // matching token ⇒ allow; wrong/missing ⇒ deny
+    assert!(matches!(
+        p.authorize(&call_action(Some("s3cret"))),
+        Decision::Allow
+    ));
+    assert!(matches!(
+        p.authorize(&call_action(Some("nope"))),
+        Decision::Deny(_)
+    ));
+    assert!(matches!(p.authorize(&call_action(None)), Decision::Deny(_)));
+    // presents the same token on outbound calls (symmetric group membership)
+    assert_eq!(p.credential().as_deref(), Some("s3cret"));
+    // fail-closed when the env var is unset
+    std::env::remove_var(env);
+    assert!(matches!(
+        p.authorize(&call_action(Some("s3cret"))),
+        Decision::Deny(_)
+    ));
+    assert!(p.credential().is_none());
+}
+
+#[test]
+fn password_defaults_env_var_for_string_form() {
+    // bare string form ⇒ the default env var name
+    let p = make_authorizer(Some(&json!("password"))).unwrap();
+    // with the default var unset, it fails closed (and presents nothing)
+    std::env::remove_var("FANTASTIC_GROUP_TOKEN");
+    assert!(matches!(
+        p.authorize(&call_action(Some("x"))),
+        Decision::Deny(_)
+    ));
+    assert!(p.credential().is_none());
 }
 
 /// Create a bridge agent carrying an `auth` policy meta field.
@@ -610,4 +639,92 @@ async fn allow_all_default_permits_inbound_call() {
     let _ = kernel
         .send(&AgentId::from(bid.as_str()), json!({"type": "shutdown"}))
         .await;
+}
+
+#[tokio::test]
+async fn password_gate_checks_inbound_and_presents_on_forward() {
+    // Unique env var so parallel tests don't collide (codebase pattern).
+    let env = "FANTASTIC_GROUP_TOKEN_RS_INTEG";
+    std::env::set_var(env, "s3cret");
+    let tmp = TempDir::new().unwrap();
+    let kernel = mk_kernel(&tmp).await;
+    let bid = id_for("brg_pw", &tmp);
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": HANDLER_MODULE,
+                "id": bid,
+                "peer_id": "stand_in",
+                "transport": "memory",
+                "auth": {"policy": "password", "token_env": env},
+            }),
+        )
+        .await;
+    let peer = inject_one(&AgentId::from(bid.as_str()));
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "boot"}))
+        .await;
+    // reflect surfaces only the policy NAME (never the env-var config).
+    let reflect = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "reflect"}))
+        .await;
+    assert_eq!(reflect["auth"], "password");
+
+    // (1) inbound call WITH the matching envelope token dispatches.
+    peer.send_frame(json!({
+        "type": "call", "id": "ok", "target": "core",
+        "payload": {"type": "reflect"}, "auth_token": "s3cret",
+    }))
+    .await
+    .unwrap();
+    let good = peer.recv_frame().await.expect("a reply frame");
+    assert_eq!(
+        good["data"]["id"], "core",
+        "valid token should dispatch: {good}"
+    );
+
+    // (2) inbound call with a WRONG token is refused unauthorized.
+    peer.send_frame(json!({
+        "type": "call", "id": "bad", "target": "core",
+        "payload": {"type": "reflect"}, "auth_token": "WRONG",
+    }))
+    .await
+    .unwrap();
+    let bad = peer.recv_frame().await.expect("a reply frame");
+    assert_eq!(bad["data"]["reason"], "unauthorized", "wrong token: {bad}");
+
+    // (3) the leg PRESENTS its group token on its own outbound forward (envelope,
+    //     not the dispatched payload). Drive forward concurrently, read the frame,
+    //     then answer it so the forward resolves.
+    let kc = Arc::clone(&kernel);
+    let bid2 = bid.clone();
+    let fwd = tokio::spawn(async move {
+        kc.send(
+            &AgentId::from(bid2.as_str()),
+            json!({"type": "forward", "target": "remote", "payload": {"type": "reflect"}}),
+        )
+        .await
+    });
+    let out = peer.recv_frame().await.expect("an outbound call frame");
+    assert_eq!(out["type"], "call");
+    assert_eq!(
+        out["auth_token"], "s3cret",
+        "leg should present its group token: {out}"
+    );
+    assert!(
+        out["payload"].get("auth_token").is_none(),
+        "payload must stay clean"
+    );
+    peer.send_frame(json!({"type": "reply", "id": out["id"], "data": {"ok": true}}))
+        .await
+        .unwrap();
+    let fwd_reply = fwd.await.unwrap();
+    assert_eq!(fwd_reply["ok"], true);
+
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "shutdown"}))
+        .await;
+    std::env::remove_var(env);
 }

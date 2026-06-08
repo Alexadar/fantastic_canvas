@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from _testkit import boot_root
 from bridge_core import core
-from bridge_core._authorizer import DenyInbound
+from bridge_core._authorizer import DenyInbound, Password
 from bridge_core._transport import MemoryTransport
 from cloud_bridge import tools as cb
 from cloud_bridge._tls import peer_pubkey_from_der, self_signed_cert
@@ -450,3 +450,27 @@ async def test_cloud_leg_resolves_deny_inbound(two_kernels):
     assert isinstance(core._state(a_id).authorizer, DenyInbound)
     # reflect surfaces the policy back (default leg ⇒ "allow_all")
     assert (await ka.send(a_id, {"type": "reflect"}))["auth"] == "deny_inbound"
+
+
+async def test_cloud_leg_resolves_password(two_kernels):
+    """A cloud_bridge leg booted with the object-form `auth={policy:password,...}`
+    inherits the shared resolver — Password with the threaded `token_env`. reflect
+    surfaces only the policy NAME (never the env-var config)."""
+    ka, _ = two_kernels
+    rec = await ka.send(
+        "fs_loader",
+        {
+            "type": "create_agent",
+            "handler_module": "cloud_bridge.tools",
+            "transport": "memory",
+            "peer_id": "PLACEHOLDER",
+            "auth": {"policy": "password", "token_env": "FANTASTIC_GROUP_TOKEN"},
+        },
+    )
+    a_id = rec["id"]
+    mt_a, _mt_b = MemoryTransport.pair()
+    cb._test_transport_inject[a_id] = mt_a
+    assert (await ka.send(a_id, {"type": "boot"})).get("booted") is True
+    authz = core._state(a_id).authorizer
+    assert isinstance(authz, Password) and authz.token_env == "FANTASTIC_GROUP_TOKEN"
+    assert (await ka.send(a_id, {"type": "reflect"}))["auth"] == "password"

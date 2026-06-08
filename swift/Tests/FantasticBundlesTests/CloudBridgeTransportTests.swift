@@ -237,3 +237,119 @@ struct CloudBridgeTransportTests {
         }
     }
 }
+
+/// The `password` policy mutates a process-global env var, so this suite is
+/// `.serialized` (its tests don't run concurrently) and each uses a UNIQUE env var.
+@Suite("cloud_bridge password auth", .serialized)
+struct CloudBridgePasswordTests {
+    private func mkAction(_ token: String?) -> AuthAction {
+        AuthAction(kind: "call", target: "t", verb: "reflect", token: token)
+    }
+
+    @Test func passwordChecksTokenAndPresentsCredential() throws {
+        let env = "FANTASTIC_GROUP_TOKEN_SWIFT_UNIT"
+        setenv(env, "s3cret", 1)
+        defer { unsetenv(env) }
+        let p = try makeAuthorizer(["policy": "password", "token_env": .string(env)])
+        // matching envelope token ⇒ allow; wrong / missing ⇒ deny
+        if case .deny = p.authorize(mkAction("s3cret")) {
+            Issue.record("matching token should allow")
+        }
+        guard case .deny = p.authorize(mkAction("nope")) else {
+            Issue.record("wrong token should deny")
+            return
+        }
+        guard case .deny = p.authorize(mkAction(nil)) else {
+            Issue.record("missing token should deny")
+            return
+        }
+        // presents the same token on its own outbound calls (symmetric group)
+        #expect(p.credential() == "s3cret")
+        // fail-closed when the env var is unset
+        unsetenv(env)
+        guard case .deny = p.authorize(mkAction("s3cret")) else {
+            Issue.record("unset env must fail closed")
+            return
+        }
+        #expect(p.credential() == nil)
+    }
+
+    @Test func makeAuthorizerResolvesPasswordAndName() throws {
+        // bare string ⇒ default env var; object form threads token_env
+        #expect(try makeAuthorizer("password") is Password)
+        let p = try makeAuthorizer(["policy": "password", "token_env": "X"])
+        #expect((p as? Password)?.tokenEnv == "X")
+        // reflect surfaces only the policy NAME, never the config
+        #expect(authPolicyName(["policy": "password", "token_env": "X"]) == "password")
+        #expect(authPolicyName("deny_inbound") == "deny_inbound")
+        #expect(authPolicyName(nil) == "allow_all")
+    }
+
+    @Test func passwordGroupMemberRoundTripsOverCloud() async throws {
+        let env = "FANTASTIC_GROUP_TOKEN_SWIFT_OK"
+        setenv(env, "s3cret", 1)
+        defer { unsetenv(env) }
+        try await withDeadline(15) {
+            let kernelA = await makeKernel(withEcho: false)
+            let kernelB = await makeKernel(withEcho: true)
+            let id1 = [UInt8](repeating: 7, count: 32)
+            let id2 = [UInt8](repeating: 9, count: 32)
+            let (cert1, key1) = try CloudCert.selfSigned(idKey: id1)
+            let (cert2, key2) = try CloudCert.selfSigned(idKey: id2)
+            let pem1 = derToPEM(cert1)
+            let pem2 = derToPEM(cert2)
+            let (chA, chB) = await MemoryByteChannel.pair()
+            // Both legs are group members with the SAME group token.
+            async let ta = CloudBridgeTransport.connect(
+                channel: chA, server: false, certDER: cert1, keyPKCS8: key1,
+                approvedPeerPEMs: [pem2], localAgentId: "brA", localKernel: kernelA,
+                authorizer: Password(tokenEnv: env))
+            async let tb = CloudBridgeTransport.connect(
+                channel: chB, server: true, certDER: cert2, keyPKCS8: key2,
+                approvedPeerPEMs: [pem1], localAgentId: "brB", localKernel: kernelB,
+                authorizer: Password(tokenEnv: env))
+            let (transportA, transportB) = try await (ta, tb)
+            // A→B carries A's group token on the envelope; B accepts → echo works.
+            let fwd = await transportA.forward(
+                target: "echo", payload: ["type": "echo", "msg": "hi"])
+            #expect(fwd["echoed"]["msg"].asString == "hi")
+            // reverse works too (A is also a group member, accepts B's token)
+            let rev = await transportB.forward(target: "core", payload: ["type": "list_agents"])
+            let names = (rev["agents"].asArray ?? []).compactMap { $0["id"].asString }
+            #expect(names.contains("core"), "reverse group call should dispatch: \(rev)")
+            await transportA.close()
+            await transportB.close()
+        }
+    }
+
+    @Test func passwordRejectsTokenlessCallerOverCloud() async throws {
+        let env = "FANTASTIC_GROUP_TOKEN_SWIFT_REJECT"
+        setenv(env, "s3cret", 1)
+        defer { unsetenv(env) }
+        try await withDeadline(15) {
+            let kernelA = await makeKernel(withEcho: false)
+            let kernelB = await makeKernel(withEcho: true)
+            let id1 = [UInt8](repeating: 7, count: 32)
+            let id2 = [UInt8](repeating: 9, count: 32)
+            let (cert1, key1) = try CloudCert.selfSigned(idKey: id1)
+            let (cert2, key2) = try CloudCert.selfSigned(idKey: id2)
+            let pem1 = derToPEM(cert1)
+            let pem2 = derToPEM(cert2)
+            let (chA, chB) = await MemoryByteChannel.pair()
+            // A is an OUTSIDER (allow_all ⇒ presents no token); B requires the group token.
+            async let ta = CloudBridgeTransport.connect(
+                channel: chA, server: false, certDER: cert1, keyPKCS8: key1,
+                approvedPeerPEMs: [pem2], localAgentId: "brA", localKernel: kernelA)
+            async let tb = CloudBridgeTransport.connect(
+                channel: chB, server: true, certDER: cert2, keyPKCS8: key2,
+                approvedPeerPEMs: [pem1], localAgentId: "brB", localKernel: kernelB,
+                authorizer: Password(tokenEnv: env))
+            let (transportA, transportB) = try await (ta, tb)
+            // A→B presents no token → B's password gate refuses on arrival.
+            let r = await transportA.forward(target: "echo", payload: ["type": "echo"])
+            #expect(r["reason"].asString == "unauthorized", "tokenless caller must be denied: \(r)")
+            await transportA.close()
+            await transportB.close()
+        }
+    }
+}

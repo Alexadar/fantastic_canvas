@@ -313,6 +313,88 @@ async def test_allow_all_default_dispatches_inbound_call(two_kernels):
     assert reply["data"].get("id") == "fs_loader"  # the real reflect dispatched
 
 
+_PASSWORD_AUTH = {"policy": "password", "token_env": "FANTASTIC_GROUP_TOKEN"}
+
+
+async def test_password_dispatches_inbound_call_with_valid_token(
+    two_kernels, monkeypatch
+):
+    """auth=password: an inbound call carrying the matching group `auth_token`
+    dispatches locally (the kernel-group member case)."""
+    monkeypatch.setenv("FANTASTIC_GROUP_TOKEN", "s3cret")
+    ka, _ = two_kernels
+    _a_id, mt_test = await _boot_solo_bridge(ka, auth=_PASSWORD_AUTH)
+    await mt_test.send(
+        {
+            "type": "call",
+            "id": "c1",
+            "target": "fs_loader",
+            "payload": {"type": "reflect"},
+            "auth_token": "s3cret",  # rides the frame envelope, not the payload
+        }
+    )
+    reply = await asyncio.wait_for(mt_test.recv(), timeout=2.0)
+    assert reply["data"].get("reason") != "unauthorized"
+    assert reply["data"].get("id") == "fs_loader"
+
+
+async def test_password_refuses_inbound_call_with_wrong_token(two_kernels, monkeypatch):
+    """auth=password: a wrong/missing group token is refused `unauthorized` without
+    dispatching (a non-member peer can't call us)."""
+    monkeypatch.setenv("FANTASTIC_GROUP_TOKEN", "s3cret")
+    ka, _ = two_kernels
+    _a_id, mt_test = await _boot_solo_bridge(ka, auth=_PASSWORD_AUTH)
+    await mt_test.send(
+        {
+            "type": "call",
+            "id": "c1",
+            "target": "fs_loader",
+            "payload": {"type": "reflect"},
+            "auth_token": "WRONG",
+        }
+    )
+    reply = await asyncio.wait_for(mt_test.recv(), timeout=2.0)
+    assert reply["data"].get("reason") == "unauthorized", reply["data"]
+
+
+async def test_password_attaches_group_token_on_forward(two_kernels, monkeypatch):
+    """A password leg PRESENTS its group token: every outbound `call` frame carries
+    `auth_token` (the symmetric side — so a paired group member's policy accepts it).
+    A non-password leg attaches nothing (wire unchanged)."""
+    monkeypatch.setenv("FANTASTIC_GROUP_TOKEN", "s3cret")
+    ka, _ = two_kernels
+    a_id, mt_test = await _boot_solo_bridge(ka, auth=_PASSWORD_AUTH)
+    fwd = asyncio.create_task(
+        ka.send(
+            a_id,
+            {"type": "forward", "target": "remote", "payload": {"type": "reflect"}},
+        )
+    )
+    frame = await asyncio.wait_for(mt_test.recv(), timeout=2.0)
+    assert frame["type"] == "call" and frame["target"] == "remote"
+    assert frame.get("auth_token") == "s3cret"  # the leg presents its group token
+    # complete the forward so the task doesn't dangle
+    await mt_test.send({"type": "reply", "id": frame["id"], "data": {"ok": True}})
+    assert (await asyncio.wait_for(fwd, timeout=2.0)) == {"ok": True}
+
+
+async def test_non_password_leg_attaches_no_token_on_forward(two_kernels):
+    """Back-compat: an allow_all (default) leg's outbound frame has NO `auth_token`
+    field — credential() is None, so the wire shape is byte-identical to pre-auth."""
+    ka, _ = two_kernels
+    a_id, mt_test = await _boot_solo_bridge(ka)  # no auth ⇒ allow_all
+    fwd = asyncio.create_task(
+        ka.send(
+            a_id,
+            {"type": "forward", "target": "remote", "payload": {"type": "reflect"}},
+        )
+    )
+    frame = await asyncio.wait_for(mt_test.recv(), timeout=2.0)
+    assert "auth_token" not in frame
+    await mt_test.send({"type": "reply", "id": frame["id"], "data": {"ok": True}})
+    await asyncio.wait_for(fwd, timeout=2.0)
+
+
 async def test_inbound_error_frame_fails_forward_promptly(two_kernels):
     """A remote `web_ws` emits `{type:"error", id, error}` when its
     dispatch RAISES (vs a verb-level error dict, which rides back as a

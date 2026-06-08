@@ -488,10 +488,13 @@ public actor CloudBridgeTransport {
             let target = frame["target"].asString ?? ""
             // AUTH GATE — the single (cloud-only) choke point in Swift. The leg's
             // policy decides whether this inbound call dispatches; on deny we reply
-            // {error, reason:"unauthorized"} (fail-fast, not a silent drop).
+            // {error, reason:"unauthorized"} (fail-fast, not a silent drop). The
+            // `auth_token` rides the frame envelope, not the dispatched payload.
             let verb = frame["payload"]["type"].asString ?? ""
             let decision = authorizer.authorize(
-                AuthAction(kind: "call", target: target, verb: verb))
+                AuthAction(
+                    kind: "call", target: target, verb: verb,
+                    token: frame["auth_token"].asString))
             let reply: JSON
             if target.isEmpty {
                 reply = .object(["error": .string("cloud_bridge: empty call target")])
@@ -541,12 +544,18 @@ public actor CloudBridgeTransport {
             ])
         }
         let id = mintId()
-        let frame: JSON = .object([
+        var frame: JSON = .object([
             "type": .string("call"),
             "id": .string(id),
             "target": .string(target.value),
             "payload": payload,
         ])
+        // Attach this leg's group credential, if its policy presents one (password ⇒
+        // the group token, on the frame ENVELOPE; allow_all/deny_inbound ⇒ nil ⇒ no
+        // field, wire unchanged). The dispatched `payload` stays clean.
+        if let token = authorizer.credential() {
+            frame["auth_token"] = .string(token)
+        }
         let sent = await sendFrame(frame)
         if !sent {
             return .object([

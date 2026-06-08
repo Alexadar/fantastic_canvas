@@ -44,6 +44,16 @@ BuildTransport = Callable[[str, dict, Any, "_BridgeState"], Awaitable[_BaseTrans
 MakeAuthorizer = Callable[[dict], Authorizer]
 
 
+def _auth_policy_name(auth) -> str:
+    """The policy NAME for reflect — string form is the name itself, object form is
+    its `policy` key, absent ⇒ `allow_all`. Never surfaces the policy's config."""
+    if not auth:
+        return "allow_all"
+    if isinstance(auth, str):
+        return auth
+    return auth.get("policy") or "allow_all"
+
+
 @dataclass
 class _BridgeState:
     transport: _BaseTransport | None = None
@@ -122,7 +132,13 @@ async def _read_loop(id: str, kernel: Any) -> None:
                 # whether the peer may run this inbound call locally; a denial still
                 # gets a `reply` (echoing the corr-id) so the caller resolves cleanly.
                 decision = st.authorizer.authorize(
-                    Action("call", target or "", payload.get("type") or "", payload)
+                    Action(
+                        "call",
+                        target or "",
+                        payload.get("type") or "",
+                        payload,
+                        token=frame.get("auth_token"),
+                    )
                 )
                 if not decision.allowed:
                     reply = {"error": decision.reason, "reason": "unauthorized"}
@@ -266,6 +282,11 @@ async def _forward(id, payload, kernel):
     st.pending[corr] = fut
 
     frame = {"type": "call", "id": corr, "target": target, "payload": inner}
+    # Attach this leg's group credential, if its policy presents one (password ⇒
+    # the group token; allow_all/deny_inbound ⇒ None ⇒ no field, wire unchanged).
+    token = st.authorizer.credential()
+    if token is not None:
+        frame["auth_token"] = token
     try:
         await st.transport.send(frame)
     except ConnectionClosed as e:
@@ -351,10 +372,12 @@ def make_verbs(
             "transport": st.transport_kind or rec.get("transport") or default_kind,
             "connected": st.transport is not None and not st.transport.closed,
             "pending_count": len(st.pending),
-            # The active per-leg auth policy. Engine default is `allow_all`
-            # (back-compat); secure-by-default (`deny_inbound`) is the control
-            # plane's job — it sets `auth` explicitly on every cloud leg.
-            "auth": rec.get("auth") or "allow_all",
+            # The active per-leg auth policy NAME (string, for both the string and
+            # `{policy, ...}` object record forms — the policy's own config, e.g. a
+            # `token_env`, is never surfaced). Engine default is `allow_all`
+            # (back-compat); secure-by-default is the control plane's job — it sets
+            # `auth` explicitly (`deny_inbound` / `password`) on the legs it exposes.
+            "auth": _auth_policy_name(rec.get("auth")),
         }
         out.update(reflect_fields(rec, st))
         out["verbs"] = {

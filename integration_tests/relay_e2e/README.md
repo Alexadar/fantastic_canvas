@@ -51,12 +51,19 @@ isn't set.
   The test then `create_agent`s a `cloud_bridge` leg on **both concurrently**
   (`asyncio.gather`) — each blocks in the TLS handshake until the relay pairs them
   — then `reflect` (asserts `connected`) and `forward` a reflect through the relay.
-- **Directional auth.** Leg A carries `auth="deny_inbound"` (the hub→spoke push
-  policy). The matrix asserts BOTH directions for every runtime pair: A→B forward
-  succeeds (B is the default `allow_all` leg), and B→A reverse is refused on
-  arrival at A with `{reason:"unauthorized"}` — the cross-runtime guard that the
-  per-leg `auth` gate (`bridge_core._authorizer` and its rust/swift mirrors)
+- **Directional auth** (`test_relay_any_to_any`). Leg A carries `auth="deny_inbound"`
+  (the hub→spoke push policy). The matrix asserts BOTH directions for every runtime
+  pair: A→B forward succeeds (B is the default `allow_all` leg), and B→A reverse is
+  refused on arrival at A with `{reason:"unauthorized"}` — the cross-runtime guard
+  that the per-leg `auth` gate (`bridge_core._authorizer` and its rust/swift mirrors)
   produces an identical wire shape everywhere.
+- **Group auth** (`test_relay_password_group_member` + `test_relay_password_rejects_outsider`).
+  Both legs run `auth="password"`; the group token is injected into each daemon's
+  env (`FANTASTIC_GROUP_TOKEN`, never persisted). When the tokens match (all 6
+  pairs), the token is presented on each call envelope, survives the relay+TLS, and
+  is checked on arrival — A→B and B→A both round-trip. When they differ (B = each
+  runtime in turn), B refuses the outsider `unauthorized`. Proves the `password`
+  policy's present-on-outbound / check-on-inbound works end-to-end cross-runtime.
 
 ## Done-when (production)
 

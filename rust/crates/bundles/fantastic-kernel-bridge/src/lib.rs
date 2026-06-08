@@ -183,6 +183,20 @@ fn meta_value(agent_id: &AgentId, kernel: &Kernel, key: &str) -> Option<Value> {
     meta.get(key).cloned()
 }
 
+/// The active auth policy NAME for reflect — string form is the name itself, object
+/// form is its `policy` key, absent ⇒ `allow_all`. Never surfaces the policy config.
+fn auth_policy_name(agent_id: &AgentId, kernel: &Kernel) -> String {
+    match meta_value(agent_id, kernel, "auth") {
+        Some(Value::String(s)) if !s.is_empty() => s,
+        Some(Value::Object(o)) => o
+            .get("policy")
+            .and_then(Value::as_str)
+            .unwrap_or("allow_all")
+            .to_string(),
+        _ => "allow_all".to_string(),
+    }
+}
+
 fn meta_u64(agent_id: &AgentId, kernel: &Kernel, key: &str) -> Option<u64> {
     let agent = kernel.agents.get(agent_id).map(|e| Arc::clone(&e))?;
     let meta = agent.meta.read().expect("meta poisoned");
@@ -269,7 +283,7 @@ fn reflect_reply(agent_id: &AgentId, kernel: &Kernel) -> Value {
         "peer_id": meta_string(agent_id, kernel, "peer_id"),
         "local_port": meta_u64(agent_id, kernel, "local_port"),
         "remote_port": meta_u64(agent_id, kernel, "remote_port"),
-        "auth": meta_string(agent_id, kernel, "auth").unwrap_or_else(|| "allow_all".to_string()),
+        "auth": auth_policy_name(agent_id, kernel),
         "pending_count": pending,
         "verbs": {
             "reflect": "Identity + transport + connectivity. No args.",
@@ -518,12 +532,18 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
 
     // Raw call frame straight to the remote's web_ws — no `forward`
     // envelope, no peer_id addressing (asymmetric; matches the canonical Python kernel).
-    let frame = json!({
+    let mut frame = json!({
         "type": "call",
         "id": corr,
         "target": target,
         "payload": inner,
     });
+    // Attach this leg's group credential, if its policy presents one (password ⇒
+    // the group token, on the frame ENVELOPE; allow_all/deny_inbound ⇒ None ⇒
+    // no field, wire unchanged). The dispatched `payload` stays clean.
+    if let Some(token) = state.authorizer.credential() {
+        frame["auth_token"] = json!(token);
+    }
     if let Err(e) = state.transport.send_frame(frame).await {
         state
             .pending
@@ -626,6 +646,8 @@ async fn read_loop(agent_id: AgentId, state: Arc<BridgeState>, kernel: Arc<Kerne
                     kind: "call",
                     target: &target,
                     verb,
+                    // the `auth_token` rides the frame envelope, not the payload
+                    token: frame.get("auth_token").and_then(Value::as_str),
                 });
                 let reply = if target.is_empty() {
                     json!({"error": "kernel_bridge: empty call target"})

@@ -27,9 +27,14 @@ ciphertext, and a forged route fails the TLS handshake (impersonation impossible
   - `auth`             optional dispatch policy: `allow_all` (default — absent ⇒
                        this, full symmetric duplex) | `deny_inbound` (one-way /
                        hub→spoke push: refuse every inbound `call`, reply
-                       `{reason:"unauthorized"}`). Gated at the engine's inbound-call
-                       choke point, ENFORCED ON THE RECEIVER. Distinct from the TLS
-                       auth above — this is authorization, not authentication.
+                       `{reason:"unauthorized"}`) | `password` (kernel-GROUP
+                       membership: authorize an inbound `call` only if it carries an
+                       `auth_token` matching the group token from an env var —
+                       object form `{policy:"password", token_env:"FANTASTIC_GROUP_TOKEN"}`;
+                       symmetric, also PRESENTS the token on outbound calls). Gated
+                       at the engine's inbound-call choke point, ENFORCED ON THE
+                       RECEIVER. Distinct from the TLS auth above — this is
+                       authorization, not authentication.
   - `heartbeat`        seconds between keepalives (default 30)
 
 cloud_bridge does NOT authenticate or mint production tokens — it obtains one from a

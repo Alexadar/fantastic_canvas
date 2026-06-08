@@ -362,9 +362,13 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
         tls_role|initiator|partner_peer_id.
         Authorization: a per-leg `auth` policy gates inbound `call`s — allow_all \
         (default, full duplex) | deny_inbound (one-way push: the peer can't \
-        call/reflect back; the reply is {reason:"unauthorized"}). Swift enforces \
-        it on the cloud_bridge leg only — its sole inbound-call path (ws is an \
-        asymmetric client; in-memory forward is a direct kernel call).
+        call/reflect back; the reply is {reason:"unauthorized"}) | password \
+        (kernel-GROUP shared secret: authorize a call only if it carries an \
+        auth_token matching the group token from an env var, default \
+        FANTASTIC_GROUP_TOKEN; symmetric — also presents the token on outbound \
+        calls). Swift enforces it on the cloud_bridge leg only — its sole \
+        inbound-call path (ws is an asymmetric client; in-memory forward is a \
+        direct kernel call).
         """
     }
 
@@ -377,9 +381,10 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
         switch verb {
         case "reflect":
             let attached = bridgeFor(agentId) != nil
-            // The per-leg auth policy (default `allow_all`). Swift gates only the
-            // cloud_bridge inbound-call path (its sole inbound dispatcher).
-            let auth = kernel.agent(agentId)?.metaValue(forKey: "auth")?.asString ?? "allow_all"
+            // The per-leg auth policy NAME (default `allow_all`). String form is the
+            // name; object form (`{policy, token_env}`) surfaces only `policy` — never
+            // the config. Swift gates only the cloud_bridge inbound-call path.
+            let auth = authPolicyName(kernel.agent(agentId)?.metaValue(forKey: "auth"))
             return [
                 "id": .string(agentId.value),
                 "kind": .string("kernel_bridge"),

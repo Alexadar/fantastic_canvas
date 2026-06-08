@@ -28,13 +28,29 @@ A leg is symmetric by default: once connected, either side can `call` any
 agent/verb on the other. An `auth` field on the record selects a per-leg policy
 the engine consults at ONE choke point — the inbound `call` dispatch — like an
 nginx allow/deny rule, **enforced on the receiver** (a compromised peer can't
-bypass it). v1 ships `allow_all` (default — absent `auth` ⇒ this, full duplex) and
-`deny_inbound` (one-way / hub→spoke push: refuse every inbound `call`, replying
-`{error, reason:"unauthorized"}`; the peer can't `call`/`reflect` back). Inbound
-`watch`/`unwatch` are already ignored, so they're denied-by-omission. The engine
-default is `allow_all` (back-compat) by design — **fail-closed is the control
-plane's job**: an app wanting deny-by-default sets `auth:"deny_inbound"` on the
-legs it exposes, the engine does not assume it.
+bypass it). v1 ships three policies:
+  - `allow_all` (default — absent `auth` ⇒ this, full symmetric duplex)
+  - `deny_inbound` (one-way / hub→spoke push: refuse every inbound `call`, replying
+    `{error, reason:"unauthorized"}`; the peer can't `call`/`reflect` back)
+  - `password` — kernel-GROUP membership by a shared secret. Authorize an inbound
+    `call` only if it carries an `auth_token` matching the group token (read from an
+    env var, default `FANTASTIC_GROUP_TOKEN`, so the secret never touches the
+    portable `.fantastic` workdir). Object form: `auth:{policy:"password",
+    token_env:"MY_GROUP"}`. SYMMETRIC: the same policy also PRESENTS the token on
+    this leg's outbound calls (stamped on the frame ENVELOPE, never the dispatched
+    payload), so one config makes a leg a full group member (presents + checks).
+    Fail-closed: an unset/empty token refuses every inbound `call`. Confidential
+    here (rides the peer↔peer TLS — the relay sees only ciphertext). This is the
+    bridge-authz analog of the relay's `password` provider: abstract auth seam, a
+    `password` impl. Constant-time compare.
+
+Inbound `watch`/`unwatch` are already ignored, so they're denied-by-omission. The
+engine default is `allow_all` (back-compat) by design — **fail-closed is the
+control plane's job**: an app wanting deny-by-default sets `auth:"deny_inbound"` (or
+`auth:"password"` for a group) on the legs it exposes, the engine does not assume
+it. The `Authorizer` is a single pluggable interface (one resolved policy per leg,
+consulted polymorphically at the choke point) — a future *chain* of rules is a new
+composite policy, not an engine change.
 
 Compose a leg with `transport=cloud_bridge` + `relay_url`, `tenant_id`, `peer_id`,
 `rendezvous` (+ optional `partner_peer_id`), an `id_key` (b64url Ed25519 device
@@ -43,7 +59,8 @@ PEM device list to pin), a token source (`token` | `token_provider` | `issue_url
 + `password`/`provider` POSTed to the relay's `/issue` | `dev_token=true`), and a
 role (`tls_role` / `initiator`, else derived from
 `peer_id < partner_peer_id`), and an optional `auth` policy
-(`allow_all` default | `deny_inbound`). Both legs quote the same `rendezvous` with
-distinct `peer_id`s. The relay holds no content and no long-lived secrets; E2E is the
+(`allow_all` default | `deny_inbound` | `password` — string, or the
+`{policy, ...}` object form for config like `token_env`). Both legs quote the same
+`rendezvous` with distinct `peer_id`s. The relay holds no content and no long-lived secrets; E2E is the
 client's job (this bundle) — see the relay's `CONTRACT.md`. Weak binding: the peer
 is addressed by relay URL + identity only, no shared types.
