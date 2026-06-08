@@ -6,8 +6,9 @@
 > daemon serving `web_ws` over WS (boot a second `fantastic` on a free
 > port first — same live-daemon rule as ollama/terminal/web).
 > out-of-scope: SSH+WS transport (needs a real remote host + `full`
-> feature; covered by `ssh_runner`), MemoryTransport pair (unit tests
-> in `src/tests.rs`).
+> feature; covered by `ssh_runner`), MemoryTransport pair + the `auth`
+> policy gate (`deny_inbound_refuses_inbound_call` /
+> `allow_all_default_permits_inbound_call` unit tests in `src/tests.rs`).
 
 WS-only, asymmetric. A bridge agent opens a WS to the remote's
 `web_ws` and ships raw `{type:"call", id, target, payload}` frames; the
@@ -35,7 +36,7 @@ PORT_B=18190
 ```bash
 BR=$($FANTASTIC core create_agent handler_module=kernel_bridge.tools \
   transport=ws host=127.0.0.1 local_port=$PORT_B peer_id=wws | jq -r .id)
-$FANTASTIC $BR reflect | jq -e '.transport == "ws" and .connected == false and .pending_count == 0'
+$FANTASTIC $BR reflect | jq -e '.transport == "ws" and .connected == false and .pending_count == 0 and .auth == "allow_all"'
 ```
 
 ### Test 2: forward before boot is refused

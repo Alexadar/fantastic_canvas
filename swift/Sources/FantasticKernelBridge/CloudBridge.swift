@@ -201,6 +201,11 @@ public actor CloudBridgeTransport {
     private var eventSink: AgentId?
     private weak var kernel: Kernel?
 
+    /// The per-leg auth policy (default `AllowAll`); consulted in `dispatch`
+    /// before an inbound `call` reaches the kernel — the single auth choke point.
+    /// In Swift this is the ONLY inbound-call path, so the gate lives here.
+    private var authorizer: Authorizer = AllowAll()
+
     private var receiveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var open = true
@@ -223,23 +228,27 @@ public actor CloudBridgeTransport {
         keyPKCS8: [UInt8],
         approvedPeerPEMs: [String],
         localAgentId: AgentId? = nil,
-        localKernel: Kernel? = nil
+        localKernel: Kernel? = nil,
+        authorizer: Authorizer = AllowAll()
     ) async throws -> CloudBridgeTransport {
         let t = CloudBridgeTransport(channel: channel)
         try await t.handshake(
             server: server, certDER: certDER, keyPKCS8: keyPKCS8,
             approvedPeerPEMs: approvedPeerPEMs)
-        await t.finishBoot(localAgentId: localAgentId, localKernel: localKernel)
+        await t.finishBoot(
+            localAgentId: localAgentId, localKernel: localKernel, authorizer: authorizer)
         return t
     }
 
-    /// Wire the local kernel sink (if any) then start the receive + heartbeat
-    /// loops — one atomic actor hop so the sink is live before any frame lands.
-    private func finishBoot(localAgentId: AgentId?, localKernel: Kernel?) {
+    /// Wire the local kernel sink + auth policy (if any) then start the receive +
+    /// heartbeat loops — one atomic actor hop so the sink + gate are live before
+    /// any frame lands.
+    private func finishBoot(localAgentId: AgentId?, localKernel: Kernel?, authorizer: Authorizer) {
         if let localAgentId, let localKernel {
             self.eventSink = localAgentId
             self.kernel = localKernel
         }
+        self.authorizer = authorizer
         startLoops()
     }
 
@@ -477,9 +486,19 @@ public actor CloudBridgeTransport {
             // ship the reply back (mirrors the Rust/Python read loop).
             let id = frame["id"]
             let target = frame["target"].asString ?? ""
+            // AUTH GATE — the single (cloud-only) choke point in Swift. The leg's
+            // policy decides whether this inbound call dispatches; on deny we reply
+            // {error, reason:"unauthorized"} (fail-fast, not a silent drop).
+            let verb = frame["payload"]["type"].asString ?? ""
+            let decision = authorizer.authorize(
+                AuthAction(kind: "call", target: target, verb: verb))
             let reply: JSON
             if target.isEmpty {
                 reply = .object(["error": .string("cloud_bridge: empty call target")])
+            } else if case .deny(let reason) = decision {
+                reply = .object([
+                    "error": .string(reason), "reason": .string("unauthorized"),
+                ])
             } else if let kernel = kernel {
                 reply = await kernel.send(AgentId(target), frame["payload"])
             } else {

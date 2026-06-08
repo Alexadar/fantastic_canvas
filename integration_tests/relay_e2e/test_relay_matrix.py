@@ -73,8 +73,9 @@ def _cb_meta(
     id_key: str,
     peer_cert_pem: bytes,
     issue_url: str,
+    auth: str | None = None,
 ) -> dict:
-    return {
+    meta = {
         "handler_module": handler_module,
         "id": "cb",
         "transport": "cloud_bridge",
@@ -93,6 +94,11 @@ def _cb_meta(
         "tls_role": role,
         "heartbeat": 0,
     }
+    # The per-leg auth policy — only set when exercising directional topology, so
+    # default legs stay byte-identical to the pre-auth matrix (absent ⇒ allow_all).
+    if auth is not None:
+        meta["auth"] = auth
+    return meta
 
 
 async def _pair_round_trip(
@@ -171,6 +177,10 @@ async def _drive_pair(
         id_key=idk_a,
         peer_cert_pem=cert_b,
         issue_url=relay.issue_url,
+        # Directional topology: A refuses INBOUND calls (hub→spoke push). A→B
+        # forwards still succeed (B is allow_all); B→A reverse calls are denied
+        # on arrival at A. The cross-runtime wire-shape guard for `deny_inbound`.
+        auth="deny_inbound",
     )
     meta_b = _cb_meta(
         handler_module=_HANDLER_MODULE[rt_b],
@@ -205,12 +215,24 @@ async def _drive_pair(
         f"A cloud_bridge not connected after 5s.\n  create replies: {created}\n  reflect: {rcb}"
     )
 
+    # A's leg surfaces its policy back through reflect.
+    assert rcb.get("auth") == "deny_inbound", f"A reflect missing auth policy: {rcb}"
+
     # The payload: forward a reflect to B's root over the relay; reply round-trips.
+    # A→B is allowed (B is the default allow_all leg) — the no-op guard.
     reply = await kp_a.call("cb", "forward", target="kernel", payload={"type": "reflect"})
     assert isinstance(reply, dict), f"non-dict reply: {reply!r}"
     assert "error" not in reply, f"forward errored through the relay: {reply}"
     assert "id" in reply and "tree" in reply, (
         f"reply lacks B's uniform reflect (round-trip failed): {list(reply.keys())}"
+    )
+
+    # Reverse direction (B → A's deny_inbound leg) is refused on arrival at A —
+    # the same `{reason:"unauthorized"}` wire shape across every runtime pair.
+    reverse = await kp_b.call("cb", "forward", target="kernel", payload={"type": "reflect"})
+    assert isinstance(reverse, dict), f"non-dict reverse reply: {reverse!r}"
+    assert reverse.get("reason") == "unauthorized", (
+        f"B→A reverse call should be denied by A's deny_inbound policy, got: {reverse}"
     )
 
 

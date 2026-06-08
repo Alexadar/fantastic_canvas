@@ -35,11 +35,15 @@ The headline correctness suite. Covered by the unit tests at
   - `test_event_frame_re_emits_on_bridge_inbox` — inbound `event`
     frames fan out via the bridge agent's `_watcher_ids`.
   - `test_unwatch_remote_sends_unwatch_frame` — symmetric teardown.
+  - `test_deny_inbound_refuses_inbound_call` — a leg with `auth="deny_inbound"`
+    refuses an inbound `call`, replying `{reason:"unauthorized"}` (directional /
+    hub→spoke push); `test_allow_all_default_dispatches_inbound_call` is the
+    back-compat no-op guard (absent `auth` ⇒ dispatch succeeds).
 
 ```bash
 uv run pytest bundled_agents/bridge/kernel_bridge/tests/ -v
 ```
-Expected: all 14 tests pass.
+Expected: all 16 tests pass.
 
 ## Test 2 — WS transport against a live `fantastic` (manual)
 
@@ -222,7 +226,7 @@ the `{type:'watch'}` (look in B's log); A's read loop never re-emits
 
 | # | Test | Pass |
 |---|------|------|
-| 1 | MemoryTransport + streaming unit suite (14 tests, in-process) | |
+| 1 | MemoryTransport + streaming + auth-policy unit suite (16 tests, in-process) | |
 | 2 (manual) | WS transport — A.bridge → B.web_ws round-trip | |
 | 3 (manual) | SSH+WS transport against a real remote | |
 | 4 (manual) | WS streaming — watch_remote re-emit | |

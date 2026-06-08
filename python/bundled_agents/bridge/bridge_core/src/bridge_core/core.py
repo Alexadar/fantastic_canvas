@@ -27,6 +27,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from bridge_core._authorizer import Action, AllowAll, Authorizer
+from bridge_core._authorizer import make_authorizer as _resolve_auth
 from bridge_core._transport import ConnectionClosed, _BaseTransport
 
 DEFAULT_FORWARD_TIMEOUT = 30.0
@@ -35,6 +37,11 @@ DEFAULT_FORWARD_TIMEOUT = 30.0
 # config (the engine wraps it into a `{"error": ...}` boot reply). May set
 # `st.cleanup` for transport-specific teardown (e.g. an ssh tunnel).
 BuildTransport = Callable[[str, dict, Any, "_BridgeState"], Awaitable[_BaseTransport]]
+
+# `make_authorizer(rec) -> Authorizer` (sync). Resolves the leg's `auth` policy from
+# the record; the read loop consults it before dispatching an inbound `call`. The
+# per-bundle seam for future custom authorizers — v1 bundles inherit the default.
+MakeAuthorizer = Callable[[dict], Authorizer]
 
 
 @dataclass
@@ -52,6 +59,9 @@ class _BridgeState:
     # Bundle-specific reflect/diagnostic state (e.g. ssh `tunnel_pid`). The engine
     # only clears it on teardown; the bundle's `reflect_fields` reads it.
     extra: dict = field(default_factory=dict)
+    # Per-leg authorization policy (the `auth` record field). The read loop consults
+    # it before dispatching an inbound `call`. Default = AllowAll (full duplex).
+    authorizer: Authorizer = field(default_factory=AllowAll)
 
 
 # Per-agent bridge state — process-memory only, keyed by agent id (shared across
@@ -108,10 +118,19 @@ async def _read_loop(id: str, kernel: Any) -> None:
             if ftype == "call":
                 target = frame.get("target")
                 payload = frame.get("payload") or {}
-                try:
-                    reply = await kernel.send(target, payload)
-                except Exception as e:
-                    reply = {"error": f"bridge: kernel.send raised: {e}"}
+                # AUTH GATE — the single choke point. The leg's policy decides
+                # whether the peer may run this inbound call locally; a denial still
+                # gets a `reply` (echoing the corr-id) so the caller resolves cleanly.
+                decision = st.authorizer.authorize(
+                    Action("call", target or "", payload.get("type") or "", payload)
+                )
+                if not decision.allowed:
+                    reply = {"error": decision.reason, "reason": "unauthorized"}
+                else:
+                    try:
+                        reply = await kernel.send(target, payload)
+                    except Exception as e:
+                        reply = {"error": f"bridge: kernel.send raised: {e}"}
                 await transport.send(
                     {"type": "reply", "id": frame.get("id"), "data": reply}
                 )
@@ -170,6 +189,7 @@ async def _teardown(id: str) -> None:
     st.read_task = None
     st.cleanup = None
     st.extra.clear()
+    st.authorizer = AllowAll()
 
 
 async def on_delete(agent: Any) -> None:
@@ -177,7 +197,14 @@ async def on_delete(agent: Any) -> None:
     await _teardown(agent.id)
 
 
-async def boot(id, payload, kernel, *, build_transport: BuildTransport):
+async def boot(
+    id,
+    payload,
+    kernel,
+    *,
+    build_transport: BuildTransport,
+    make_authorizer: MakeAuthorizer = _resolve_auth,
+):
     """Shared boot: idempotency + the `memory` test kind + the `build_transport`
     seam for every other kind, then the common tail (spawn read loop, emit
     `bridge_up`)."""
@@ -208,6 +235,12 @@ async def boot(id, payload, kernel, *, build_transport: BuildTransport):
 
     st.transport = transport
     st.transport_kind = kind
+    try:
+        st.authorizer = make_authorizer(rec)
+    except Exception as e:
+        # Bad auth policy must not leave the just-built transport leaked/open.
+        await _teardown(id)
+        return {"error": f"bridge: bad auth policy: {e}"}
     st.read_task = asyncio.create_task(_read_loop(id, kernel))
     await kernel.emit(id, {"type": "bridge_up"})
     return {"booted": True, "transport": kind}
@@ -287,6 +320,7 @@ def make_verbs(
     sentence: str,
     reflect_fields: Callable[[dict, _BridgeState], dict],
     default_kind: str = "ws",
+    make_authorizer: MakeAuthorizer = _resolve_auth,
 ) -> dict:
     """Build the 6-verb table for a bridge bundle. `reflect_fields(rec, st)`
     supplies the transport-specific reflect fields; `sentence` is the one-liner;
@@ -294,7 +328,13 @@ def make_verbs(
 
     async def _boot(id, payload, kernel):
         """No args. Reads `transport` (kind) + transport-specific fields off the agent record, builds the transport, spawns the read loop, emits `bridge_up`. Idempotent: re-booting a connected bridge is a no-op."""
-        return await boot(id, payload, kernel, build_transport=build_transport)
+        return await boot(
+            id,
+            payload,
+            kernel,
+            build_transport=build_transport,
+            make_authorizer=make_authorizer,
+        )
 
     async def _reconnect(id, payload, kernel):
         """No args. Teardown + boot — explicit because we don't auto-reconnect on transport failure (keeps real network problems visible to operators / telemetry)."""
@@ -311,6 +351,10 @@ def make_verbs(
             "transport": st.transport_kind or rec.get("transport") or default_kind,
             "connected": st.transport is not None and not st.transport.closed,
             "pending_count": len(st.pending),
+            # The active per-leg auth policy. Engine default is `allow_all`
+            # (back-compat); secure-by-default (`deny_inbound`) is the control
+            # plane's job — it sets `auth` explicitly on every cloud leg.
+            "auth": rec.get("auth") or "allow_all",
         }
         out.update(reflect_fields(rec, st))
         out["verbs"] = {

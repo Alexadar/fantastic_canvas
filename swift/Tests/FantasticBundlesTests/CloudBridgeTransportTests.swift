@@ -159,4 +159,81 @@ struct CloudBridgeTransportTests {
             _ = await bTask.value
         }
     }
+
+    // ── authorization seam (the `auth` policy) ──────────────────────
+
+    @Test func authorizerPoliciesDecideCorrectly() {
+        let call = AuthAction(kind: "call", target: "t", verb: "reflect")
+        let watch = AuthAction(kind: "watch", target: "t", verb: "watch")
+        // AllowAll — true no-op.
+        if case .deny = AllowAll().authorize(call) { Issue.record("allow_all denied a call") }
+        // DenyInbound — refuses `call`, permits watch/unwatch (already ignored).
+        guard case .deny = DenyInbound().authorize(call) else {
+            Issue.record("deny_inbound permitted a call")
+            return
+        }
+        if case .deny = DenyInbound().authorize(watch) {
+            Issue.record("deny_inbound gated a watch (should be denied-by-omission)")
+        }
+    }
+
+    @Test func makeAuthorizerResolvesPolicies() throws {
+        // absent / null / empty ⇒ AllowAll (back-compat no-op)
+        let call = AuthAction(kind: "call", target: "t", verb: "v")
+        for value in [JSON?.none, .some(.null), .some(.string(""))] {
+            if case .deny = try makeAuthorizer(value).authorize(call) {
+                Issue.record("absent/null/empty auth should resolve AllowAll")
+            }
+        }
+        // string + object form both resolve DenyInbound
+        for value: JSON in ["deny_inbound", ["policy": "deny_inbound"]] {
+            guard case .deny = try makeAuthorizer(value).authorize(call) else {
+                Issue.record("deny_inbound (\(value)) did not deny a call")
+                return
+            }
+        }
+        // unknown ⇒ throws (fails the boot loudly)
+        #expect(throws: AuthPolicyError.self) { try makeAuthorizer("nope") }
+    }
+
+    @Test func denyInboundRefusesReverseCall() async throws {
+        try await withDeadline(15) {
+            let kernelA = await makeKernel(withEcho: false)
+            let kernelB = await makeKernel(withEcho: true)
+
+            let id1 = [UInt8](repeating: 7, count: 32)
+            let id2 = [UInt8](repeating: 9, count: 32)
+            let (cert1, key1) = try CloudCert.selfSigned(idKey: id1)
+            let (cert2, key2) = try CloudCert.selfSigned(idKey: id2)
+            let pem1 = derToPEM(cert1)
+            let pem2 = derToPEM(cert2)
+
+            let (chA, chB) = await MemoryByteChannel.pair()
+
+            // A's leg serves `deny_inbound`; B's leg is the default allow_all. So
+            // A→B forwards succeed, but B→A reverse calls are refused on arrival.
+            async let ta = CloudBridgeTransport.connect(
+                channel: chA, server: false, certDER: cert1, keyPKCS8: key1,
+                approvedPeerPEMs: [pem2], localAgentId: "brA", localKernel: kernelA,
+                authorizer: DenyInbound())
+            async let tb = CloudBridgeTransport.connect(
+                channel: chB, server: true, certDER: cert2, keyPKCS8: key2,
+                approvedPeerPEMs: [pem1], localAgentId: "brB", localKernel: kernelB)
+            let (transportA, transportB) = try await (ta, tb)
+
+            // Forward direction (A → B's allow_all leg) still works — the no-op guard.
+            let fwd = await transportA.forward(
+                target: "echo", payload: ["type": "echo", "msg": "hi"])
+            #expect(fwd["echoed"]["msg"].asString == "hi")
+
+            // Reverse direction (B → A's deny_inbound leg) is refused on arrival.
+            let rev = await transportB.forward(target: "core", payload: ["type": "list_agents"])
+            #expect(
+                rev["reason"].asString == "unauthorized",
+                "reverse call should be denied: \(rev)")
+
+            await transportA.close()
+            await transportB.close()
+        }
+    }
 }

@@ -23,13 +23,27 @@ All three host runtimes (python/rust/swift) interop any-to-any over this transpo
 Verbs (identical to kernel_bridge): `boot` (dial + pair + TLS handshake), `forward`
 (await reply), `watch_remote`/`unwatch_remote` (stream), `reconnect`, `reflect`.
 
+**Authorization** (separate from the TLS auth above — this is a *dispatch policy*).
+A leg is symmetric by default: once connected, either side can `call` any
+agent/verb on the other. An `auth` field on the record selects a per-leg policy
+the engine consults at ONE choke point — the inbound `call` dispatch — like an
+nginx allow/deny rule, **enforced on the receiver** (a compromised peer can't
+bypass it). v1 ships `allow_all` (default — absent `auth` ⇒ this, full duplex) and
+`deny_inbound` (one-way / hub→spoke push: refuse every inbound `call`, replying
+`{error, reason:"unauthorized"}`; the peer can't `call`/`reflect` back). Inbound
+`watch`/`unwatch` are already ignored, so they're denied-by-omission. The engine
+default is `allow_all` (back-compat) by design — **fail-closed is the control
+plane's job**: an app wanting deny-by-default sets `auth:"deny_inbound"` on the
+legs it exposes, the engine does not assume it.
+
 Compose a leg with `transport=cloud_bridge` + `relay_url`, `tenant_id`, `peer_id`,
 `rendezvous` (+ optional `partner_peer_id`), an `id_key` (b64url Ed25519 device
 identity → its self-signed cert is the TLS identity), `approved_peer_certs` (the
 PEM device list to pin), a token source (`token` | `token_provider` | `issue_url`
 + `password`/`provider` POSTed to the relay's `/issue` | `dev_token=true`), and a
 role (`tls_role` / `initiator`, else derived from
-`peer_id < partner_peer_id`). Both legs quote the same `rendezvous` with distinct
-`peer_id`s. The relay holds no content and no long-lived secrets; E2E is the
+`peer_id < partner_peer_id`), and an optional `auth` policy
+(`allow_all` default | `deny_inbound`). Both legs quote the same `rendezvous` with
+distinct `peer_id`s. The relay holds no content and no long-lived secrets; E2E is the
 client's job (this bundle) — see the relay's `CONTRACT.md`. Weak binding: the peer
 is addressed by relay URL + identity only, no shared types.

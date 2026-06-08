@@ -24,12 +24,22 @@ ciphertext, and a forged route fails the TLS handshake (impersonation impossible
   - role (one of): `tls_role` ("client"|"server") | `initiator` bool | derived
                     `peer_id < partner_peer_id` (initiator ⇒ TLS client)
   - `partner_pubkey`   optional b64url Ed25519 pubkey — assert the peer cert matches it
+  - `auth`             optional dispatch policy: `allow_all` (default — absent ⇒
+                       this, full symmetric duplex) | `deny_inbound` (one-way /
+                       hub→spoke push: refuse every inbound `call`, reply
+                       `{reason:"unauthorized"}`). Gated at the engine's inbound-call
+                       choke point, ENFORCED ON THE RECEIVER. Distinct from the TLS
+                       auth above — this is authorization, not authentication.
   - `heartbeat`        seconds between keepalives (default 30)
 
 cloud_bridge does NOT authenticate or mint production tokens — it obtains one from a
 TokenSource (`token`/`token_provider`/`token_command`) and presents it; the auth
 method (password / Apple / Google) is invisible here. `dev_token` is the relay's
 `ROUTER_REQUIRE_AUTH=false` dev posture only.
+
+The engine default is `allow_all` (back-compat, non-negotiable) — fail-closed
+(deny-by-default) is the CONTROL PLANE's job, not this bundle's: an app exposing a
+leg sets `auth:"deny_inbound"` explicitly on the legs it wants one-way.
 """
 
 from __future__ import annotations

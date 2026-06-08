@@ -255,6 +255,64 @@ async def test_inbound_call_to_unknown_target_replies_error(two_kernels):
     assert "error" in reply["data"]
 
 
+async def _boot_solo_bridge(kernel, *, auth=None):
+    """One real bridge (with read_loop) + a raw peer transport — same shape as
+    test_inbound_call_to_unknown_target_replies_error; `auth` sets the policy."""
+    meta = {
+        "type": "create_agent",
+        "handler_module": "kernel_bridge.tools",
+        "transport": "memory",
+        "peer_id": "test_peer",
+    }
+    if auth is not None:
+        meta["auth"] = auth
+    rec = await kernel.send("fs_loader", meta)
+    a_id = rec["id"]
+    mt_a, mt_test = MemoryTransport.pair()
+    kb._test_transport_inject[a_id] = mt_a
+    r = await kernel.send(a_id, {"type": "boot"})
+    assert r.get("booted") is True, r
+    return a_id, mt_test
+
+
+async def test_deny_inbound_refuses_inbound_call(two_kernels):
+    """auth=deny_inbound replies `unauthorized` to a peer's inbound call WITHOUT
+    dispatching it locally — the one-way / hub→spoke (master ignores spoke) case.
+    Targets a REAL agent (fs_loader) so allow_all would have succeeded → proves
+    the gate, not a missing target."""
+    ka, _ = two_kernels
+    _a_id, mt_test = await _boot_solo_bridge(ka, auth="deny_inbound")
+    await mt_test.send(
+        {
+            "type": "call",
+            "id": "c1",
+            "target": "fs_loader",
+            "payload": {"type": "reflect"},
+        }
+    )
+    reply = await asyncio.wait_for(mt_test.recv(), timeout=2.0)
+    assert reply["type"] == "reply" and reply["id"] == "c1"
+    assert reply["data"].get("reason") == "unauthorized", reply["data"]
+
+
+async def test_allow_all_default_dispatches_inbound_call(two_kernels):
+    """No `auth` ⇒ allow_all (back-compat no-op): the peer's inbound call
+    dispatches locally and returns the real reply — the symmetric default."""
+    ka, _ = two_kernels
+    _a_id, mt_test = await _boot_solo_bridge(ka)  # no auth field
+    await mt_test.send(
+        {
+            "type": "call",
+            "id": "c1",
+            "target": "fs_loader",
+            "payload": {"type": "reflect"},
+        }
+    )
+    reply = await asyncio.wait_for(mt_test.recv(), timeout=2.0)
+    assert reply["data"].get("reason") != "unauthorized"
+    assert reply["data"].get("id") == "fs_loader"  # the real reflect dispatched
+
+
 async def test_inbound_error_frame_fails_forward_promptly(two_kernels):
     """A remote `web_ws` emits `{type:"error", id, error}` when its
     dispatch RAISES (vs a verb-level error dict, which rides back as a

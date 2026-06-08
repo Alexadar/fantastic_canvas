@@ -19,7 +19,7 @@
 //!
 //! | verb | payload | reply |
 //! |---|---|---|
-//! | `reflect` | none | `{id, sentence, transport, connected, host?, port?, peer_id?, pending_count, verbs, emits}` |
+//! | `reflect` | none | `{id, sentence, transport, connected, host?, port?, peer_id?, auth, pending_count, verbs, emits}` |
 //! | `boot` | none | `{booted, transport}` or `{error, already}` |
 //! | `shutdown` | none | `{stopped:true}` (runs the `on_delete` cascade) |
 //! | `reconnect` | none | shutdown + boot |
@@ -53,8 +53,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 
+pub mod authorizer;
 pub mod transport;
 
+use authorizer::{make_authorizer, Action, Authorizer, Decision};
 use transport::memory::MemoryTransport;
 #[cfg(feature = "full")]
 use transport::ssh::SshTransport;
@@ -115,6 +117,9 @@ pub(crate) struct BridgeState {
     pub(crate) read_task: AsyncMutex<Option<JoinHandle<()>>>,
     pub(crate) pending: Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>,
     pub(crate) corr_counter: AtomicU64,
+    /// The per-leg auth policy (default `AllowAll`); consulted by the read loop
+    /// before dispatching an inbound `call` — the single auth choke point.
+    pub(crate) authorizer: Arc<dyn Authorizer>,
 }
 
 impl BridgeState {
@@ -170,6 +175,12 @@ fn meta_string(agent_id: &AgentId, kernel: &Kernel, key: &str) -> Option<String>
     let agent = kernel.agents.get(agent_id).map(|e| Arc::clone(&e))?;
     let meta = agent.meta.read().expect("meta poisoned");
     meta.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn meta_value(agent_id: &AgentId, kernel: &Kernel, key: &str) -> Option<Value> {
+    let agent = kernel.agents.get(agent_id).map(|e| Arc::clone(&e))?;
+    let meta = agent.meta.read().expect("meta poisoned");
+    meta.get(key).cloned()
 }
 
 fn meta_u64(agent_id: &AgentId, kernel: &Kernel, key: &str) -> Option<u64> {
@@ -258,6 +269,7 @@ fn reflect_reply(agent_id: &AgentId, kernel: &Kernel) -> Value {
         "peer_id": meta_string(agent_id, kernel, "peer_id"),
         "local_port": meta_u64(agent_id, kernel, "local_port"),
         "remote_port": meta_u64(agent_id, kernel, "remote_port"),
+        "auth": meta_string(agent_id, kernel, "auth").unwrap_or_else(|| "allow_all".to_string()),
         "pending_count": pending,
         "verbs": {
             "reflect": "Identity + transport + connectivity. No args.",
@@ -407,12 +419,23 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
         other => return json!({"error": format!("kernel_bridge: unknown transport {other:?}")}),
     };
 
+    // Resolve the per-leg auth policy (mirrors build_transport). Absent ⇒
+    // AllowAll (back-compat no-op). A bad policy fails the boot loudly.
+    let authorizer = match make_authorizer(meta_value(agent_id, kernel, "auth").as_ref()) {
+        Ok(a) => a,
+        Err(e) => {
+            transport.close().await;
+            return json!({"error": format!("kernel_bridge: bad auth policy: {e}")});
+        }
+    };
+
     let state = Arc::new(BridgeState {
         transport: Arc::clone(&transport),
         transport_kind: kind.clone(),
         read_task: AsyncMutex::new(None),
         pending: Mutex::new(HashMap::new()),
         corr_counter: AtomicU64::new(0),
+        authorizer,
     });
 
     // Spawn the read loop BEFORE we publish the state so the
@@ -595,8 +618,19 @@ async fn read_loop(agent_id: AgentId, state: Arc<BridgeState>, kernel: Arc<Kerne
                     .unwrap_or("")
                     .to_string();
                 let inner = frame.get("payload").cloned().unwrap_or(Value::Null);
+                // AUTH GATE — the single choke point. The leg's policy decides
+                // whether this inbound call dispatches locally; on deny we reply
+                // {error, reason:"unauthorized"} (fail-fast, not a silent drop).
+                let verb = inner.get("type").and_then(Value::as_str).unwrap_or("");
+                let decision = state.authorizer.authorize(&Action {
+                    kind: "call",
+                    target: &target,
+                    verb,
+                });
                 let reply = if target.is_empty() {
                     json!({"error": "kernel_bridge: empty call target"})
+                } else if let Decision::Deny(reason) = decision {
+                    json!({"error": reason, "reason": "unauthorized"})
                 } else {
                     kernel.send(&AgentId::from(target.as_str()), inner).await
                 };

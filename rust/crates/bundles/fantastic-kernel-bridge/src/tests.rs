@@ -466,3 +466,148 @@ async fn cloud_bridge_pins_peer_cert_rejects_unapproved() {
     );
     assert!(ra.is_err(), "client must reject the unapproved server cert");
 }
+
+// ── authorization seam (the `auth` policy) ──────────────────────────
+
+#[test]
+fn allow_all_permits_call() {
+    let a = authorizer::AllowAll;
+    let d = a.authorize(&Action {
+        kind: "call",
+        target: "t",
+        verb: "reflect",
+    });
+    assert!(matches!(d, Decision::Allow));
+}
+
+#[test]
+fn deny_inbound_refuses_call_allows_watch() {
+    let a = authorizer::DenyInbound;
+    let call = a.authorize(&Action {
+        kind: "call",
+        target: "t",
+        verb: "reflect",
+    });
+    assert!(matches!(call, Decision::Deny(_)));
+    // watch/unwatch are already ignored by the read loop → not gated here.
+    let watch = a.authorize(&Action {
+        kind: "watch",
+        target: "t",
+        verb: "watch",
+    });
+    assert!(matches!(watch, Decision::Allow));
+}
+
+#[test]
+fn make_authorizer_resolves_policies() {
+    // absent / null / empty ⇒ AllowAll (back-compat no-op)
+    assert!(make_authorizer(None).is_ok());
+    assert!(make_authorizer(Some(&Value::Null)).is_ok());
+    assert!(make_authorizer(Some(&json!(""))).is_ok());
+    // string + object form
+    let s = make_authorizer(Some(&json!("deny_inbound"))).unwrap();
+    assert!(matches!(
+        s.authorize(&Action {
+            kind: "call",
+            target: "t",
+            verb: "v"
+        }),
+        Decision::Deny(_)
+    ));
+    let o = make_authorizer(Some(&json!({"policy": "deny_inbound"}))).unwrap();
+    assert!(matches!(
+        o.authorize(&Action {
+            kind: "call",
+            target: "t",
+            verb: "v"
+        }),
+        Decision::Deny(_)
+    ));
+    // unknown ⇒ Err (fails the boot loudly)
+    assert!(make_authorizer(Some(&json!("nope"))).is_err());
+}
+
+/// Create a bridge agent carrying an `auth` policy meta field.
+async fn create_bridge_with_auth(kernel: &Arc<Kernel>, id: &str, peer_id: &str, auth: &str) {
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": HANDLER_MODULE,
+                "id": id,
+                "peer_id": peer_id,
+                "transport": "memory",
+                "auth": auth,
+            }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn deny_inbound_refuses_inbound_call() {
+    let tmp = TempDir::new().unwrap();
+    let kernel = mk_kernel(&tmp).await;
+    let bid = id_for("brg_deny", &tmp);
+    create_bridge_with_auth(&kernel, &bid, "stand_in", "deny_inbound").await;
+    // Inject A's half; keep the peer half to push a synthetic inbound call.
+    let peer = inject_one(&AgentId::from(bid.as_str()));
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "boot"}))
+        .await;
+    // reflect surfaces the policy back.
+    let reflect = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "reflect"}))
+        .await;
+    assert_eq!(reflect["auth"], "deny_inbound");
+
+    peer.send_frame(json!({
+        "type": "call",
+        "id": "c1",
+        "target": "core",
+        "payload": {"type": "reflect"},
+    }))
+    .await
+    .unwrap();
+    let reply = peer.recv_frame().await.expect("a reply frame");
+    assert_eq!(reply["type"], "reply");
+    assert_eq!(reply["id"], "c1");
+    assert_eq!(reply["data"]["reason"], "unauthorized", "reply: {reply}");
+
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "shutdown"}))
+        .await;
+}
+
+#[tokio::test]
+async fn allow_all_default_permits_inbound_call() {
+    let tmp = TempDir::new().unwrap();
+    let kernel = mk_kernel(&tmp).await;
+    let bid = id_for("brg_allow", &tmp);
+    // No `auth` meta ⇒ AllowAll (back-compat no-op).
+    create_bridge(&kernel, &bid, "stand_in", "memory").await;
+    let peer = inject_one(&AgentId::from(bid.as_str()));
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "boot"}))
+        .await;
+    let reflect = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "reflect"}))
+        .await;
+    assert_eq!(reflect["auth"], "allow_all");
+
+    peer.send_frame(json!({
+        "type": "call",
+        "id": "c2",
+        "target": "core",
+        "payload": {"type": "reflect"},
+    }))
+    .await
+    .unwrap();
+    let reply = peer.recv_frame().await.expect("a reply frame");
+    assert_eq!(reply["type"], "reply");
+    assert_eq!(reply["data"]["id"], "core", "dispatched reply: {reply}");
+
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "shutdown"}))
+        .await;
+}

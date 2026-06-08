@@ -319,12 +319,20 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
         } catch {
             return .object(["error": .string("cloud_bridge: cert: \(error)")])
         }
+        // Resolve the per-leg auth policy (mirrors build_transport). Absent ⇒
+        // AllowAll (back-compat no-op). A bad policy fails the boot loudly.
+        let authorizer: Authorizer
+        do {
+            authorizer = try makeAuthorizer(agent.metaValue(forKey: "auth"))
+        } catch {
+            return .object(["error": .string("cloud_bridge: bad auth policy: \(error)")])
+        }
         let wsChannel = WSByteChannel(relayURL: relayURL, token: token)
         do {
             let transport = try await CloudBridgeTransport.connect(
                 channel: wsChannel, server: server,
                 certDER: certDER, keyPKCS8: keyPKCS8, approvedPeerPEMs: approved,
-                localAgentId: agentId, localKernel: kernel)
+                localAgentId: agentId, localKernel: kernel, authorizer: authorizer)
             attachTransport(agentId: agentId, transport: .cloud(transport))
             return .object([
                 "booted": .bool(true),
@@ -352,6 +360,11 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
         id_key (b64url Ed25519), approved_peer_certs (PEM list), a token source \
         (token | issue_url+password+provider — POST the relay's /issue), \
         tls_role|initiator|partner_peer_id.
+        Authorization: a per-leg `auth` policy gates inbound `call`s — allow_all \
+        (default, full duplex) | deny_inbound (one-way push: the peer can't \
+        call/reflect back; the reply is {reason:"unauthorized"}). Swift enforces \
+        it on the cloud_bridge leg only — its sole inbound-call path (ws is an \
+        asymmetric client; in-memory forward is a direct kernel call).
         """
     }
 
@@ -364,6 +377,9 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
         switch verb {
         case "reflect":
             let attached = bridgeFor(agentId) != nil
+            // The per-leg auth policy (default `allow_all`). Swift gates only the
+            // cloud_bridge inbound-call path (its sole inbound dispatcher).
+            let auth = kernel.agent(agentId)?.metaValue(forKey: "auth")?.asString ?? "allow_all"
             return [
                 "id": .string(agentId.value),
                 "kind": .string("kernel_bridge"),
@@ -375,6 +391,7 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
                 // attachment. `attached` kept as a swift-side alias.
                 "connected": .bool(attached),
                 "attached": .bool(attached),
+                "auth": .string(auth),
                 "verbs": [
                     "forward":
                         "args: target, payload. Ships a raw `{type:'call', target, payload}` frame over the transport and returns the reply.",
@@ -401,6 +418,11 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
                 return .object(["error": .string("no agent")])
             }
             let kind = agent.metaValue(forKey: "transport")?.asString ?? "ws"
+            // NOTE: the `auth` policy (deny_inbound) is enforced only on the
+            // cloud_bridge leg below — Swift's sole inbound-`call` dispatcher. The
+            // ws transport is an asymmetric client (no inbound calls) and the
+            // in-memory forward is a direct kernel call, so there is no inbound
+            // frame to gate on those paths (matches the relay e2e coverage).
             switch kind {
             case "ws":
                 guard let host = agent.metaValue(forKey: "host")?.asString,
