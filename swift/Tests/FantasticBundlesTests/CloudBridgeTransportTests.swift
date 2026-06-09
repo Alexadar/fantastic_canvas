@@ -160,40 +160,44 @@ struct CloudBridgeTransportTests {
         }
     }
 
-    // ── authorization seam (the `auth` policy) ──────────────────────
+    // ── authorization seam (ingress/egress rules) ───────────────────
 
-    @Test func authorizerPoliciesDecideCorrectly() {
+    @Test func ingressRulesDecideCorrectly() {
         let call = AuthAction(kind: "call", target: "t", verb: "reflect")
         let watch = AuthAction(kind: "watch", target: "t", verb: "watch")
         // AllowAll — true no-op.
-        if case .deny = AllowAll().authorize(call) { Issue.record("allow_all denied a call") }
+        if case .deny = IngressRules.AllowAll().authorize(call) {
+            Issue.record("allow_all denied a call")
+        }
         // DenyInbound — refuses `call`, permits watch/unwatch (already ignored).
-        guard case .deny = DenyInbound().authorize(call) else {
+        guard case .deny = IngressRules.DenyInbound().authorize(call) else {
             Issue.record("deny_inbound permitted a call")
             return
         }
-        if case .deny = DenyInbound().authorize(watch) {
+        if case .deny = IngressRules.DenyInbound().authorize(watch) {
             Issue.record("deny_inbound gated a watch (should be denied-by-omission)")
         }
     }
 
-    @Test func makeAuthorizerResolvesPolicies() throws {
+    @Test func ingressRegistryResolvesByName() throws {
         // absent / null / empty ⇒ AllowAll (back-compat no-op)
         let call = AuthAction(kind: "call", target: "t", verb: "v")
         for value in [JSON?.none, .some(.null), .some(.string(""))] {
-            if case .deny = try makeAuthorizer(value).authorize(call) {
-                Issue.record("absent/null/empty auth should resolve AllowAll")
+            if case .deny = try IngressRules.resolve(value).authorize(call) {
+                Issue.record("absent/null/empty ⇒ AllowAll")
             }
         }
-        // string + object form both resolve DenyInbound
-        for value: JSON in ["deny_inbound", ["policy": "deny_inbound"]] {
-            guard case .deny = try makeAuthorizer(value).authorize(call) else {
+        // string + object form (both `type` and legacy `policy`) resolve DenyInbound
+        for value: JSON in ["deny_inbound", ["type": "deny_inbound"], ["policy": "deny_inbound"]] {
+            guard case .deny = try IngressRules.resolve(value).authorize(call) else {
                 Issue.record("deny_inbound (\(value)) did not deny a call")
                 return
             }
         }
-        // unknown ⇒ throws (fails the boot loudly)
-        #expect(throws: AuthPolicyError.self) { try makeAuthorizer("nope") }
+        // egress: inbound-only names ⇒ Silent (present nothing); unknown ⇒ throws
+        #expect(try EgressRules.resolve("deny_inbound").credential() == nil)
+        #expect(throws: AuthPolicyError.self) { try IngressRules.resolve("nope") }
+        #expect(throws: AuthPolicyError.self) { try EgressRules.resolve("nope") }
     }
 
     @Test func denyInboundRefusesReverseCall() async throws {
@@ -215,7 +219,7 @@ struct CloudBridgeTransportTests {
             async let ta = CloudBridgeTransport.connect(
                 channel: chA, server: false, certDER: cert1, keyPKCS8: key1,
                 approvedPeerPEMs: [pem2], localAgentId: "brA", localKernel: kernelA,
-                authorizer: DenyInbound())
+                ingress: IngressRules.DenyInbound())
             async let tb = CloudBridgeTransport.connect(
                 channel: chB, server: true, certDER: cert2, keyPKCS8: key2,
                 approvedPeerPEMs: [pem1], localAgentId: "brB", localKernel: kernelB)
@@ -250,39 +254,42 @@ struct CloudBridgePasswordTests {
         let env = "FANTASTIC_GROUP_TOKEN_SWIFT_UNIT"
         setenv(env, "s3cret", 1)
         defer { unsetenv(env) }
-        let p = try makeAuthorizer(["policy": "password", "token_env": .string(env)])
-        // matching envelope token ⇒ allow; wrong / missing ⇒ deny
-        if case .deny = p.authorize(mkAction("s3cret")) {
+        // ingress side CHECKS the envelope token (new `env` spelling threads through)
+        let ing = try IngressRules.resolve(["type": "password", "env": .string(env)])
+        if case .deny = ing.authorize(mkAction("s3cret")) {
             Issue.record("matching token should allow")
         }
-        guard case .deny = p.authorize(mkAction("nope")) else {
+        guard case .deny = ing.authorize(mkAction("nope")) else {
             Issue.record("wrong token should deny")
             return
         }
-        guard case .deny = p.authorize(mkAction(nil)) else {
+        guard case .deny = ing.authorize(mkAction(nil)) else {
             Issue.record("missing token should deny")
             return
         }
-        // presents the same token on its own outbound calls (symmetric group)
-        #expect(p.credential() == "s3cret")
-        // fail-closed when the env var is unset
+        // egress side PRESENTS the same token (symmetric group)
+        let eg = try EgressRules.resolve(["type": "password", "env": .string(env)])
+        #expect(eg.credential() == "s3cret")
+        // fail-closed / present-nothing when the env var is unset
         unsetenv(env)
-        guard case .deny = p.authorize(mkAction("s3cret")) else {
+        guard case .deny = ing.authorize(mkAction("s3cret")) else {
             Issue.record("unset env must fail closed")
             return
         }
-        #expect(p.credential() == nil)
+        #expect(eg.credential() == nil)
     }
 
-    @Test func makeAuthorizerResolvesPasswordAndName() throws {
-        // bare string ⇒ default env var; object form threads token_env
-        #expect(try makeAuthorizer("password") is Password)
-        let p = try makeAuthorizer(["policy": "password", "token_env": "X"])
-        #expect((p as? Password)?.tokenEnv == "X")
-        // reflect surfaces only the policy NAME, never the config
-        #expect(authPolicyName(["policy": "password", "token_env": "X"]) == "password")
-        #expect(authPolicyName("deny_inbound") == "deny_inbound")
-        #expect(authPolicyName(nil) == "allow_all")
+    @Test func registryResolvesPasswordAndName() throws {
+        // bare string ⇒ default env var; object form threads token_env (legacy spelling)
+        #expect(try IngressRules.resolve("password") is IngressRules.Password)
+        let ing = try IngressRules.resolve(["type": "password", "token_env": "X"])
+        #expect((ing as? IngressRules.Password)?.tokenEnv == "X")
+        let eg = try EgressRules.resolve(["type": "password", "env": "X"])
+        #expect((eg as? EgressRules.Password)?.tokenEnv == "X")
+        // reflect surfaces only the rule NAME, never the config
+        #expect(ruleName(["type": "password", "env": "X"], default: "allow_all") == "password")
+        #expect(ruleName("deny_inbound", default: "allow_all") == "deny_inbound")
+        #expect(ruleName(nil, default: "silent") == "silent")
     }
 
     @Test func passwordGroupMemberRoundTripsOverCloud() async throws {
@@ -299,15 +306,18 @@ struct CloudBridgePasswordTests {
             let pem1 = derToPEM(cert1)
             let pem2 = derToPEM(cert2)
             let (chA, chB) = await MemoryByteChannel.pair()
-            // Both legs are group members with the SAME group token.
+            // Both legs are group members with the SAME group token (symmetric:
+            // ingress checks + egress presents).
             async let ta = CloudBridgeTransport.connect(
                 channel: chA, server: false, certDER: cert1, keyPKCS8: key1,
                 approvedPeerPEMs: [pem2], localAgentId: "brA", localKernel: kernelA,
-                authorizer: Password(tokenEnv: env))
+                ingress: IngressRules.Password(tokenEnv: env),
+                egress: EgressRules.Password(tokenEnv: env))
             async let tb = CloudBridgeTransport.connect(
                 channel: chB, server: true, certDER: cert2, keyPKCS8: key2,
                 approvedPeerPEMs: [pem1], localAgentId: "brB", localKernel: kernelB,
-                authorizer: Password(tokenEnv: env))
+                ingress: IngressRules.Password(tokenEnv: env),
+                egress: EgressRules.Password(tokenEnv: env))
             let (transportA, transportB) = try await (ta, tb)
             // A→B carries A's group token on the envelope; B accepts → echo works.
             let fwd = await transportA.forward(
@@ -336,18 +346,56 @@ struct CloudBridgePasswordTests {
             let pem1 = derToPEM(cert1)
             let pem2 = derToPEM(cert2)
             let (chA, chB) = await MemoryByteChannel.pair()
-            // A is an OUTSIDER (allow_all ⇒ presents no token); B requires the group token.
+            // A is an OUTSIDER (default ⇒ silent egress, presents no token); B requires it.
             async let ta = CloudBridgeTransport.connect(
                 channel: chA, server: false, certDER: cert1, keyPKCS8: key1,
                 approvedPeerPEMs: [pem2], localAgentId: "brA", localKernel: kernelA)
             async let tb = CloudBridgeTransport.connect(
                 channel: chB, server: true, certDER: cert2, keyPKCS8: key2,
                 approvedPeerPEMs: [pem1], localAgentId: "brB", localKernel: kernelB,
-                authorizer: Password(tokenEnv: env))
+                ingress: IngressRules.Password(tokenEnv: env))
             let (transportA, transportB) = try await (ta, tb)
             // A→B presents no token → B's password gate refuses on arrival.
             let r = await transportA.forward(target: "echo", payload: ["type": "echo"])
             #expect(r["reason"].asString == "unauthorized", "tokenless caller must be denied: \(r)")
+            await transportA.close()
+            await transportB.close()
+        }
+    }
+
+    @Test func asymmetricIngressEgressOverCloud() async throws {
+        let env = "FANTASTIC_GROUP_TOKEN_SWIFT_ASYM"
+        setenv(env, "fleet", 1)
+        defer { unsetenv(env) }
+        try await withDeadline(15) {
+            let kernelA = await makeKernel(withEcho: false)
+            let kernelB = await makeKernel(withEcho: true)
+            let id1 = [UInt8](repeating: 7, count: 32)
+            let id2 = [UInt8](repeating: 9, count: 32)
+            let (cert1, key1) = try CloudCert.selfSigned(idKey: id1)
+            let (cert2, key2) = try CloudCert.selfSigned(idKey: id2)
+            let pem1 = derToPEM(cert1)
+            let pem2 = derToPEM(cert2)
+            let (chA, chB) = await MemoryByteChannel.pair()
+            // A is a hub: refuse INBOUND, still PRESENT the fleet token outbound.
+            // B is a group member that accepts the fleet token.
+            async let ta = CloudBridgeTransport.connect(
+                channel: chA, server: false, certDER: cert1, keyPKCS8: key1,
+                approvedPeerPEMs: [pem2], localAgentId: "brA", localKernel: kernelA,
+                ingress: IngressRules.DenyInbound(),
+                egress: EgressRules.Password(tokenEnv: env))
+            async let tb = CloudBridgeTransport.connect(
+                channel: chB, server: true, certDER: cert2, keyPKCS8: key2,
+                approvedPeerPEMs: [pem1], localAgentId: "brB", localKernel: kernelB,
+                ingress: IngressRules.Password(tokenEnv: env))
+            let (transportA, transportB) = try await (ta, tb)
+            // A→B: A presents the fleet token (egress), B's password accepts → echo works.
+            let fwd = await transportA.forward(
+                target: "echo", payload: ["type": "echo", "msg": "hi"])
+            #expect(fwd["echoed"]["msg"].asString == "hi", "egress should present: \(fwd)")
+            // B→A: A's ingress is deny_inbound → refused regardless of token.
+            let rev = await transportB.forward(target: "core", payload: ["type": "list_agents"])
+            #expect(rev["reason"].asString == "unauthorized", "hub refuses inbound: \(rev)")
             await transportA.close()
             await transportB.close()
         }

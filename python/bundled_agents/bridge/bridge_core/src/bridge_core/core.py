@@ -27,9 +27,10 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from bridge_core._authorizer import Action, AllowAll, Authorizer
-from bridge_core._authorizer import make_authorizer as _resolve_auth
+from bridge_core._authorizer import Action, EgressRule, IngressRule, parse_spec
 from bridge_core._transport import ConnectionClosed, _BaseTransport
+from bridge_core.egress_rules import Silent, resolve_egress
+from bridge_core.ingress_rules import AllowAll, resolve_ingress
 
 DEFAULT_FORWARD_TIMEOUT = 30.0
 
@@ -38,20 +39,22 @@ DEFAULT_FORWARD_TIMEOUT = 30.0
 # `st.cleanup` for transport-specific teardown (e.g. an ssh tunnel).
 BuildTransport = Callable[[str, dict, Any, "_BridgeState"], Awaitable[_BaseTransport]]
 
-# `make_authorizer(rec) -> Authorizer` (sync). Resolves the leg's `auth` policy from
-# the record; the read loop consults it before dispatching an inbound `call`. The
-# per-bundle seam for future custom authorizers — v1 bundles inherit the default.
-MakeAuthorizer = Callable[[dict], Authorizer]
+
+def _rule_name(spec, default: str) -> str:
+    """The rule TYPE name for reflect — never surfaces the rule's config (env var
+    names, etc.). Absent spec ⇒ `default` (ingress: `allow_all`; egress: `silent`)."""
+    name, _ = parse_spec(spec)
+    return name or default
 
 
-def _auth_policy_name(auth) -> str:
-    """The policy NAME for reflect — string form is the name itself, object form is
-    its `policy` key, absent ⇒ `allow_all`. Never surfaces the policy's config."""
-    if not auth:
-        return "allow_all"
-    if isinstance(auth, str):
-        return auth
-    return auth.get("policy") or "allow_all"
+def _ingress_name(rec: dict) -> str:
+    spec = rec["ingress_rule"] if "ingress_rule" in rec else rec.get("auth")
+    return _rule_name(spec, "allow_all")
+
+
+def _egress_name(rec: dict) -> str:
+    spec = rec["egress_rule"] if "egress_rule" in rec else rec.get("auth")
+    return _rule_name(spec, "silent")
 
 
 @dataclass
@@ -69,9 +72,11 @@ class _BridgeState:
     # Bundle-specific reflect/diagnostic state (e.g. ssh `tunnel_pid`). The engine
     # only clears it on teardown; the bundle's `reflect_fields` reads it.
     extra: dict = field(default_factory=dict)
-    # Per-leg authorization policy (the `auth` record field). The read loop consults
-    # it before dispatching an inbound `call`. Default = AllowAll (full duplex).
-    authorizer: Authorizer = field(default_factory=AllowAll)
+    # Per-leg auth rules (symmetric, independent). The read loop consults `ingress`
+    # before dispatching an inbound `call`; `forward` stamps `egress.credential()`
+    # on the outbound envelope. Defaults: AllowAll inbound, Silent outbound.
+    ingress: IngressRule = field(default_factory=AllowAll)
+    egress: EgressRule = field(default_factory=Silent)
 
 
 # Per-agent bridge state — process-memory only, keyed by agent id (shared across
@@ -128,10 +133,10 @@ async def _read_loop(id: str, kernel: Any) -> None:
             if ftype == "call":
                 target = frame.get("target")
                 payload = frame.get("payload") or {}
-                # AUTH GATE — the single choke point. The leg's policy decides
+                # AUTH GATE — the single choke point. The leg's INGRESS rule decides
                 # whether the peer may run this inbound call locally; a denial still
                 # gets a `reply` (echoing the corr-id) so the caller resolves cleanly.
-                decision = st.authorizer.authorize(
+                decision = st.ingress.authorize(
                     Action(
                         "call",
                         target or "",
@@ -205,7 +210,8 @@ async def _teardown(id: str) -> None:
     st.read_task = None
     st.cleanup = None
     st.extra.clear()
-    st.authorizer = AllowAll()
+    st.ingress = AllowAll()
+    st.egress = Silent()
 
 
 async def on_delete(agent: Any) -> None:
@@ -219,11 +225,10 @@ async def boot(
     kernel,
     *,
     build_transport: BuildTransport,
-    make_authorizer: MakeAuthorizer = _resolve_auth,
 ):
     """Shared boot: idempotency + the `memory` test kind + the `build_transport`
-    seam for every other kind, then the common tail (spawn read loop, emit
-    `bridge_up`)."""
+    seam for every other kind, then the common tail (resolve the leg's ingress +
+    egress rules, spawn read loop, emit `bridge_up`)."""
     rec = kernel.get(id) or {}
     st = _state(id)
     if st.transport is not None and not st.transport.closed:
@@ -252,11 +257,12 @@ async def boot(
     st.transport = transport
     st.transport_kind = kind
     try:
-        st.authorizer = make_authorizer(rec)
+        st.ingress = resolve_ingress(rec)
+        st.egress = resolve_egress(rec)
     except Exception as e:
-        # Bad auth policy must not leave the just-built transport leaked/open.
+        # A bad rule must not leave the just-built transport leaked/open.
         await _teardown(id)
-        return {"error": f"bridge: bad auth policy: {e}"}
+        return {"error": f"bridge: bad auth rule: {e}"}
     st.read_task = asyncio.create_task(_read_loop(id, kernel))
     await kernel.emit(id, {"type": "bridge_up"})
     return {"booted": True, "transport": kind}
@@ -282,9 +288,10 @@ async def _forward(id, payload, kernel):
     st.pending[corr] = fut
 
     frame = {"type": "call", "id": corr, "target": target, "payload": inner}
-    # Attach this leg's group credential, if its policy presents one (password ⇒
-    # the group token; allow_all/deny_inbound ⇒ None ⇒ no field, wire unchanged).
-    token = st.authorizer.credential()
+    # Stamp this leg's EGRESS credential on the envelope, if its rule presents one
+    # (password ⇒ the group token; silent ⇒ None ⇒ no field, wire unchanged). The
+    # dispatched `payload` stays clean — the target never sees the token.
+    token = st.egress.credential()
     if token is not None:
         frame["auth_token"] = token
     try:
@@ -341,21 +348,15 @@ def make_verbs(
     sentence: str,
     reflect_fields: Callable[[dict, _BridgeState], dict],
     default_kind: str = "ws",
-    make_authorizer: MakeAuthorizer = _resolve_auth,
 ) -> dict:
     """Build the 6-verb table for a bridge bundle. `reflect_fields(rec, st)`
     supplies the transport-specific reflect fields; `sentence` is the one-liner;
-    `default_kind` is the reflect `transport` fallback."""
+    `default_kind` is the reflect `transport` fallback. The leg's ingress/egress
+    rules are resolved from the record by the shared registries (see boot)."""
 
     async def _boot(id, payload, kernel):
         """No args. Reads `transport` (kind) + transport-specific fields off the agent record, builds the transport, spawns the read loop, emits `bridge_up`. Idempotent: re-booting a connected bridge is a no-op."""
-        return await boot(
-            id,
-            payload,
-            kernel,
-            build_transport=build_transport,
-            make_authorizer=make_authorizer,
-        )
+        return await boot(id, payload, kernel, build_transport=build_transport)
 
     async def _reconnect(id, payload, kernel):
         """No args. Teardown + boot — explicit because we don't auto-reconnect on transport failure (keeps real network problems visible to operators / telemetry)."""
@@ -372,12 +373,14 @@ def make_verbs(
             "transport": st.transport_kind or rec.get("transport") or default_kind,
             "connected": st.transport is not None and not st.transport.closed,
             "pending_count": len(st.pending),
-            # The active per-leg auth policy NAME (string, for both the string and
-            # `{policy, ...}` object record forms — the policy's own config, e.g. a
-            # `token_env`, is never surfaced). Engine default is `allow_all`
-            # (back-compat); secure-by-default is the control plane's job — it sets
-            # `auth` explicitly (`deny_inbound` / `password`) on the legs it exposes.
-            "auth": _auth_policy_name(rec.get("auth")),
+            # The active per-leg rule TYPE names (config like a `token_env` is never
+            # surfaced). `ingress` = inbound filter (default `allow_all`), `egress` =
+            # outbound decorator (default `silent`). `auth` is the back-compat alias
+            # for the ingress name. Engine defaults are permissive (back-compat);
+            # securing a leg is the control plane's job (it sets the rules).
+            "ingress": _ingress_name(rec),
+            "egress": _egress_name(rec),
+            "auth": _ingress_name(rec),
         }
         out.update(reflect_fields(rec, st))
         out["verbs"] = {

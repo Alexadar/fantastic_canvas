@@ -1,28 +1,28 @@
-// Bridge authorization — the per-leg, declarative auth seam.
+// Bridge authorization — base types + the two rule registries (ingress/egress).
 //
-// Swift mirror of the canonical Python `bridge_core._authorizer` (and the Rust
-// `authorizer`). A bridge leg is symmetric by default: once connected, either
-// side can `call` any agent/verb on the other. An `auth` field on the agent
-// record selects a POLICY consulted before dispatching an inbound `call` — like
-// an nginx allow/deny rule, evaluated at ONE choke point. Enforced on the
-// RECEIVER (the leg refuses the peer's frame on arrival), so a compromised peer
-// can't bypass it.
+// Swift mirror of the canonical Python `bridge_core` (ingress_rules / egress_rules
+// packages) and the Rust `authorizer` module. Two independent, TYPED rules govern a
+// leg, mirrored on the wire and enforced on the RECEIVER:
+//   - an INGRESS rule (the inbound FILTER): `authorize(action) -> AuthDecision`.
+//   - an EGRESS rule (the outbound DECORATOR): `credential() -> token?`, stamped on
+//     the frame ENVELOPE by `forward` (never the dispatched payload).
 //
-// v1 ships two policies:
-//   - `allow_all`   (default — absent `auth` ⇒ this) — today's full symmetric duplex.
-//   - `deny_inbound` — refuse every inbound `call` (the one-way / hub→spoke push).
-//     Inbound `watch`/`unwatch` are already ignored, so they're denied-by-omission.
+// Each rule is typed in the record (`{"type": <name>, "env": <var>}`) and resolved
+// BY NAME from a registry — the `IngressRules` / `EgressRules` namespaces (a folder
+// of one-rule-per-file, the `resolve` switch is the importer). The record carries
+// `ingress_rule`/`egress_rule` (symmetric) or the legacy `auth` shorthand (both).
 //
-// SWIFT SPECIFIC: there is no shared read loop. In-memory `forward` is a direct
-// kernel call (no inbound-`call` frame) and `ws` is an asymmetric client — the
-// ONLY inbound `call` dispatcher is `CloudBridgeTransport.dispatch`. So
-// `deny_inbound` is cloud-only in Swift, correct-by-construction (the relay e2e
-// matrix covers Swift's real inbound path). The abstraction is extensible
-// (future: per-peer allowlist by the pinned Ed25519 pubkey) WITHOUT touching the
-// transport — a new policy, not a new gate; `AuthAction` is the extension point.
+// SWIFT SPECIFIC: there is no shared read loop. The ONLY inbound-`call` dispatcher is
+// `CloudBridgeTransport.dispatch`, so an ingress rule is enforced on the cloud_bridge
+// leg only (correct-by-construction; ws is an asymmetric client, in-memory forward is
+// a direct kernel call). The relay e2e matrix covers Swift's real inbound path.
+// Rules are TRANSITIONAL (inline plumbing), not invocational (agents).
 
 import FantasticJSON
 import Foundation
+
+/// Default env var for the `password` rule when the record names none.
+public let DefaultGroupTokenEnv = "FANTASTIC_GROUP_TOKEN"
 
 /// One inbound request the peer is asking this leg to perform locally.
 public struct AuthAction: Sendable {
@@ -32,8 +32,8 @@ public struct AuthAction: Sendable {
     public let target: String
     /// `payload["type"]` — the verb requested (e.g. `"reflect"`).
     public let verb: String
-    /// The `auth_token` the peer attached to this call on the frame ENVELOPE, if any
-    /// (read by the `password` policy; the dispatched payload never carries it).
+    /// The `auth_token` the peer attached on the frame ENVELOPE, if any (read by the
+    /// `password` rule; the dispatched payload never carries it).
     public let token: String?
 
     public init(kind: String, target: String, verb: String, token: String? = nil) {
@@ -44,7 +44,7 @@ public struct AuthAction: Sendable {
     }
 }
 
-/// The authorizer's verdict on an `AuthAction`.
+/// An ingress rule's verdict on an `AuthAction`.
 public enum AuthDecision: Sendable {
     /// Permit the inbound action — dispatch `kernel.send`.
     case allow
@@ -52,23 +52,56 @@ public enum AuthDecision: Sendable {
     case deny(String)
 }
 
-/// Decides whether the peer may perform an inbound `action` on this leg.
-public protocol Authorizer: Sendable {
+/// The inbound FILTER — decides whether the peer may perform an inbound action.
+public protocol IngressRule: Sendable {
     func authorize(_ action: AuthAction) -> AuthDecision
-    /// The token this leg PRESENTS on its own outbound `call`s (attached to the
-    /// frame envelope by `forward`). Default `nil` — only credential-bearing
-    /// policies (`password`) return one, so non-`password` legs keep today's exact
-    /// wire shape (no `auth_token` field).
+}
+
+/// The outbound DECORATOR — the token this leg PRESENTS on its own outbound `call`s
+/// (stamped on the frame envelope by `forward`). `nil` ⇒ present nothing.
+public protocol EgressRule: Sendable {
     func credential() -> String?
 }
 
-extension Authorizer {
-    public func credential() -> String? { nil }
+/// Thrown when a rule spec names an unknown type or is malformed — fails the boot
+/// loudly rather than silently mis-securing.
+public struct AuthPolicyError: Error, CustomStringConvertible {
+    public let message: String
+    public init(_ message: String) { self.message = message }
+    public var description: String { message }
 }
 
-/// Content-blind constant-time compare given equal length (the length is not
-/// secret — same posture as Python's `hmac.compare_digest`). Avoids a timing oracle
-/// on the group token.
+/// Normalize a rule spec to `(type name, env var)`. Absent/null/empty ⇒ `(nil, nil)`.
+/// String ⇒ `(name, nil)`. Object ⇒ `(type|policy, env|token_env)`.
+func parseSpec(_ spec: JSON?) throws -> (name: String?, tokenEnv: String?) {
+    guard let spec else { return (nil, nil) }
+    switch spec {
+    case .null:
+        return (nil, nil)
+    case .string(let s):
+        return s.isEmpty ? (nil, nil) : (s, nil)
+    case .object(let o):
+        guard let name = o["type"]?.asString ?? o["policy"]?.asString else {
+            throw AuthPolicyError("rule object missing 'type'")
+        }
+        return (name, o["env"]?.asString ?? o["token_env"]?.asString)
+    default:
+        throw AuthPolicyError("unsupported rule spec")
+    }
+}
+
+/// The rule TYPE name for reflect — never surfaces the rule's config. Absent ⇒
+/// `def` (`allow_all` for ingress, `silent` for egress).
+public func ruleName(_ spec: JSON?, default def: String) -> String {
+    switch spec {
+    case .some(.string(let s)) where !s.isEmpty: return s
+    case .some(.object(let o)): return o["type"]?.asString ?? o["policy"]?.asString ?? def
+    default: return def
+    }
+}
+
+/// Content-blind constant-time compare given equal length (length is not secret —
+/// same posture as Python's `hmac.compare_digest`).
 func constantTimeEquals(_ a: String, _ b: String) -> Bool {
     let x = Array(a.utf8)
     let y = Array(b.utf8)
@@ -78,96 +111,14 @@ func constantTimeEquals(_ a: String, _ b: String) -> Bool {
     return diff == 0
 }
 
-/// Full symmetric duplex — the default; a true no-op.
-public struct AllowAll: Authorizer {
-    public init() {}
-    public func authorize(_ action: AuthAction) -> AuthDecision { .allow }
+/// Resolve the leg's INGRESS rule: `ingress_rule` if present, else the legacy `auth`
+/// shorthand. Absent ⇒ AllowAll (back-compat).
+public func resolveIngress(ingressRule: JSON?, auth: JSON?) throws -> IngressRule {
+    try IngressRules.resolve(ingressRule ?? auth)
 }
 
-/// One-way push: refuse every inbound `call` (peer can't call/reflect us).
-public struct DenyInbound: Authorizer {
-    public init() {}
-    public func authorize(_ action: AuthAction) -> AuthDecision {
-        action.kind == "call"
-            ? .deny("inbound calls denied by policy")
-            : .allow  // watch/unwatch already ignored by the dispatcher
-    }
-}
-
-/// Kernel-group membership by a shared secret read from an env var (default
-/// `FANTASTIC_GROUP_TOKEN`). Authorize an inbound `call` only if its envelope
-/// `auth_token` equals the group token; symmetric — `credential()` PRESENTS the
-/// same token on outbound calls, so one config makes a leg a full group member.
-/// Fail-closed: an unset/empty env var refuses every inbound `call`. In Swift this
-/// is enforced on the cloud_bridge leg only (its sole inbound-call dispatcher).
-public struct Password: Authorizer {
-    public let tokenEnv: String
-    public init(tokenEnv: String = "FANTASTIC_GROUP_TOKEN") { self.tokenEnv = tokenEnv }
-
-    private func token() -> String? {
-        let v = ProcessInfo.processInfo.environment[tokenEnv]
-        return (v?.isEmpty == false) ? v : nil  // present-but-empty ⇒ unset
-    }
-
-    public func authorize(_ action: AuthAction) -> AuthDecision {
-        guard action.kind == "call" else { return .allow }
-        guard let expected = token() else {
-            return .deny("group token unset (\(tokenEnv))")
-        }
-        if let presented = action.token, constantTimeEquals(presented, expected) {
-            return .allow
-        }
-        return .deny("invalid or missing group token")
-    }
-
-    public func credential() -> String? { token() }
-}
-
-/// Thrown by `makeAuthorizer` when the `auth` field names an unknown policy or
-/// is malformed — fails the boot loudly rather than silently mis-securing.
-public struct AuthPolicyError: Error, CustomStringConvertible {
-    public let message: String
-    public init(_ message: String) { self.message = message }
-    public var description: String { message }
-}
-
-/// The active auth policy NAME for reflect — string form is the name itself, object
-/// form is its `policy` key, absent ⇒ `allow_all`. Never surfaces the policy config.
-public func authPolicyName(_ auth: JSON?) -> String {
-    switch auth {
-    case .some(.string(let s)) where !s.isEmpty: return s
-    case .some(.object(let o)): return o["policy"]?.asString ?? "allow_all"
-    default: return "allow_all"
-    }
-}
-
-/// Resolve the leg's `auth` record field to an Authorizer. Absent/null/empty ⇒
-/// `AllowAll` (back-compat). String now (`"deny_inbound"`); the object form
-/// (`{"policy": "<name>", ...}`) is accepted for forward-compat. Unknown policy ⇒
-/// throws `AuthPolicyError`.
-public func makeAuthorizer(_ auth: JSON?) throws -> Authorizer {
-    guard let auth else { return AllowAll() }
-    let name: String
-    var tokenEnv = "FANTASTIC_GROUP_TOKEN"
-    switch auth {
-    case .null:
-        return AllowAll()
-    case .string(let s):
-        if s.isEmpty { return AllowAll() }
-        name = s
-    case .object(let o):
-        guard let p = o["policy"]?.asString else {
-            throw AuthPolicyError("auth object missing 'policy'")
-        }
-        name = p
-        if let te = o["token_env"]?.asString { tokenEnv = te }  // sibling config
-    default:
-        throw AuthPolicyError("unsupported auth value")
-    }
-    switch name {
-    case "allow_all": return AllowAll()
-    case "deny_inbound": return DenyInbound()
-    case "password": return Password(tokenEnv: tokenEnv)
-    default: throw AuthPolicyError("unknown policy \"\(name)\"")
-    }
+/// Resolve the leg's EGRESS rule: `egress_rule` if present, else the legacy `auth`
+/// shorthand (so `auth:"password"` presents the group token). Absent ⇒ Silent.
+public func resolveEgress(egressRule: JSON?, auth: JSON?) throws -> EgressRule {
+    try EgressRules.resolve(egressRule ?? auth)
 }

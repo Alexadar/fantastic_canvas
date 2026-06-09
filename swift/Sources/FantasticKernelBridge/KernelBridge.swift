@@ -319,20 +319,25 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
         } catch {
             return .object(["error": .string("cloud_bridge: cert: \(error)")])
         }
-        // Resolve the per-leg auth policy (mirrors build_transport). Absent ⇒
-        // AllowAll (back-compat no-op). A bad policy fails the boot loudly.
-        let authorizer: Authorizer
+        // Resolve the per-leg ingress + egress rules from the record (`ingress_rule`
+        // / `egress_rule`, else the legacy `auth` shorthand). A bad rule fails loudly.
+        let ingress: IngressRule
+        let egress: EgressRule
         do {
-            authorizer = try makeAuthorizer(agent.metaValue(forKey: "auth"))
+            let auth = agent.metaValue(forKey: "auth")
+            ingress = try resolveIngress(
+                ingressRule: agent.metaValue(forKey: "ingress_rule"), auth: auth)
+            egress = try resolveEgress(
+                egressRule: agent.metaValue(forKey: "egress_rule"), auth: auth)
         } catch {
-            return .object(["error": .string("cloud_bridge: bad auth policy: \(error)")])
+            return .object(["error": .string("cloud_bridge: bad auth rule: \(error)")])
         }
         let wsChannel = WSByteChannel(relayURL: relayURL, token: token)
         do {
             let transport = try await CloudBridgeTransport.connect(
                 channel: wsChannel, server: server,
                 certDER: certDER, keyPKCS8: keyPKCS8, approvedPeerPEMs: approved,
-                localAgentId: agentId, localKernel: kernel, authorizer: authorizer)
+                localAgentId: agentId, localKernel: kernel, ingress: ingress, egress: egress)
             attachTransport(agentId: agentId, transport: .cloud(transport))
             return .object([
                 "booted": .bool(true),
@@ -360,15 +365,16 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
         id_key (b64url Ed25519), approved_peer_certs (PEM list), a token source \
         (token | issue_url+password+provider — POST the relay's /issue), \
         tls_role|initiator|partner_peer_id.
-        Authorization: a per-leg `auth` policy gates inbound `call`s — allow_all \
-        (default, full duplex) | deny_inbound (one-way push: the peer can't \
-        call/reflect back; the reply is {reason:"unauthorized"}) | password \
-        (kernel-GROUP shared secret: authorize a call only if it carries an \
-        auth_token matching the group token from an env var, default \
-        FANTASTIC_GROUP_TOKEN; symmetric — also presents the token on outbound \
-        calls). Swift enforces it on the cloud_bridge leg only — its sole \
-        inbound-call path (ws is an asymmetric client; in-memory forward is a \
-        direct kernel call).
+        Authorization: two symmetric, typed per-leg rules — `ingress_rule` (the \
+        inbound FILTER) and `egress_rule` (the outbound DECORATOR), each \
+        {type, env}; a legacy `auth` shorthand sets both. Types: allow_all \
+        (default) | deny_inbound (refuse inbound calls, reply \
+        {reason:"unauthorized"}) | password (kernel-GROUP shared secret: ingress \
+        checks the envelope auth_token against the group token from an env var, \
+        default FANTASTIC_GROUP_TOKEN; egress presents it). Resolved by name from \
+        the IngressRules/EgressRules registries. Swift enforces ingress on the \
+        cloud_bridge leg only — its sole inbound-call path (ws is an asymmetric \
+        client; in-memory forward is a direct kernel call).
         """
     }
 
@@ -381,10 +387,16 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
         switch verb {
         case "reflect":
             let attached = bridgeFor(agentId) != nil
-            // The per-leg auth policy NAME (default `allow_all`). String form is the
-            // name; object form (`{policy, token_env}`) surfaces only `policy` — never
-            // the config. Swift gates only the cloud_bridge inbound-call path.
-            let auth = authPolicyName(kernel.agent(agentId)?.metaValue(forKey: "auth"))
+            // The per-leg rule TYPE names (config like a `token_env` is never
+            // surfaced). `ingress` = inbound filter (default allow_all), `egress` =
+            // outbound decorator (default silent); `auth` is the ingress alias. Swift
+            // gates only the cloud_bridge inbound-call path.
+            let a = kernel.agent(agentId)
+            let authMeta = a?.metaValue(forKey: "auth")
+            let ingressName = ruleName(
+                a?.metaValue(forKey: "ingress_rule") ?? authMeta, default: "allow_all")
+            let egressName = ruleName(
+                a?.metaValue(forKey: "egress_rule") ?? authMeta, default: "silent")
             return [
                 "id": .string(agentId.value),
                 "kind": .string("kernel_bridge"),
@@ -396,7 +408,9 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
                 // attachment. `attached` kept as a swift-side alias.
                 "connected": .bool(attached),
                 "attached": .bool(attached),
-                "auth": .string(auth),
+                "ingress": .string(ingressName),
+                "egress": .string(egressName),
+                "auth": .string(ingressName),
                 "verbs": [
                     "forward":
                         "args: target, payload. Ships a raw `{type:'call', target, payload}` frame over the transport and returns the reply.",

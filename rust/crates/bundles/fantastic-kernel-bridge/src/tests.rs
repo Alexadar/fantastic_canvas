@@ -467,7 +467,7 @@ async fn cloud_bridge_pins_peer_cert_rejects_unapproved() {
     assert!(ra.is_err(), "client must reject the unapproved server cert");
 }
 
-// ── authorization seam (the `auth` policy) ──────────────────────────
+// ── authorization seam (ingress/egress rules) ───────────────────────
 
 /// Build a `call` Action carrying an optional envelope token, for the unit tests.
 fn call_action(token: Option<&str>) -> Action<'_> {
@@ -480,49 +480,49 @@ fn call_action(token: Option<&str>) -> Action<'_> {
 }
 
 #[test]
-fn allow_all_permits_call() {
-    let a = authorizer::AllowAll;
-    assert!(matches!(a.authorize(&call_action(None)), Decision::Allow));
-    assert!(a.credential().is_none()); // presents nothing
-}
-
-#[test]
-fn deny_inbound_refuses_call_allows_watch() {
-    let a = authorizer::DenyInbound;
-    assert!(matches!(a.authorize(&call_action(None)), Decision::Deny(_)));
-    // watch/unwatch are already ignored by the read loop → not gated here.
-    let watch = a.authorize(&Action {
+fn ingress_resolves_allow_and_deny() {
+    use authorizer::ingress::resolve;
+    // absent / null / empty ⇒ AllowAll (back-compat no-op)
+    assert!(matches!(
+        resolve(None).unwrap().authorize(&call_action(None)),
+        Decision::Allow
+    ));
+    assert!(matches!(
+        resolve(Some(&Value::Null))
+            .unwrap()
+            .authorize(&call_action(None)),
+        Decision::Allow
+    ));
+    // string + object form (both `type` and legacy `policy`)
+    let s = resolve(Some(&json!("deny_inbound"))).unwrap();
+    assert!(matches!(s.authorize(&call_action(None)), Decision::Deny(_)));
+    let o = resolve(Some(&json!({"type": "deny_inbound"}))).unwrap();
+    assert!(matches!(o.authorize(&call_action(None)), Decision::Deny(_)));
+    let legacy = resolve(Some(&json!({"policy": "deny_inbound"}))).unwrap();
+    assert!(matches!(
+        legacy.authorize(&call_action(None)),
+        Decision::Deny(_)
+    ));
+    // watch/unwatch not gated by deny_inbound
+    let watch = s.authorize(&Action {
         kind: "watch",
         target: "t",
         verb: "watch",
         token: None,
     });
     assert!(matches!(watch, Decision::Allow));
-    assert!(a.credential().is_none());
-}
-
-#[test]
-fn make_authorizer_resolves_policies() {
-    // absent / null / empty ⇒ AllowAll (back-compat no-op)
-    assert!(make_authorizer(None).is_ok());
-    assert!(make_authorizer(Some(&Value::Null)).is_ok());
-    assert!(make_authorizer(Some(&json!(""))).is_ok());
-    // string + object form
-    let s = make_authorizer(Some(&json!("deny_inbound"))).unwrap();
-    assert!(matches!(s.authorize(&call_action(None)), Decision::Deny(_)));
-    let o = make_authorizer(Some(&json!({"policy": "deny_inbound"}))).unwrap();
-    assert!(matches!(o.authorize(&call_action(None)), Decision::Deny(_)));
     // unknown ⇒ Err (fails the boot loudly)
-    assert!(make_authorizer(Some(&json!("nope"))).is_err());
+    assert!(resolve(Some(&json!("nope"))).is_err());
 }
 
 #[test]
-fn password_checks_and_presents_group_token() {
-    // Use a test-unique env var so parallel tests don't clobber each other.
-    let env = "FANTASTIC_GROUP_TOKEN_RS_UNIT";
+fn ingress_password_checks_envelope_token() {
+    use authorizer::ingress::resolve;
+    // test-unique env var so parallel tests don't clobber each other
+    let env = "FANTASTIC_GROUP_TOKEN_RS_ING";
     std::env::set_var(env, "s3cret");
-    let p = make_authorizer(Some(&json!({"policy": "password", "token_env": env}))).unwrap();
-    // matching token ⇒ allow; wrong/missing ⇒ deny
+    // `env` (new) spelling threads to the rule
+    let p = resolve(Some(&json!({"type": "password", "env": env}))).unwrap();
     assert!(matches!(
         p.authorize(&call_action(Some("s3cret"))),
         Decision::Allow
@@ -532,28 +532,48 @@ fn password_checks_and_presents_group_token() {
         Decision::Deny(_)
     ));
     assert!(matches!(p.authorize(&call_action(None)), Decision::Deny(_)));
-    // presents the same token on outbound calls (symmetric group membership)
-    assert_eq!(p.credential().as_deref(), Some("s3cret"));
     // fail-closed when the env var is unset
     std::env::remove_var(env);
     assert!(matches!(
         p.authorize(&call_action(Some("s3cret"))),
         Decision::Deny(_)
     ));
-    assert!(p.credential().is_none());
 }
 
 #[test]
-fn password_defaults_env_var_for_string_form() {
-    // bare string form ⇒ the default env var name
-    let p = make_authorizer(Some(&json!("password"))).unwrap();
-    // with the default var unset, it fails closed (and presents nothing)
-    std::env::remove_var("FANTASTIC_GROUP_TOKEN");
+fn egress_resolves_and_presents() {
+    use authorizer::egress::resolve;
+    // absent + inbound-only names ⇒ Silent (present nothing)
+    assert!(resolve(None).unwrap().credential().is_none());
+    assert!(resolve(Some(&json!("deny_inbound")))
+        .unwrap()
+        .credential()
+        .is_none());
+    // password ⇒ presents the env token (legacy `token_env` spelling accepted)
+    let env = "FANTASTIC_GROUP_TOKEN_RS_EG";
+    std::env::set_var(env, "abc");
+    let p = resolve(Some(&json!({"type": "password", "token_env": env}))).unwrap();
+    assert_eq!(p.credential().as_deref(), Some("abc"));
+    std::env::remove_var(env);
+    assert!(p.credential().is_none()); // unset ⇒ presents nothing
+                                       // unknown ⇒ Err
+    assert!(resolve(Some(&json!("nope"))).is_err());
+}
+
+#[test]
+fn auth_shorthand_is_symmetric() {
+    // `auth:"password"` ⇒ ingress checks AND egress presents (group member)
+    let env = "FANTASTIC_GROUP_TOKEN_RS_SYM";
+    std::env::set_var(env, "k");
+    let spec = json!({"type": "password", "env": env});
+    let ing = authorizer::ingress::resolve(Some(&spec)).unwrap();
+    let eg = authorizer::egress::resolve(Some(&spec)).unwrap();
     assert!(matches!(
-        p.authorize(&call_action(Some("x"))),
-        Decision::Deny(_)
+        ing.authorize(&call_action(Some("k"))),
+        Decision::Allow
     ));
-    assert!(p.credential().is_none());
+    assert_eq!(eg.credential().as_deref(), Some("k"));
+    std::env::remove_var(env);
 }
 
 /// Create a bridge agent carrying an `auth` policy meta field.
@@ -722,6 +742,76 @@ async fn password_gate_checks_inbound_and_presents_on_forward() {
         .unwrap();
     let fwd_reply = fwd.await.unwrap();
     assert_eq!(fwd_reply["ok"], true);
+
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "shutdown"}))
+        .await;
+    std::env::remove_var(env);
+}
+
+#[tokio::test]
+async fn asymmetric_ingress_egress_via_engine() {
+    // A hub leg: refuse INBOUND calls, but still PRESENT a group token outbound.
+    let env = "FANTASTIC_GROUP_TOKEN_RS_ASYM";
+    std::env::set_var(env, "fleet");
+    let tmp = TempDir::new().unwrap();
+    let kernel = mk_kernel(&tmp).await;
+    let bid = id_for("brg_asym", &tmp);
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": HANDLER_MODULE,
+                "id": bid,
+                "peer_id": "stand_in",
+                "transport": "memory",
+                "ingress_rule": "deny_inbound",
+                "egress_rule": {"type": "password", "env": env},
+            }),
+        )
+        .await;
+    let peer = inject_one(&AgentId::from(bid.as_str()));
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "boot"}))
+        .await;
+    // reflect surfaces both directions independently.
+    let reflect = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "reflect"}))
+        .await;
+    assert_eq!(reflect["ingress"], "deny_inbound");
+    assert_eq!(reflect["egress"], "password");
+    assert_eq!(reflect["auth"], "deny_inbound"); // back-compat alias = ingress
+
+    // inbound is refused even with a token (ingress = deny_inbound, not password)
+    peer.send_frame(json!({
+        "type": "call", "id": "in", "target": "core",
+        "payload": {"type": "reflect"}, "auth_token": "fleet",
+    }))
+    .await
+    .unwrap();
+    let denied = peer.recv_frame().await.expect("a reply frame");
+    assert_eq!(
+        denied["data"]["reason"], "unauthorized",
+        "deny inbound: {denied}"
+    );
+
+    // outbound still presents the egress group token
+    let kc = Arc::clone(&kernel);
+    let bid2 = bid.clone();
+    let fwd = tokio::spawn(async move {
+        kc.send(
+            &AgentId::from(bid2.as_str()),
+            json!({"type": "forward", "target": "remote", "payload": {"type": "reflect"}}),
+        )
+        .await
+    });
+    let out = peer.recv_frame().await.expect("an outbound call frame");
+    assert_eq!(out["auth_token"], "fleet", "egress should present: {out}");
+    peer.send_frame(json!({"type": "reply", "id": out["id"], "data": {"ok": true}}))
+        .await
+        .unwrap();
+    let _ = fwd.await.unwrap();
 
     let _ = kernel
         .send(&AgentId::from(bid.as_str()), json!({"type": "shutdown"}))

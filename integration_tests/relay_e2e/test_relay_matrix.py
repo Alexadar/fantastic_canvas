@@ -470,3 +470,142 @@ async def test_relay_password_rejects_outsider(
         )
     finally:
         relay.stop()
+
+
+async def _drive_asymmetric_pair(
+    rt_a: str,
+    rt_b: str,
+    relay: Relay,
+    kp_a: KernelProc,
+    kp_b: KernelProc,
+    leg_a: tuple,
+    leg_b: tuple,
+) -> None:
+    """A is a HUB: `ingress_rule="deny_inbound"` (refuse inbound) + `egress_rule=
+    "password"` (still present the fleet token). B is a group member (`auth=
+    "password"`). Proves the symmetric SPLIT through the relay: A→B succeeds (A's
+    egress presents, B's ingress checks) while B→A is refused (A's ingress denies) —
+    independent per-direction rules, identical wire shape across runtimes."""
+    bin_a, wd_a = leg_a
+    bin_b, wd_b = leg_b
+    idk_a, idk_b = new_id_key(), new_id_key()
+    cert_a = cloud_cert(rt_a, idk_a, bin_a, wd_a)
+    cert_b = cloud_cert(rt_b, idk_b, bin_b, wd_b)
+    rv = "rv-" + os.urandom(4).hex()
+
+    meta_a = _cb_meta(
+        handler_module=_HANDLER_MODULE[rt_a],
+        peer="A",
+        partner="B",
+        role="client",
+        relay_url=relay.url,
+        rendezvous=rv,
+        id_key=idk_a,
+        peer_cert_pem=cert_b,
+        issue_url=relay.issue_url,
+    )
+    # The split fields (string form ⇒ default token_env FANTASTIC_GROUP_TOKEN).
+    meta_a["ingress_rule"] = "deny_inbound"
+    meta_a["egress_rule"] = "password"
+    meta_b = _cb_meta(
+        handler_module=_HANDLER_MODULE[rt_b],
+        peer="B",
+        partner="A",
+        role="server",
+        relay_url=relay.url,
+        rendezvous=rv,
+        id_key=idk_b,
+        peer_cert_pem=cert_a,
+        issue_url=relay.issue_url,
+        auth="password",
+    )
+
+    created = await asyncio.gather(
+        kp_a.call("kernel", "create_agent", **meta_a),
+        kp_b.call("kernel", "create_agent", **meta_b),
+    )
+    rcb = await kp_a.call("cb", "reflect")
+    for _ in range(50):
+        if rcb.get("connected"):
+            break
+        await asyncio.sleep(0.1)
+        rcb = await kp_a.call("cb", "reflect")
+    assert rcb.get("connected") is True, (
+        f"A cloud_bridge not connected after 5s.\n  create replies: {created}\n  reflect: {rcb}"
+    )
+    # reflect surfaces both directions independently (auth alias = ingress).
+    assert rcb.get("ingress") == "deny_inbound", f"A ingress: {rcb}"
+    assert rcb.get("egress") == "password", f"A egress: {rcb}"
+
+    # A→B: A's egress presents the fleet token, B's ingress accepts → round-trip.
+    reply = await kp_a.call("cb", "forward", target="kernel", payload={"type": "reflect"})
+    assert isinstance(reply, dict) and "id" in reply and "tree" in reply, (
+        f"A→B (egress presents, B checks) should round-trip: {reply}"
+    )
+    # B→A: A's ingress is deny_inbound → refused regardless of B's token.
+    reverse = await kp_b.call("cb", "forward", target="kernel", payload={"type": "reflect"})
+    assert reverse.get("reason") == "unauthorized", (
+        f"B→A should be denied by A's ingress deny_inbound: {reverse}"
+    )
+
+
+async def _asymmetric_round_trip(
+    rt_a: str,
+    rt_b: str,
+    relay: Relay,
+    request: pytest.FixtureRequest,
+    parity_tmp: Callable[[str], Path],
+    free_port: Callable[[], int],
+    tag: str,
+) -> None:
+    bin_a = request.getfixturevalue(f"{rt_a}_binary")
+    bin_b = request.getfixturevalue(f"{rt_b}_binary")
+    base = parity_tmp(tag)
+    wd_a, wd_b = base / "A", base / "B"
+    wd_a.mkdir(parents=True)
+    wd_b.mkdir(parents=True)
+    port_a, port_b = free_port(), free_port()
+    for binary, wd, port in [(bin_a, wd_a, port_a), (bin_b, wd_b, port_b)]:
+        seed_web(binary, wd, port)
+        seed_web_ws(binary, wd)
+
+    spawned: list[KernelProc] = []
+    try:
+        # Both daemons share the fleet token in env (A presents it, B checks it).
+        env = {"FANTASTIC_GROUP_TOKEN": "fleet"}
+        kp_a = bin_a.start_daemon(wd_a, port_a, label=rt_a, extra_env=env)
+        spawned.append(kp_a)
+        await kp_a.wait_ready()
+        kp_b = bin_b.start_daemon(wd_b, port_b, label=rt_b, extra_env=env)
+        spawned.append(kp_b)
+        await kp_b.wait_ready()
+        await _drive_asymmetric_pair(rt_a, rt_b, relay, kp_a, kp_b, (bin_a, wd_a), (bin_b, wd_b))
+    finally:
+        for kp in spawned:
+            kp.terminate()
+
+
+@pytest.mark.parametrize("rt_a,rt_b", PAIRS, ids=[f"{a}-{b}" for a, b in PAIRS])
+@pytest.mark.asyncio
+async def test_relay_asymmetric_rules(
+    rt_a: str,
+    rt_b: str,
+    request: pytest.FixtureRequest,
+    parity_tmp: Callable[[str], Path],
+    free_port: Callable[[], int],
+) -> None:
+    """The symmetric SPLIT through the relay: A is a hub (`ingress_rule="deny_inbound"`
+    + `egress_rule="password"`), B a group member. A→B round-trips (egress presents,
+    ingress checks); B→A is denied (A's ingress). Independent per-direction rules,
+    identical wire shape across every runtime pair."""
+    reason = _pair_skip_reason(rt_a, rt_b)
+    if reason:
+        pytest.skip(reason)
+
+    relay = Relay(*require_relay(), free_port()).start()
+    try:
+        await _asymmetric_round_trip(
+            rt_a, rt_b, relay, request, parity_tmp, free_port, f"relayasym_{rt_a}_{rt_b}"
+        )
+    finally:
+        relay.stop()

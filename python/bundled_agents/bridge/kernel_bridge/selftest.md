@@ -39,11 +39,12 @@ The headline correctness suite. Covered by the unit tests at
     refuses an inbound `call`, replying `{reason:"unauthorized"}` (directional /
     hub→spoke push); `test_allow_all_default_dispatches_inbound_call` is the
     back-compat no-op guard (absent `auth` ⇒ dispatch succeeds).
-  - `test_password_*` — a leg with `auth="password"` (kernel-group shared secret):
-    an inbound `call` with the matching envelope `auth_token` dispatches, a
-    wrong/missing token is refused `unauthorized`, the leg PRESENTS its group token
-    on its own outbound `forward`s, and a non-`password` leg attaches no token
-    (wire unchanged).
+  - `test_password_*` — the kernel-group shared secret across the symmetric
+    `ingress_rule` (CHECK the envelope `auth_token`) + `egress_rule` (PRESENT it)
+    rules: an inbound `call` with the matching token dispatches, a wrong/missing
+    token is refused `unauthorized`, a `password` leg PRESENTS its token on outbound
+    `forward`s, and a non-`password` leg attaches none (wire unchanged). Rules
+    resolve by name from the `ingress_rules` / `egress_rules` registries.
 
 ```bash
 uv run pytest bundled_agents/bridge/kernel_bridge/tests/ -v

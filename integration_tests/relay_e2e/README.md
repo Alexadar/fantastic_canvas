@@ -63,7 +63,13 @@ isn't set.
   pairs), the token is presented on each call envelope, survives the relay+TLS, and
   is checked on arrival — A→B and B→A both round-trip. When they differ (B = each
   runtime in turn), B refuses the outsider `unauthorized`. Proves the `password`
-  policy's present-on-outbound / check-on-inbound works end-to-end cross-runtime.
+  rule's present-on-outbound / check-on-inbound works end-to-end cross-runtime.
+- **Asymmetric rules** (`test_relay_asymmetric_rules`, all 6 pairs). A is a hub with
+  the symmetric SPLIT — `ingress_rule="deny_inbound"` (refuse inbound) +
+  `egress_rule="password"` (still present the fleet token) — and B is a group member.
+  Asserts A→B round-trips (A's egress presents, B's ingress checks) while B→A is
+  denied (A's ingress). The cross-runtime guard that `ingress_rule`/`egress_rule` are
+  independent per-direction rules with an identical wire shape everywhere.
 
 ## Done-when (production)
 

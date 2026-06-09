@@ -6,11 +6,11 @@
 > daemon serving `web_ws` over WS (boot a second `fantastic` on a free
 > port first — same live-daemon rule as ollama/terminal/web).
 > out-of-scope: SSH+WS transport (needs a real remote host + `full`
-> feature; covered by `ssh_runner`), MemoryTransport pair + the `auth`
-> policy gate (`deny_inbound_refuses_inbound_call` /
-> `allow_all_default_permits_inbound_call` /
-> `password_gate_checks_inbound_and_presents_on_forward` unit tests in
-> `src/tests.rs`).
+> feature; covered by `ssh_runner`), MemoryTransport pair + the
+> `ingress_rule`/`egress_rule` gates (`deny_inbound_refuses_inbound_call`
+> / `password_gate_checks_inbound_and_presents_on_forward` /
+> `asymmetric_ingress_egress_via_engine` + the `authorizer::{ingress,egress}`
+> resolver unit tests in `src/tests.rs`).
 
 WS-only, asymmetric. A bridge agent opens a WS to the remote's
 `web_ws` and ships raw `{type:"call", id, target, payload}` frames; the

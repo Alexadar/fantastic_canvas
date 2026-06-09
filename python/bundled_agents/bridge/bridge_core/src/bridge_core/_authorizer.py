@@ -1,38 +1,38 @@
-"""bridge_core authorization — the per-leg, declarative auth seam.
+"""bridge_core authorization — base types for the per-leg, declarative rule seam.
 
 A bridge leg is symmetric by default: once connected, either side can `call` any
-agent/verb on the other. An `auth` field on the agent record selects a POLICY the
-read loop consults before dispatching an inbound `call` — like an nginx allow/deny
-rule, evaluated at ONE choke point. Enforced on the RECEIVER (the leg drops the
-peer's frame on arrival), so a compromised peer can't bypass it.
+agent/verb on the other. Two independent, TYPED rules govern a leg — mirrored on
+the wire, enforced on the RECEIVER (a compromised peer can't bypass them):
 
-v1 ships three policies:
-  - `allow_all`   (default — absent `auth` ⇒ this) — today's full symmetric duplex.
-  - `deny_inbound` — refuse every inbound `call` (the one-way / hub→spoke push: the
-    master ignores the spoke's calls/`reflect`). Inbound `watch`/`unwatch` are
-    already ignored by the read loop, so they're denied-by-omission.
-  - `password` — kernel-GROUP membership by a shared secret: authorize an inbound
-    `call` only if it carries an `auth_token` matching this leg's group token (read
-    from an env var, default `FANTASTIC_GROUP_TOKEN`). The credential-bearing first
-    concrete policy — the bridge-authz analog of the relay's `password` provider
-    (abstract auth, password impl). Symmetric for a group: the same policy both
-    PRESENTS the token on outbound calls (`credential()`) and CHECKS it on inbound.
+  - an **INGRESS rule** — the inbound FILTER. `authorize(action) -> Decision`,
+    consulted at the read-loop choke point before an inbound `call` dispatches.
+  - an **EGRESS rule** — the outbound DECORATOR. `credential() -> token?`, consulted
+    by `forward` to stamp this leg's credential onto the outbound frame ENVELOPE
+    (never the dispatched payload, so the target agent never sees it).
 
-The credential a leg presents on its own outbound calls is `Authorizer.credential()`
-(default `None` — only `password` returns one), so the engine's `forward` stays
-policy-agnostic: it attaches whatever the authorizer hands it, nothing more.
+Each rule is typed in the record (`{"type": <name>, ...config}`, with `env` naming
+an env var for any secret) and resolved BY NAME from a registry — the `ingress_rules`
+and `egress_rules` packages, where each rule is its own module and the package
+`__init__` is the importer that registers it. Add a rule = drop a module in the
+package and register its name; the engine never changes (the choke point is rule-
+agnostic). A *stack* of rules is itself just a composite rule — a future registry
+entry, not an engine change.
 
-The abstraction is extensible (future: per-peer allowlist by the pinned Ed25519
-pubkey, target/verb scoping) WITHOUT touching the engine — a new policy, not a new
-gate. `Action` is the extension point: it already carries the full `payload` (so the
-`password` check is new-class-only), and a `peer_pubkey` field lands when per-peer
-rules ship (the verified key is already on `st.extra["verified_partner"]`).
+Record fields:
+  - `ingress_rule` / `egress_rule` — the symmetric per-direction form (a string type
+    name, or an object `{type, env, ...}`).
+  - `auth` — legacy shorthand: sets BOTH directions to the same rule (so
+    `auth:"password"` is a symmetric group member: checks inbound AND presents
+    outbound). `ingress_rule`/`egress_rule` override it per-side.
+
+Rules are **transitional, not invocational** — a rule is plumbing evaluated inline
+as traffic passes, NOT an addressable agent. A rule that needs a dynamic decision
+delegates to an agent by id (a `delegate` rule type calling `kernel.send`); the rule
+itself never lives in the agent tree.
 """
 
 from __future__ import annotations
 
-import hmac
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields, is_dataclass
 
@@ -59,96 +59,46 @@ class Decision:
 ALLOW = Decision(True)
 
 
-class Authorizer(ABC):
-    """Decides whether the peer may perform an inbound `action` on this leg."""
+class IngressRule(ABC):
+    """The inbound FILTER — decides whether the peer may perform an inbound action."""
 
     @abstractmethod
     def authorize(self, action: Action) -> Decision: ...
 
-    def credential(self) -> str | None:
-        """The token this leg PRESENTS on its own outbound `call`s (attached to the
-        frame by the engine's `forward`). Default `None` — only credential-bearing
-        policies (`password`) return one, so non-`password` legs keep today's exact
-        wire shape (no `auth_token` field)."""
-        return None
+
+class EgressRule(ABC):
+    """The outbound DECORATOR — the token this leg PRESENTS on its own outbound
+    `call`s (stamped on the frame envelope by `forward`). `None` ⇒ present nothing."""
+
+    @abstractmethod
+    def credential(self) -> str | None: ...
 
 
-class AllowAll(Authorizer):
-    """Full symmetric duplex — the default; a true no-op."""
+def parse_spec(spec) -> tuple[str | None, dict]:
+    """Normalize a rule spec to `(type_name, config)`.
 
-    def authorize(self, action: Action) -> Decision:
-        return ALLOW
-
-
-class DenyInbound(Authorizer):
-    """One-way push: refuse every inbound `call` (peer can't call/reflect us)."""
-
-    def authorize(self, action: Action) -> Decision:
-        if action.kind == "call":
-            return Decision(False, "inbound calls denied by policy")
-        return ALLOW  # watch/unwatch already ignored by the read loop
-
-
-@dataclass(frozen=True)
-class Password(Authorizer):
-    """Kernel-group membership by a shared secret. Authorize an inbound `call` only
-    if it carries an `auth_token` equal to this leg's group token, read from an env
-    var (default `FANTASTIC_GROUP_TOKEN`) so the secret never touches the portable
-    `.fantastic` workdir. Symmetric: `credential()` PRESENTS the same token on
-    outbound calls, so one config makes a leg a full group member (presents + checks).
-
-    Fail-closed: if the env var is unset/empty the leg refuses every inbound `call`
-    (a misconfigured group token must not silently allow). Constant-time compare.
-    """
-
-    token_env: str = "FANTASTIC_GROUP_TOKEN"
-
-    def _token(self) -> str | None:
-        tok = os.environ.get(self.token_env)
-        return tok or None  # treat present-but-empty as unset
-
-    def authorize(self, action: Action) -> Decision:
-        if action.kind != "call":
-            return ALLOW  # watch/unwatch already ignored by the read loop
-        expected = self._token()
-        if expected is None:
-            return Decision(False, f"group token unset ({self.token_env})")
-        presented = (
-            action.token
-        )  # the frame-envelope token (NOT the dispatched payload)
-        if isinstance(presented, str) and hmac.compare_digest(presented, expected):
-            return ALLOW
-        return Decision(False, "invalid or missing group token")
-
-    def credential(self) -> str | None:
-        return self._token()
+    Falsy ⇒ `(None, {})`. A bare string ⇒ `(name, {})`. An object ⇒
+    `(type|policy, {…config})` — the type comes from `type` (preferred) or the
+    legacy `policy`; `env` is the canonical secret-env key (legacy `token_env` is
+    accepted and folded to it). Unknown keys are passed through and tolerantly
+    filtered to the rule's own fields by `construct`."""
+    if not spec:
+        return None, {}
+    if isinstance(spec, str):
+        return spec, {}
+    name = spec.get("type") or spec.get("policy")
+    cfg: dict = {}
+    for k, v in spec.items():
+        if k in ("type", "policy"):
+            continue
+        cfg["token_env" if k == "env" else k] = v  # `env` (new) → token_env field
+    return name, cfg
 
 
-_POLICIES = {"allow_all": AllowAll, "deny_inbound": DenyInbound, "password": Password}
-
-
-def make_authorizer(record: dict) -> Authorizer:
-    """Resolve the leg's `auth` record field to an Authorizer. Absent ⇒ AllowAll
-    (back-compat). String form (`"deny_inbound"`) or object form
-    (`{"policy": "<name>", ...sibling config}`) — the object's sibling keys are
-    threaded into the policy constructor (e.g. `{"policy":"password",
-    "token_env":"FOO"}` ⇒ `Password(token_env="FOO")`), tolerantly filtered to the
-    policy's own fields so an extra key can't crash the boot. Unknown policy ⇒
-    ValueError (fails the boot loudly rather than silently mis-securing)."""
-    auth = record.get("auth")
-    if not auth:
-        return AllowAll()
-    if isinstance(auth, str):
-        name, cfg = auth, {}
-    else:
-        name = auth.get("policy")
-        cfg = {k: v for k, v in auth.items() if k != "policy"}
-    cls = _POLICIES.get(name)
-    if cls is None:
-        raise ValueError(f"unknown policy {name!r}")
-    if is_dataclass(cls):  # thread object-form config into the policy's fields
+def construct(cls, cfg: dict):
+    """Instantiate a rule dataclass, tolerantly filtering `cfg` to its own fields so
+    an extra/unknown key can't crash the boot."""
+    if is_dataclass(cls):
         allowed = {f.name for f in fields(cls)}
-        cfg = {k: v for k, v in cfg.items() if k in allowed}
-    else:
-        cfg = {}  # AllowAll / DenyInbound take no config
-    return cls(**cfg)
+        return cls(**{k: v for k, v in cfg.items() if k in allowed})
+    return cls()

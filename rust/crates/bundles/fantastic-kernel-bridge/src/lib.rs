@@ -19,7 +19,7 @@
 //!
 //! | verb | payload | reply |
 //! |---|---|---|
-//! | `reflect` | none | `{id, sentence, transport, connected, host?, port?, peer_id?, auth, pending_count, verbs, emits}` |
+//! | `reflect` | none | `{id, sentence, transport, connected, host?, port?, peer_id?, ingress, egress, auth, pending_count, verbs, emits}` |
 //! | `boot` | none | `{booted, transport}` or `{error, already}` |
 //! | `shutdown` | none | `{stopped:true}` (runs the `on_delete` cascade) |
 //! | `reconnect` | none | shutdown + boot |
@@ -56,7 +56,7 @@ use tokio::task::JoinHandle;
 pub mod authorizer;
 pub mod transport;
 
-use authorizer::{make_authorizer, Action, Authorizer, Decision};
+use authorizer::{Action, Decision, EgressRule, IngressRule};
 use transport::memory::MemoryTransport;
 #[cfg(feature = "full")]
 use transport::ssh::SshTransport;
@@ -117,9 +117,12 @@ pub(crate) struct BridgeState {
     pub(crate) read_task: AsyncMutex<Option<JoinHandle<()>>>,
     pub(crate) pending: Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>,
     pub(crate) corr_counter: AtomicU64,
-    /// The per-leg auth policy (default `AllowAll`); consulted by the read loop
+    /// The per-leg INGRESS rule (default `AllowAll`); consulted by the read loop
     /// before dispatching an inbound `call` — the single auth choke point.
-    pub(crate) authorizer: Arc<dyn Authorizer>,
+    pub(crate) ingress: Arc<dyn IngressRule>,
+    /// The per-leg EGRESS rule (default `Silent`); `forward` stamps its credential
+    /// on the outbound frame envelope.
+    pub(crate) egress: Arc<dyn EgressRule>,
 }
 
 impl BridgeState {
@@ -183,18 +186,10 @@ fn meta_value(agent_id: &AgentId, kernel: &Kernel, key: &str) -> Option<Value> {
     meta.get(key).cloned()
 }
 
-/// The active auth policy NAME for reflect — string form is the name itself, object
-/// form is its `policy` key, absent ⇒ `allow_all`. Never surfaces the policy config.
-fn auth_policy_name(agent_id: &AgentId, kernel: &Kernel) -> String {
-    match meta_value(agent_id, kernel, "auth") {
-        Some(Value::String(s)) if !s.is_empty() => s,
-        Some(Value::Object(o)) => o
-            .get("policy")
-            .and_then(Value::as_str)
-            .unwrap_or("allow_all")
-            .to_string(),
-        _ => "allow_all".to_string(),
-    }
+/// The rule spec for one direction: the per-direction field if present, else the
+/// legacy `auth` shorthand (so `auth:"password"` sets both sides).
+fn rule_spec(agent_id: &AgentId, kernel: &Kernel, primary: &str) -> Option<Value> {
+    meta_value(agent_id, kernel, primary).or_else(|| meta_value(agent_id, kernel, "auth"))
 }
 
 fn meta_u64(agent_id: &AgentId, kernel: &Kernel, key: &str) -> Option<u64> {
@@ -283,7 +278,9 @@ fn reflect_reply(agent_id: &AgentId, kernel: &Kernel) -> Value {
         "peer_id": meta_string(agent_id, kernel, "peer_id"),
         "local_port": meta_u64(agent_id, kernel, "local_port"),
         "remote_port": meta_u64(agent_id, kernel, "remote_port"),
-        "auth": auth_policy_name(agent_id, kernel),
+        "ingress": authorizer::rule_name(rule_spec(agent_id, kernel, "ingress_rule").as_ref(), "allow_all"),
+        "egress": authorizer::rule_name(rule_spec(agent_id, kernel, "egress_rule").as_ref(), "silent"),
+        "auth": authorizer::rule_name(rule_spec(agent_id, kernel, "ingress_rule").as_ref(), "allow_all"),
         "pending_count": pending,
         "verbs": {
             "reflect": "Identity + transport + connectivity. No args.",
@@ -433,15 +430,25 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
         other => return json!({"error": format!("kernel_bridge: unknown transport {other:?}")}),
     };
 
-    // Resolve the per-leg auth policy (mirrors build_transport). Absent ⇒
-    // AllowAll (back-compat no-op). A bad policy fails the boot loudly.
-    let authorizer = match make_authorizer(meta_value(agent_id, kernel, "auth").as_ref()) {
-        Ok(a) => a,
-        Err(e) => {
-            transport.close().await;
-            return json!({"error": format!("kernel_bridge: bad auth policy: {e}")});
-        }
-    };
+    // Resolve the per-leg ingress + egress rules from the record (`ingress_rule` /
+    // `egress_rule`, else the legacy `auth` shorthand). A bad rule fails the boot
+    // loudly rather than silently mis-securing.
+    let ingress =
+        match authorizer::ingress::resolve(rule_spec(agent_id, kernel, "ingress_rule").as_ref()) {
+            Ok(r) => r,
+            Err(e) => {
+                transport.close().await;
+                return json!({"error": format!("kernel_bridge: bad ingress rule: {e}")});
+            }
+        };
+    let egress =
+        match authorizer::egress::resolve(rule_spec(agent_id, kernel, "egress_rule").as_ref()) {
+            Ok(r) => r,
+            Err(e) => {
+                transport.close().await;
+                return json!({"error": format!("kernel_bridge: bad egress rule: {e}")});
+            }
+        };
 
     let state = Arc::new(BridgeState {
         transport: Arc::clone(&transport),
@@ -449,7 +456,8 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
         read_task: AsyncMutex::new(None),
         pending: Mutex::new(HashMap::new()),
         corr_counter: AtomicU64::new(0),
-        authorizer,
+        ingress,
+        egress,
     });
 
     // Spawn the read loop BEFORE we publish the state so the
@@ -538,10 +546,10 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
         "target": target,
         "payload": inner,
     });
-    // Attach this leg's group credential, if its policy presents one (password ⇒
-    // the group token, on the frame ENVELOPE; allow_all/deny_inbound ⇒ None ⇒
-    // no field, wire unchanged). The dispatched `payload` stays clean.
-    if let Some(token) = state.authorizer.credential() {
+    // Stamp this leg's EGRESS credential on the envelope, if its rule presents one
+    // (password ⇒ the group token; silent ⇒ None ⇒ no field, wire unchanged). The
+    // dispatched `payload` stays clean — the target never sees the token.
+    if let Some(token) = state.egress.credential() {
         frame["auth_token"] = json!(token);
     }
     if let Err(e) = state.transport.send_frame(frame).await {
@@ -642,7 +650,7 @@ async fn read_loop(agent_id: AgentId, state: Arc<BridgeState>, kernel: Arc<Kerne
                 // whether this inbound call dispatches locally; on deny we reply
                 // {error, reason:"unauthorized"} (fail-fast, not a silent drop).
                 let verb = inner.get("type").and_then(Value::as_str).unwrap_or("");
-                let decision = state.authorizer.authorize(&Action {
+                let decision = state.ingress.authorize(&Action {
                     kind: "call",
                     target: &target,
                     verb,

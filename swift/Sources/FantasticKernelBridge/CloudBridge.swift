@@ -201,10 +201,13 @@ public actor CloudBridgeTransport {
     private var eventSink: AgentId?
     private weak var kernel: Kernel?
 
-    /// The per-leg auth policy (default `AllowAll`); consulted in `dispatch`
-    /// before an inbound `call` reaches the kernel — the single auth choke point.
-    /// In Swift this is the ONLY inbound-call path, so the gate lives here.
-    private var authorizer: Authorizer = AllowAll()
+    /// The per-leg INGRESS rule (default AllowAll); consulted in `dispatch` before an
+    /// inbound `call` reaches the kernel — the single auth choke point. In Swift this
+    /// is the ONLY inbound-call path, so the gate lives here.
+    private var ingress: IngressRule = IngressRules.AllowAll()
+    /// The per-leg EGRESS rule (default Silent); `forward` stamps its credential on
+    /// the outbound frame envelope.
+    private var egress: EgressRule = EgressRules.Silent()
 
     private var receiveTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
@@ -229,26 +232,32 @@ public actor CloudBridgeTransport {
         approvedPeerPEMs: [String],
         localAgentId: AgentId? = nil,
         localKernel: Kernel? = nil,
-        authorizer: Authorizer = AllowAll()
+        ingress: IngressRule = IngressRules.AllowAll(),
+        egress: EgressRule = EgressRules.Silent()
     ) async throws -> CloudBridgeTransport {
         let t = CloudBridgeTransport(channel: channel)
         try await t.handshake(
             server: server, certDER: certDER, keyPKCS8: keyPKCS8,
             approvedPeerPEMs: approvedPeerPEMs)
         await t.finishBoot(
-            localAgentId: localAgentId, localKernel: localKernel, authorizer: authorizer)
+            localAgentId: localAgentId, localKernel: localKernel,
+            ingress: ingress, egress: egress)
         return t
     }
 
-    /// Wire the local kernel sink + auth policy (if any) then start the receive +
-    /// heartbeat loops — one atomic actor hop so the sink + gate are live before
+    /// Wire the local kernel sink + auth rules (if any) then start the receive +
+    /// heartbeat loops — one atomic actor hop so the sink + gates are live before
     /// any frame lands.
-    private func finishBoot(localAgentId: AgentId?, localKernel: Kernel?, authorizer: Authorizer) {
+    private func finishBoot(
+        localAgentId: AgentId?, localKernel: Kernel?,
+        ingress: IngressRule, egress: EgressRule
+    ) {
         if let localAgentId, let localKernel {
             self.eventSink = localAgentId
             self.kernel = localKernel
         }
-        self.authorizer = authorizer
+        self.ingress = ingress
+        self.egress = egress
         startLoops()
     }
 
@@ -491,7 +500,7 @@ public actor CloudBridgeTransport {
             // {error, reason:"unauthorized"} (fail-fast, not a silent drop). The
             // `auth_token` rides the frame envelope, not the dispatched payload.
             let verb = frame["payload"]["type"].asString ?? ""
-            let decision = authorizer.authorize(
+            let decision = ingress.authorize(
                 AuthAction(
                     kind: "call", target: target, verb: verb,
                     token: frame["auth_token"].asString))
@@ -550,10 +559,10 @@ public actor CloudBridgeTransport {
             "target": .string(target.value),
             "payload": payload,
         ])
-        // Attach this leg's group credential, if its policy presents one (password ⇒
-        // the group token, on the frame ENVELOPE; allow_all/deny_inbound ⇒ nil ⇒ no
-        // field, wire unchanged). The dispatched `payload` stays clean.
-        if let token = authorizer.credential() {
+        // Stamp this leg's EGRESS credential on the envelope, if its rule presents one
+        // (password ⇒ the group token; silent ⇒ nil ⇒ no field, wire unchanged). The
+        // dispatched `payload` stays clean — the target never sees the token.
+        if let token = egress.credential() {
             frame["auth_token"] = .string(token)
         }
         let sent = await sendFrame(frame)

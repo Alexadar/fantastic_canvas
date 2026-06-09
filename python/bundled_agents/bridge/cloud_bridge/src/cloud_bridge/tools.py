@@ -24,17 +24,19 @@ ciphertext, and a forged route fails the TLS handshake (impersonation impossible
   - role (one of): `tls_role` ("client"|"server") | `initiator` bool | derived
                     `peer_id < partner_peer_id` (initiator ⇒ TLS client)
   - `partner_pubkey`   optional b64url Ed25519 pubkey — assert the peer cert matches it
-  - `auth`             optional dispatch policy: `allow_all` (default — absent ⇒
-                       this, full symmetric duplex) | `deny_inbound` (one-way /
-                       hub→spoke push: refuse every inbound `call`, reply
-                       `{reason:"unauthorized"}`) | `password` (kernel-GROUP
-                       membership: authorize an inbound `call` only if it carries an
-                       `auth_token` matching the group token from an env var —
-                       object form `{policy:"password", token_env:"FANTASTIC_GROUP_TOKEN"}`;
-                       symmetric, also PRESENTS the token on outbound calls). Gated
-                       at the engine's inbound-call choke point, ENFORCED ON THE
-                       RECEIVER. Distinct from the TLS auth above — this is
-                       authorization, not authentication.
+  - `ingress_rule` / `egress_rule`  optional, symmetric per-direction auth rules
+                       (`auth` is a shorthand setting both). Each is `{"type": <name>,
+                       "env": <var>}` (or a bare string type). Types:
+                       `allow_all` (default ingress) / `silent` (default egress —
+                       present nothing) | `deny_inbound` (ingress: refuse inbound
+                       `call`s, reply `{reason:"unauthorized"}`) | `password`
+                       (kernel-GROUP shared secret: ingress CHECKS the envelope
+                       `auth_token` against the group token from `env`, default
+                       `FANTASTIC_GROUP_TOKEN`; egress PRESENTS it). The token rides
+                       the frame ENVELOPE — the dispatched payload stays clean.
+                       Resolved by name from the `ingress_rules` / `egress_rules`
+                       registries. ENFORCED ON THE RECEIVER. Distinct from the TLS
+                       auth above — authorization, not authentication.
   - `heartbeat`        seconds between keepalives (default 30)
 
 cloud_bridge does NOT authenticate or mint production tokens — it obtains one from a
@@ -42,9 +44,9 @@ TokenSource (`token`/`token_provider`/`token_command`) and presents it; the auth
 method (password / Apple / Google) is invisible here. `dev_token` is the relay's
 `ROUTER_REQUIRE_AUTH=false` dev posture only.
 
-The engine default is `allow_all` (back-compat, non-negotiable) — fail-closed
-(deny-by-default) is the CONTROL PLANE's job, not this bundle's: an app exposing a
-leg sets `auth:"deny_inbound"` explicitly on the legs it wants one-way.
+Engine defaults are permissive (allow_all ingress / silent egress; back-compat,
+non-negotiable) — securing a leg is the CONTROL PLANE's job, not this bundle's: an
+app exposing a leg sets its `ingress_rule`/`egress_rule` (or `auth`) explicitly.
 """
 
 from __future__ import annotations

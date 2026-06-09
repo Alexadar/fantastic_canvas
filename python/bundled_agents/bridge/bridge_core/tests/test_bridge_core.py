@@ -7,13 +7,11 @@ from __future__ import annotations
 import pytest
 
 from bridge_core import core
-from bridge_core._authorizer import (
-    Action,
-    AllowAll,
-    DenyInbound,
-    Password,
-    make_authorizer,
-)
+from bridge_core._authorizer import Action
+from bridge_core.egress_rules import Silent, resolve_egress
+from bridge_core.egress_rules.password import Password as EgressPassword
+from bridge_core.ingress_rules import AllowAll, DenyInbound, resolve_ingress
+from bridge_core.ingress_rules.password import Password as IngressPassword
 
 
 async def _noop_build(kind, rec, kernel, st):  # pragma: no cover - not invoked here
@@ -67,97 +65,112 @@ async def test_forward_before_boot_reports_not_connected():
     core._bridges.clear()
 
 
-# ─── authorization seam (the `auth` policy) ─────────────────────
+# ─── ingress rules (the inbound FILTER) ─────────────────────────
+
+
+def _call(token=None):
+    # the token rides the frame envelope (Action.token), NOT the dispatched payload
+    return Action("call", "t", "reflect", {"type": "reflect"}, token=token)
 
 
 def test_allow_all_permits_call_and_watch():
     a = AllowAll()
-    assert a.authorize(Action("call", "t", "reflect", {})).allowed
+    assert a.authorize(_call()).allowed
     assert a.authorize(Action("watch", "t", "watch", {})).allowed
 
 
 def test_deny_inbound_refuses_call_allows_watch():
     a = DenyInbound()
-    d = a.authorize(Action("call", "t", "reflect", {"type": "reflect"}))
+    d = a.authorize(_call())
     assert not d.allowed and d.reason  # carries a reason for the unauthorized reply
     # watch/unwatch are already ignored by the read loop → not gated here.
     assert a.authorize(Action("watch", "t", "watch", {})).allowed
 
 
-def test_make_authorizer_absent_is_allow_all():
-    assert isinstance(make_authorizer({}), AllowAll)  # back-compat no-op
-    assert isinstance(make_authorizer({"auth": ""}), AllowAll)
+def test_resolve_ingress_absent_is_allow_all():
+    assert isinstance(resolve_ingress({}), AllowAll)  # back-compat no-op
+    assert isinstance(resolve_ingress({"auth": ""}), AllowAll)
+    assert isinstance(resolve_ingress({"ingress_rule": None}), AllowAll)
 
 
-def test_make_authorizer_string_policy():
-    assert isinstance(make_authorizer({"auth": "deny_inbound"}), DenyInbound)
-    assert isinstance(make_authorizer({"auth": "allow_all"}), AllowAll)
-
-
-def test_make_authorizer_object_form_is_forward_compat():
+def test_resolve_ingress_string_and_object_forms():
+    assert isinstance(resolve_ingress({"auth": "deny_inbound"}), DenyInbound)
+    # the symmetric per-direction field overrides the `auth` shorthand
     assert isinstance(
-        make_authorizer({"auth": {"policy": "deny_inbound"}}), DenyInbound
+        resolve_ingress({"auth": "allow_all", "ingress_rule": "deny_inbound"}),
+        DenyInbound,
+    )
+    # object form, both `type` (new) and `policy` (legacy) spellings
+    assert isinstance(
+        resolve_ingress({"ingress_rule": {"type": "deny_inbound"}}), DenyInbound
+    )
+    assert isinstance(
+        resolve_ingress({"auth": {"policy": "deny_inbound"}}), DenyInbound
     )
 
 
-def test_make_authorizer_unknown_policy_raises():
+def test_resolve_ingress_unknown_type_raises():
     with pytest.raises(ValueError):
-        make_authorizer({"auth": "nope"})
+        resolve_ingress({"ingress_rule": "nope"})
 
 
-# ─── password policy (kernel-group shared secret) ───────────────
+# ─── password rule, both sides (kernel-group shared secret) ─────
 
 
-def _call(token):
-    # the token rides the frame envelope (Action.token), NOT the dispatched payload
-    return Action("call", "t", "reflect", {"type": "reflect"}, token=token)
-
-
-def test_password_allows_matching_token(monkeypatch):
+def test_ingress_password_checks_envelope_token(monkeypatch):
     monkeypatch.setenv("FANTASTIC_GROUP_TOKEN", "s3cret")
-    p = Password()
+    p = IngressPassword()
     assert p.authorize(_call("s3cret")).allowed
-    # presents the same token on outbound calls (symmetric group membership)
-    assert p.credential() == "s3cret"
-
-
-def test_password_denies_wrong_and_missing_token(monkeypatch):
-    monkeypatch.setenv("FANTASTIC_GROUP_TOKEN", "s3cret")
-    p = Password()
     assert not p.authorize(_call("nope")).allowed
     assert not p.authorize(_call(None)).allowed  # no auth_token at all
     # watch/unwatch are not gated (denied-by-omission in the read loop)
     assert p.authorize(Action("watch", "t", "watch", {})).allowed
 
 
-def test_password_fails_closed_when_token_unset(monkeypatch):
+def test_ingress_password_fails_closed_when_token_unset(monkeypatch):
     monkeypatch.delenv("FANTASTIC_GROUP_TOKEN", raising=False)
-    p = Password()
-    d = p.authorize(_call("anything"))
+    d = IngressPassword().authorize(_call("anything"))
     assert not d.allowed and "unset" in d.reason  # misconfig must not allow
-    assert p.credential() is None  # nothing to present either
 
 
-def test_password_custom_token_env(monkeypatch):
+def test_egress_password_presents_token(monkeypatch):
     monkeypatch.setenv("MY_GROUP", "abc")
-    p = Password(token_env="MY_GROUP")
-    assert p.authorize(_call("abc")).allowed
-    assert p.credential() == "abc"
+    assert EgressPassword(token_env="MY_GROUP").credential() == "abc"
+    monkeypatch.delenv("MY_GROUP", raising=False)
+    assert EgressPassword(token_env="MY_GROUP").credential() is None  # unset ⇒ nothing
 
 
-def test_make_authorizer_password_threads_token_env():
-    a = make_authorizer({"auth": {"policy": "password", "token_env": "MY_GROUP"}})
-    assert isinstance(a, Password) and a.token_env == "MY_GROUP"
-    # bare string form ⇒ default env var
-    assert make_authorizer({"auth": "password"}).token_env == "FANTASTIC_GROUP_TOKEN"
+def test_resolve_egress_threads_env_and_defaults_silent():
+    # `auth:"password"` is symmetric: egress presents (the legacy shorthand)
+    assert isinstance(resolve_egress({"auth": "password"}), EgressPassword)
+    # `env` (new) and `token_env` (legacy) both reach the rule's field
+    assert (
+        resolve_egress(
+            {"egress_rule": {"type": "password", "env": "MY_GROUP"}}
+        ).token_env
+        == "MY_GROUP"
+    )
+    assert (
+        resolve_egress(
+            {"auth": {"policy": "password", "token_env": "MY_GROUP"}}
+        ).token_env
+        == "MY_GROUP"
+    )
+    # inbound-only names + absent ⇒ Silent (present nothing) — back-compat wire shape
+    assert isinstance(resolve_egress({"auth": "deny_inbound"}), Silent)
+    assert isinstance(resolve_egress({}), Silent)
 
 
-def test_make_authorizer_tolerates_unknown_config_keys():
-    # an extra sibling key must not crash the boot (filtered to the policy's fields)
-    a = make_authorizer({"auth": {"policy": "password", "bogus": 1}})
-    assert isinstance(a, Password) and a.token_env == "FANTASTIC_GROUP_TOKEN"
+def test_asymmetric_ingress_egress():
+    # a hub: refuse inbound, still present a group token outbound
+    rec = {
+        "ingress_rule": "deny_inbound",
+        "egress_rule": {"type": "password", "env": "MY_GROUP"},
+    }
+    assert isinstance(resolve_ingress(rec), DenyInbound)
+    assert isinstance(resolve_egress(rec), EgressPassword)
 
 
-def test_non_password_policies_present_no_credential():
-    assert AllowAll().credential() is None
-    assert DenyInbound().credential() is None
+def test_resolve_tolerates_unknown_config_keys():
+    a = resolve_ingress({"ingress_rule": {"type": "password", "bogus": 1}})
+    assert isinstance(a, IngressPassword) and a.token_env == "FANTASTIC_GROUP_TOKEN"
