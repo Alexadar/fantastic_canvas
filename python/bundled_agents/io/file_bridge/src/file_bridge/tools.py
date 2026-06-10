@@ -15,6 +15,9 @@ Verbs:
   list   path?       -> {files: [{name, path, type, size?}, ...]}
   read   path        -> {path, content} | {path, image_base64, mime}
   write  path text   -> {path, written: true}            (refused if readonly)
+  read_stream  path offset? length?     -> {b64, next_offset, eof, size}  (SOURCE)
+  write_stream path b64 offset? truncate? -> {written, offset, size}      (SINK)
+  pump   source? source_path sink? sink_path? -> {bytes, chunks}  (server-side copy)
   delete path        -> {path, deleted: true}            (refused if readonly)
   rename old_path new_path -> {old_path, new_path}        (refused if readonly)
   mkdir  path        -> {path, created: true}            (refused if readonly)
@@ -352,6 +355,49 @@ async def _write_stream(id, payload, kernel):
     }
 
 
+async def _pump(id, payload, kernel):
+    """The PUMP — a server-side stream copy SOURCE→SINK, chunk by chunk, in ONE
+    call (vs a consumer driving each read/write over the wire). Storage-agnostic:
+    both ends are bound BY ID + the duck-typed stream verbs, so a `network_bridge`
+    SOURCE pumps to a `file_bridge` SINK the same as fs→fs.
+
+    args: source:str? (provider id, default self) + source_path:str (req) + sink:str?
+    (provider id, default self) + sink_path:str? (default = source_path) +
+    chunk:int=65536. Each end SELF-gates + SELF-clamps (the pump only coordinates —
+    it never reads/writes bytes itself, so a sealed end refuses it). Returns
+    {source, sink, bytes, chunks}."""
+    src = payload.get("source") or id
+    sink = payload.get("sink") or id
+    spath = payload.get("source_path") or payload.get("path") or ""
+    dpath = payload.get("sink_path") or spath
+    length = int(payload.get("chunk", 65536) or 65536)
+    offset, first, chunks = 0, True, 0
+    while True:
+        r = await kernel.send(
+            src,
+            {"type": "read_stream", "path": spath, "offset": offset, "length": length},
+        )
+        if not isinstance(r, dict) or "b64" not in r:
+            return {"error": f"pump: read from {src!r} failed: {r}"}
+        w = await kernel.send(
+            sink,
+            {
+                "type": "write_stream",
+                "path": dpath,
+                "b64": r["b64"],
+                "offset": offset,
+                "truncate": first,
+            },
+        )
+        if not isinstance(w, dict) or w.get("error"):
+            return {"error": f"pump: write to {sink!r} failed: {w}"}
+        first, chunks = False, chunks + 1
+        offset = r["next_offset"]
+        if r.get("eof"):
+            break
+    return {"source": spath, "sink": dpath, "bytes": offset, "chunks": chunks}
+
+
 # ─── dispatch ───────────────────────────────────────────────────
 
 
@@ -363,6 +409,7 @@ VERBS = {
     "write": _write,
     "read_stream": _read_stream,
     "write_stream": _write_stream,
+    "pump": _pump,
     "delete": _delete,
     "rename": _rename,
     "mkdir": _mkdir,

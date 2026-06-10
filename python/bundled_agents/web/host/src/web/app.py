@@ -3,7 +3,7 @@
 Routes baked into make_app:
   GET  /                          -> agent index (HTML)
   GET  /_assets/favicon.png       -> bundled favicon (+ /favicon.png fallback)
-  GET  /{agent_id}/file/{path}    -> proxy to agent's `read` verb (static alias)
+  GET  /{agent_id}/file/{path}    -> proxy to agent's `read_stream` (streamed) / `read`
 
 The web host does exactly two things: serve STATIC files through the `file`
 alias above, and carry `send()` calls + events over the WS bus (the `web_ws`
@@ -25,7 +25,7 @@ import os
 from importlib import resources
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 
 async def _index_page(kernel) -> str:
@@ -88,12 +88,53 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
 
     @app.get("/{agent_id}/file/{path:path}")
     async def agent_file(agent_id: str, path: str):
-        """Static-file proxy: any agent answering `read{path}` becomes
-        an HTTP file server. file_<id> is the canonical implementer.
-        URL convention: `<img src="/<file_agent>/file/imgs/foo.png">`
-        works in any html_agent without registration."""
+        """Static-file proxy: any agent answering `read{path}` (or the
+        streaming `read_stream`) becomes an HTTP file server. file_bridge is
+        the canonical implementer. URL convention:
+        `<img src="/<file_agent>/file/imgs/foo.png">` works in any html_agent
+        without registration. The serving ALLOWANCE is the agent's own gate — a
+        sealed file_bridge's `read`/`read_stream` denies, so the URL 404s; and
+        the path stays clamped to the agent's root.
+
+        Prefers the SOURCE stream verb (`read_stream`) so a LARGE file pipes out
+        chunk-by-chunk instead of loading whole into memory; falls back to the
+        whole-file `read` for agents that only answer it (and its image/content
+        special-casing)."""
         if not kernel.get(agent_id):
             return Response(status_code=404)
+        # Streaming path: read_stream chunk 0 doubles as the gate + size probe.
+        first = await kernel.send(
+            agent_id,
+            {"type": "read_stream", "path": path, "offset": 0, "length": 262144},
+        )
+        if isinstance(first, dict) and "b64" in first:
+            size = int(first.get("size", 0))
+            mime, _ = mimetypes.guess_type(path)
+
+            async def _stream():
+                chunk = first
+                while True:
+                    yield base64.b64decode(chunk["b64"])
+                    if chunk.get("eof"):
+                        break
+                    chunk = await kernel.send(
+                        agent_id,
+                        {
+                            "type": "read_stream",
+                            "path": path,
+                            "offset": chunk["next_offset"],
+                            "length": 262144,
+                        },
+                    )
+                    if not isinstance(chunk, dict) or "b64" not in chunk:
+                        break
+
+            return StreamingResponse(
+                _stream(),
+                media_type=mime or "application/octet-stream",
+                headers={"content-length": str(size)} if size else None,
+            )
+        # Fallback: whole-file `read` (images/content, or agents w/o read_stream).
         r = await kernel.send(agent_id, {"type": "read", "path": path})
         if not isinstance(r, dict) or r.get("error"):
             return Response(status_code=404)

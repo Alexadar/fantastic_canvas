@@ -164,6 +164,13 @@ denied (`{reason:"unauthorized"}`) — opening is a deliberate act
 (G2: sealed by default). Same for a bridge leg (`ws_bridge`/`cloud_bridge`): set
 `ingress_rule` to admit inbound calls.
 
+**Octet serving** — `web` bakes in `GET /<agent_id>/file/<path>` (see `app.py`):
+any agent answering `read`/`read_stream` becomes an HTTP file server. It prefers
+the SOURCE stream verb (`read_stream`) so a LARGE file pipes out chunk-by-chunk;
+the **allowance is the served agent's own gate** (a sealed `file_bridge` denies →
+`404`), path clamped to its root. The PUMP (`file_bridge.pump`) is the server-side
+SOURCE→SINK copy. (Minted-alias URL tier — an opaque token for one file — TBD.)
+
 The bootstrap wires the stdout renderer (Cli) when stdin is a tty —
 ephemeral, never persisted.
 

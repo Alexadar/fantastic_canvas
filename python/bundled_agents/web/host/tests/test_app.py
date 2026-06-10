@@ -90,3 +90,31 @@ async def test_file_proxy_404_for_missing_agent(seeded_kernel):
     with TestClient(app) as c:
         r = c.get("/nonexistent_xxx/file/anything.txt")
         assert r.status_code == 404
+
+
+async def test_file_proxy_streams_large_file(seeded_kernel, file_agent, tmp_path):
+    """A file bigger than one read_stream chunk (256 KiB) pipes out via the
+    SOURCE stream verb, byte-for-byte, with a correct content-length."""
+    blob = bytes(range(256)) * 3000  # 768000 bytes — several chunks
+    (tmp_path / "big.bin").write_bytes(blob)
+    app = make_app("test_web", seeded_kernel)
+    with TestClient(app) as c:
+        r = c.get(f"/{file_agent}/file/big.bin")
+    assert r.status_code == 200
+    assert r.content == blob
+    assert r.headers["content-length"] == str(len(blob))
+
+
+async def test_file_proxy_sealed_agent_404(seeded_kernel, tmp_path, monkeypatch):
+    """The serving allowance IS the agent's own gate — a SEALED file_bridge
+    refuses read_stream/read, so its files 404 (never served)."""
+    monkeypatch.chdir(tmp_path)
+    seeded_kernel.create(
+        "file_bridge.tools", id="sealed_fb", root="."
+    )  # no rule → sealed
+    (tmp_path / "secret.txt").write_text("nope")
+    app = make_app("test_web", seeded_kernel)
+    with TestClient(app) as c:
+        r = c.get("/sealed_fb/file/secret.txt")
+    assert r.status_code == 404
+    assert b"nope" not in r.content
