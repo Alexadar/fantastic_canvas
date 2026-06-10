@@ -3,7 +3,7 @@
 Each agent represents one project on this machine. Verbs spawn /
 signal a `fantastic` subprocess directly (no SSH, no tunnels). The
 spawned kernel rehydrates its persisted `web` agent at boot, so
-`start` works in two steps: (1) one-shot `fs_loader create_agent
+`start` works in two steps: (1) one-shot `kernel_state create_agent
 handler_module=web.tools port=<free>` to write the record to disk,
 then (2) `subprocess.Popen([cmd])` to spawn the long-running kernel.
 
@@ -29,7 +29,7 @@ from the agent record per-call and delegates to core.
 Verbs:
   reflect   — identity + every field above + live status
   boot      — no-op (no auto-start; explicit `start` keeps lifecycle intentional)
-  shutdown  — alias for `stop`; called by fs_loader.delete_agent's universal
+  shutdown  — alias for `stop`; called by kernel_state.delete_agent's universal
               lifecycle hook
   start     — pick a free port, pre-create the web record, spawn the
               daemon, poll until lock.json appears and the web record
@@ -250,7 +250,7 @@ class LocalTransport(Transport):
             subprocess.run(
                 [
                     cmd,
-                    "fs_loader",
+                    "kernel_state",
                     "create_agent",
                     "handler_module=web.tools",
                     f"port={port}",
@@ -409,7 +409,7 @@ async def _restart(id, payload, kernel):
 
 async def _status(id, payload, kernel):
     """No args. {running, pid, port, ws_ok}. ws_ok is a 2s probe over
-    the WS verb channel (`ws://localhost:<port>/fs_loader/ws`, reflect frame
+    the WS verb channel (`ws://localhost:<port>/kernel_state/ws`, reflect frame
     → reply). Proves the kernel is alive AND answering, not just that
     lock.json exists."""
     return await core.status(id, _transport(id, kernel), kernel)

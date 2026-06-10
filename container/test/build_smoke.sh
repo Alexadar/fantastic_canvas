@@ -63,7 +63,7 @@ echo "== serve (bind 0.0.0.0 + -p mapping + workdir) =="
 for rt in python rust; do
   P=$(freeport); tmp=$(mktemp -d); c="ftsmoke-$rt-$$"
   CONTAINERS="$CONTAINERS $c"
-  case "$rt" in python) bin=$PYBIN; root=fs_loader ;; rust) bin=$RUSTBIN; root=core ;; esac
+  case "$rt" in python) bin=$PYBIN; root=kernel_state ;; rust) bin=$RUSTBIN; root=core ;; esac
   compose_web "$tmp" "$bin" "$root" "$P"   # explicit composition (image autocreates nothing)
   $ENGINE run -d --name "$c" -p "127.0.0.1:$P:$P" -v "$tmp:/work" \
     -e FANTASTIC_RUNTIME="$rt" -e FANTASTIC_PORT="$P" "$TAG" >/dev/null
@@ -105,7 +105,7 @@ done
 echo "== shutdown_kernel (--rm container stops + auto-removes; workdir persists) =="
 P=$(freeport); tmp=$(mktemp -d); c="ftsmoke-shutdown-$$"
 CONTAINERS="$CONTAINERS $c"
-compose_web "$tmp" "$PYBIN" fs_loader "$P"
+compose_web "$tmp" "$PYBIN" kernel_state "$P"
 $ENGINE run -d --rm --name "$c" -p "127.0.0.1:$P:$P" -v "$tmp:/work" \
   -e FANTASTIC_RUNTIME=python -e FANTASTIC_PORT="$P" "$TAG" >/dev/null
 up=""; i=0; while [ $i -lt 100 ]; do curl -sf -o /dev/null "http://127.0.0.1:$P/" && { up=1; break; }; sleep 0.5; i=$((i+1)); done
@@ -166,7 +166,7 @@ fi
 echo "== head served by a composed web (default on) + FANTASTIC_HEAD=off fallback =="
 P=$(freeport); tmp=$(mktemp -d); c="ftsmoke-head-$$"
 CONTAINERS="$CONTAINERS $c"
-compose_web "$tmp" "$PYBIN" fs_loader 8088
+compose_web "$tmp" "$PYBIN" kernel_state 8088
 $ENGINE run -d --name "$c" -p "127.0.0.1:$P:8088" -v "$tmp:/work" "$TAG" >/dev/null
 up=""; i=0; while [ $i -lt 100 ]; do curl -sf -o /dev/null "http://127.0.0.1:$P/" && { up=1; break; }; sleep 0.5; i=$((i+1)); done
 page=$(curl -s "http://127.0.0.1:$P/" 2>/dev/null || true)
@@ -185,7 +185,7 @@ $ENGINE rm -f "$c" >/dev/null 2>&1 || true; rm -rf "$tmp"
 # FANTASTIC_HEAD=off → / falls back to the plain agent-tree index (no head page).
 P=$(freeport); tmp=$(mktemp -d); c="ftsmoke-nohead-$$"
 CONTAINERS="$CONTAINERS $c"
-compose_web "$tmp" "$PYBIN" fs_loader 8088
+compose_web "$tmp" "$PYBIN" kernel_state 8088
 $ENGINE run -d --name "$c" -p "127.0.0.1:$P:8088" -v "$tmp:/work" \
   -e FANTASTIC_HEAD=off "$TAG" >/dev/null
 up=""; i=0; while [ $i -lt 100 ]; do curl -sf -o /dev/null "http://127.0.0.1:$P/" && { up=1; break; }; sleep 0.5; i=$((i+1)); done
@@ -222,7 +222,7 @@ printf '%s' "$out" | grep -q "composes nothing" \
 if grep -rqs '"handler_module"[[:space:]]*:[[:space:]]*"web.tools"' "$tmp/.fantastic/agents" 2>/dev/null; then
   bad "a web.tools agent was AUTOCREATED in a blank workdir (autocreation not removed!)"
 else
-  ok "no web/web_ws/rest agent autocreated in the blank workdir"
+  ok "no web agent autocreated in the blank workdir"
 fi
 $ENGINE rm -f "$c" >/dev/null 2>&1 || true; rm -rf "$tmp"
 

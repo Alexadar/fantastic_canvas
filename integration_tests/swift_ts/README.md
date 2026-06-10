@@ -19,8 +19,8 @@ weight. To wire it:
 1. Copy `py_ts/_host.ts` → `swift_ts/_host.ts` and change two things:
    - `FANTASTIC` → the swift binary (`swift/.build/debug/fantastic` — see
      `../conftest.py:swift_binary`).
-   - the seed root id `fs_loader` → **`core`** (swift's root id; python
-     uses `fs_loader`). This is the only non-trivial port.
+   - the seed root id `kernel_state` → **`core`** (swift's root id; python
+     uses `kernel_state`). This is the only non-trivial port.
 2. Copy `py_ts/_chrome.ts` → `swift_ts/_chrome.ts` (unchanged).
 3. Add `serve_dist.browser.itest.ts`: boot the swift host with a `file`
    agent (`id=ts_dist root=<repo>/ts/dist`) under `web`, open

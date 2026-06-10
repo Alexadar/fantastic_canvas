@@ -37,15 +37,19 @@ HTML
 idof() { grep -oE "\"id\": *\"$1_[0-9a-f]+\"" | head -1 | grep -oE "$1_[0-9a-f]+"; }
 
 cd "$TMP"
-WEB=$("$FAN" fs_loader create_agent handler_module=web.tools "port=$PORT" | idof web)
+WEB=$("$FAN" kernel_state create_agent handler_module=web.tools "port=$PORT" | idof web)
 [ -n "$WEB" ] || { echo "ERR: failed to create web agent" >&2; exit 1; }
 "$FAN" "$WEB" create_agent handler_module=web_ws.tools >/dev/null
 REST=$("$FAN" "$WEB" create_agent handler_module=web_rest.tools | idof web_rest)
-"$FAN" "$WEB" create_agent handler_module=fs_loader.tools \
+"$FAN" "$WEB" create_agent handler_module=kernel_state.tools \
     root=.fantastic/web watch=false alias=web_loader >/dev/null
 "$FAN" web_loader persist_record \
     record='{"id":"canvas","handler_module":"canvas.ts","display_name":"canvas"}' >/dev/null
-"$FAN" "$WEB" create_agent handler_module=file.tools id=ts_dist "root=$DIST" >/dev/null
+# file_bridge clamps every root inside the running dir (the running-dir law) and
+# seals by default → copy the built dist INTO the workdir, root it relatively, open it.
+cp -R "$DIST" "$TMP/ts_dist_src"
+"$FAN" "$WEB" create_agent handler_module=file_bridge.tools id=ts_dist \
+    root=ts_dist_src ingress_rule=allow_all >/dev/null
 
 nohup "$FAN" >"$TMP/daemon.log" 2>&1 &
 PID=$!

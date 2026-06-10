@@ -19,8 +19,8 @@ weight. To wire it:
 1. Copy `py_ts/_host.ts` → `rust_ts/_host.ts` and change two things:
    - `FANTASTIC` → the rust binary (`rust/target/{release,debug}/fantastic`,
      newest by mtime — see `../conftest.py:rust_binary`).
-   - the seed root id `fs_loader` → **`core`** (rust's root id; python uses
-     `fs_loader`). This is the only non-trivial port.
+   - the seed root id `kernel_state` → **`core`** (rust's root id; python uses
+     `kernel_state`). This is the only non-trivial port.
 2. Copy `py_ts/_chrome.ts` → `rust_ts/_chrome.ts` (unchanged).
 3. Add `serve_dist.browser.itest.ts`: boot the rust host with a `file`
    agent (`id=ts_dist root=<repo>/ts/dist`) under `web`, open

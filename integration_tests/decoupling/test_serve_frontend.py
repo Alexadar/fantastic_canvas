@@ -59,9 +59,12 @@ async def _serves_frontend_bundle_via_file_agent(
     seed_create(
         binary,
         workdir,
-        handler_module="file.tools",
+        handler_module="file_bridge.tools",
         agent_id="js_kernel",
-        root=str(servedir),
+        # RELATIVE root: file_bridge clamps roots inside the running dir (= workdir),
+        # and the fs edge seals by default - open it for the /file/ proxy.
+        root="servedir",
+        ingress_rule="allow_all",
     )
     await spawn(workdir, port)
 

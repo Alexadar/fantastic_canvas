@@ -62,7 +62,7 @@ one matching `uname -m` (`x86_64`→`:amd64`, `arm64`/`aarch64`→`:arm64`). The
    `python_runtime` agents all act on it). Hand it a **[recipe](recipes.md)** plus
    the `reflect readme=true bundles=all` output and it assembles a working
    approximation — capability emerges from self-description, no bespoke glue.
-   - **Federate, too:** the image also carries `kernel_bridge` + `local_runner` /
+   - **Federate, too:** the image also carries `ws_bridge` + `local_runner` /
      `ssh_runner`, so the same chat can spawn and manage **other** kernels (one per
      project dir, local or remote) and treat each container as a unit at `host:port`
      — running and building fleets of kernels from one session.
@@ -228,8 +228,8 @@ and it assembles a working approximation by itself — `reflect` gives the live 
 Capability **emerges** from self-description. Full versions: **[`recipes.md`](recipes.md)**.
 
 Everything splits across **two kernels**: the **host** (this image — data/compute/
-transport: `fs_loader web web_ws web_rest file python_runtime terminal_backend ai_*
-yaml_state scheduler kernel_bridge local_runner ssh_runner`) and the **frontend**
+transport: `kernel_state web web_ws web_rest file python_runtime terminal_backend ai_*
+yaml_state scheduler ws_bridge local_runner ssh_runner`) and the **frontend**
 (the embedded `js_kernel.zip` — the VIEW: `canvas terminal_view html_agent gl_agent
 ai_view`). The host serves the frontend + relays the WS bus; panels are frontend
 agents the **canvas** iframes (any agent answering `get_webapp`). Binding is weak —
@@ -252,7 +252,7 @@ agents see it.
    by a media `python_runtime`; serve audio via a `file` agent. *(⚠ WebAudio needs
    iframe `allow=autoplay`; cross-panel sync must go through a HOST bus agent — you wire it)*
 7. **Federated multi-project canvas** — `local_runner` (local dir) / `ssh_runner`
-   (remote) + `kernel_bridge` per peer; one canvas tile per project, each its **own**
+   (remote) + `ws_bridge` per peer; one canvas tile per project, each its **own**
    kernel. Each project can be a **container = a unit at `host:port`** (no shared
    network): bridge `host.containers.internal:<port>` same-host, `ws://<ip>:<port>`
    remote. *(the distribution shape)*

@@ -111,10 +111,10 @@ spawns a fresh kernel, reads disk, dispatches, exits:
 **A daemon is running but there's no `web.tools` node** → no HTTP surface
 and one-shots are locked out. Tell the user to add one (don't guess a
 port yourself):
-    fantastic fs_loader create_agent handler_module=web.tools port=<N>
+    fantastic kernel_state create_agent handler_module=web.tools port=<N>
     fantastic <web_id> create_agent handler_module=web_ws.tools
     fantastic <web_id> create_agent handler_module=web_rest.tools
-    fantastic <web_id> create_agent handler_module=fs_loader.tools \
+    fantastic <web_id> create_agent handler_module=kernel_state.tools \
         root=.fantastic/web watch=false alias=web_loader      # the frontend store (see "Two kernels")
     fantastic web_loader persist_record \
         record='{"id":"<root_id>","handler_module":"<frontend-root>.ts"}' # seed the frontend
@@ -150,7 +150,7 @@ browser renders. A "web panel" is a frontend view record (`handler_module`
 ending in `.ts`) the frontend kernel renders — never a `web.tools` page.
 
 ### Recipe: add an interactive panel
-`web_loader` is a second `fs_loader` rooted at `.fantastic/web/` (alias
+`web_loader` is a second `kernel_state` rooted at `.fantastic/web/` (alias
 `web_loader`; created once — see "Reach this kernel"). The browser `load_tree`s
 it on boot and `persist_record`s changes back. These records are stored OPAQUELY
 here (`handler_module` ending in `.ts` → inert on the host); the TS frontend

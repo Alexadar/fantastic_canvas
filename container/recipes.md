@@ -25,9 +25,9 @@ Fantastic is **two cooperating kernels**, and recipes always split across them:
 ```text
 HOST kernel (this container: python or rust)         FRONTEND kernel (browser, ts/)
   data · compute · transport · memory                  the VIEW lives here
-  fs_loader(root) web web_ws web_rest file             canvas · *_view · *content
+  kernel_state(root) web web_ws web_rest file             canvas · *_view · *content
   python_runtime terminal_backend ai_* yaml_state      (federates to the host over
-  scheduler kernel_bridge local_runner ssh_runner       the SAME web_ws WS wire)
+  scheduler ws_bridge local_runner ssh_runner          the SAME web_ws WS wire)
 ```
 
 The host **serves** the frontend (a static `file` agent) and **relays** the WS
@@ -57,9 +57,9 @@ Three view contracts the canvas/host already understand:
 position, persist.
 
 ```text
-HOST:      fs_loader(root) → web(:PORT) → web_ws, web_rest
+HOST:      kernel_state(root) → web(:PORT) → web_ws, web_rest
                            → file "ts_dist"   (serves the frontend bundle)
-                           → fs_loader root=.fantastic/web   (frontend's store)
+                           → kernel_state root=.fantastic/web   (frontend's store)
 FRONTEND:  canvas compositor + whatever content/view agents you add
 ```
 
@@ -214,13 +214,13 @@ is yours to supply.
 original setup: a canvas of `local_runner` tiles, one per project folder.)*
 
 ```text
-HOST (brain): fs_loader → web ;  per project: local_runner (local dir) or
-              ssh_runner (remote host) ;  kernel_bridge per peer
+HOST (brain): kernel_state → web ;  per project: local_runner (local dir) or
+              ssh_runner (remote host) ;  ws_bridge per peer
 FRONTEND:     canvas — one tile per project, iframing that project's own webapp
 ```
 
 **Wiring:** `local_runner` start/stop/status a project's own `fantastic` (truth from
-its `.fantastic/lock.json` pid+port); `kernel_bridge` dials a peer **by URL** (weak
+its `.fantastic/lock.json` pid+port); `ws_bridge` dials a peer **by URL** (weak
 binding — memory / ws / ssh+ws transports); from **either** kernel a routine reads
 memory anywhere + spawns ai/py **by id**. Each project can also be a **container** —
 **a unit at `host:port`** (no shared network): the bridge dials
@@ -231,7 +231,7 @@ memory anywhere + spawns ai/py **by id**. Each project can also be a **container
 container); bridge to it; iframe its webapp as a canvas tile. To reach a project on
 another machine, bridge to its `ip:port`."*
 
-**⚠ Today:** fully ported (`local_runner`, `ssh_runner`, `kernel_bridge`) — and the
+**⚠ Today:** fully ported (`local_runner`, `ssh_runner`, `ws_bridge`) — and the
 container unit-model is the distribution shape: one self-describing image-with-head
 per project, federated by URL.
 

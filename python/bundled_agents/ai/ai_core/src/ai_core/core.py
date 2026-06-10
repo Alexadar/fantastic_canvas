@@ -257,14 +257,14 @@ SEND_TOOL = {
             "Universal verb on every agent: reflect (returns identity + state; "
             "add readme:true for the agent's full guide, and reflect the ROOT "
             "agent with readme:true for the whole-system guide). "
-            "Discover agents by sending list_agents to the fs_loader agent."
+            "Discover agents by sending list_agents to the kernel_state agent."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "target_id": {
                     "type": "string",
-                    "description": "Agent id to send the payload to (e.g. 'fs_loader', 'cli', 'terminal_xxx').",
+                    "description": "Agent id to send the payload to (e.g. 'kernel_state', 'cli', 'terminal_xxx').",
                 },
                 "payload": {
                     "type": "object",
@@ -358,7 +358,7 @@ async def _build_menu(self_id: str, kernel) -> list[dict]:
     one-line sentence + verb names. Used to grow the system prompt
     into a real "menu of capabilities" the model can see at a glance.
     """
-    online = await kernel.send("fs_loader", {"type": "list_agents"})
+    online = await kernel.send("kernel_state", {"type": "list_agents"})
     items: list[dict] = []
     for a in online.get("agents", []):
         if a["id"] == self_id:
@@ -384,7 +384,7 @@ async def _build_menu(self_id: str, kernel) -> list[dict]:
 def _render_menu(menu: list[dict]) -> str:
     """Format the menu as bullet lines for the system prompt."""
     if not menu:
-        return "## Available agents\n(none — only `fs_loader` and `self`)"
+        return "## Available agents\n(none — only `kernel_state` and `self`)"
     lines = [
         "## Available agents (reflect any for verb signatures; reflect the root"
         " agent with readme:true for the full system guide)"
@@ -401,7 +401,7 @@ You have ONE tool: `send(target_id, payload)`. EVERY action goes through it.
 - ORIENT FIRST. For anything beyond the menu's verb names — especially the
   browser frontend (panels/views), persistence, or how agents are wired — read
   the full system guide in ONE call BEFORE acting:
-  `send('fs_loader', {type:'reflect', readme:true})`. It explains the transports,
+  `send('kernel_state', {type:'reflect', readme:true})`. It explains the transports,
   how compute/memory/views are addressed, and how the browser frontend and
   persistence work. Don't guess the wiring — read it first.
 - To do something concrete (read a file, run python, list agents, etc.), pick

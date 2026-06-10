@@ -94,8 +94,9 @@ def _cb_meta(
         "tls_role": role,
         "heartbeat": 0,
     }
-    # The per-leg auth policy — only set when exercising directional topology, so
-    # default legs stay byte-identical to the pre-auth matrix (absent ⇒ allow_all).
+    # The per-leg auth policy. IO legs now SEAL by default (absent rule ⇒
+    # deny_inbound), so any leg that must answer inbound forwards sets this
+    # explicitly to `allow_all` (or `password` for the group-secret tests).
     if auth is not None:
         meta["auth"] = auth
     return meta
@@ -192,6 +193,9 @@ async def _drive_pair(
         id_key=idk_b,
         peer_cert_pem=cert_a,
         issue_url=relay.issue_url,
+        # B is EXPLICITLY OPEN — IO legs now seal by default (absent rule ⇒
+        # deny_inbound), so without this the A→B forward below would be refused.
+        auth="allow_all",
     )
 
     # create_agent auto-boots (awaited) → the cloud_bridge dials the relay + runs
@@ -216,10 +220,11 @@ async def _drive_pair(
     )
 
     # A's leg surfaces its policy back through reflect.
-    assert rcb.get("auth") == "deny_inbound", f"A reflect missing auth policy: {rcb}"
+    assert rcb.get("ingress_rule") == "deny_inbound", f"A reflect missing auth policy: {rcb}"
 
     # The payload: forward a reflect to B's root over the relay; reply round-trips.
-    # A→B is allowed (B is the default allow_all leg) — the no-op guard.
+    # A→B is allowed (B's leg is EXPLICITLY opened with `auth=allow_all` above —
+    # IO legs seal by default now) — the open-leg guard.
     reply = await kp_a.call("cb", "forward", target="kernel", payload={"type": "reflect"})
     assert isinstance(reply, dict), f"non-dict reply: {reply!r}"
     assert "error" not in reply, f"forward errored through the relay: {reply}"
@@ -298,7 +303,7 @@ async def _drive_password_pair(
         f"A cloud_bridge not connected after 5s.\n  create replies: {created}\n  reflect: {rcb}"
     )
     # reflect surfaces only the policy NAME (never the env-var config).
-    assert rcb.get("auth") == "password", f"A reflect missing auth policy: {rcb}"
+    assert rcb.get("ingress_rule") == "password", f"A reflect missing auth policy: {rcb}"
 
     reply = await kp_a.call("cb", "forward", target="kernel", payload={"type": "reflect"})
     assert isinstance(reply, dict), f"non-dict reply: {reply!r}"
@@ -534,8 +539,8 @@ async def _drive_asymmetric_pair(
         f"A cloud_bridge not connected after 5s.\n  create replies: {created}\n  reflect: {rcb}"
     )
     # reflect surfaces both directions independently (auth alias = ingress).
-    assert rcb.get("ingress") == "deny_inbound", f"A ingress: {rcb}"
-    assert rcb.get("egress") == "password", f"A egress: {rcb}"
+    assert rcb.get("ingress_rule") == "deny_inbound", f"A ingress: {rcb}"
+    assert rcb.get("egress_rule") == "password", f"A egress: {rcb}"
 
     # A→B: A's egress presents the fleet token, B's ingress accepts → round-trip.
     reply = await kp_a.call("cb", "forward", target="kernel", payload={"type": "reflect"})

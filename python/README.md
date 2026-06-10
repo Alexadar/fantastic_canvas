@@ -27,10 +27,10 @@ into it; the running artifact is a function of its *descriptance*, not its code.
   tree, never written externally), `root: Agent` (the tree root),
   state subscribers, bundle resolver cache, well-known names. Exposes
   `kernel.create/delete/update/list/get/send` for tree management.
-- **`fs_loader`** — the tree root IS an `fs_loader` agent
-  (`id="fs_loader"`, `handler_module="fs_loader.tools"`): the
+- **`kernel_state`** — the tree root IS an `kernel_state` agent
+  (`id="kernel_state"`, `handler_module="kernel_state.tools"`): the
   persistence/hydration root that owns `.fantastic/`. A fresh dir
-  seeds `{id:"fs_loader", handler_module:"fs_loader.tools"}`. The
+  seeds `{id:"kernel_state", handler_module:"kernel_state.tools"}`. The
   bootstrap composes a stdout renderer child when stdin is a tty.
 - **send** — the one primitive. `kernel.send(target_id, payload) →
   reply | None` (from outside any handler) or `agent.send(...)`
@@ -45,10 +45,10 @@ into it; the running artifact is a function of its *descriptance*, not its code.
   `delete_lock` anywhere in the subtree blocks the entire cascade
   with `{locked, blocked_by, error}` — no partial mutations.
 - **Persistence** — DECOUPLED from `Agent`, which never touches disk.
-  A loader agent (`fs_loader`) owns the medium, driven by the kernel
+  A loader agent (`kernel_state`) owns the medium, driven by the kernel
   STATE STREAM (debounced flush). The kernel exposes `save()`/`load()`
   over a flat record list (weak-load of unknown bundles). `main.py`
-  bootstraps `Kernel()` → `fs_loader.read_tree('.fantastic')` →
+  bootstraps `Kernel()` → `kernel_state.read_tree('.fantastic')` →
   `kernel.load(records)`, rehydrating the whole tree by ids and
   respecting parent-child links. Process-memory state (in-flight
   counters, inboxes, PTY children) does NOT survive; bundles' `_boot`
@@ -87,10 +87,10 @@ into it; the running artifact is a function of its *descriptance*, not its code.
   CLI running in the PTY (e.g. `claude`): the view ships the bytes,
   the backend saves a file and types its path in — mimicking a
   drag-drop, since the server can't reach the browser clipboard.
-- **kernel_bridge + ssh_runner** — cross-host. `ssh_runner` uses
+- **ws_bridge + ssh_runner** — cross-host. `ssh_runner` uses
   subprocess SSH to start/stop a remote `fantastic` and keeps
   a local tunnel open so a canvas can iframe the remote webapp.
-  `kernel_bridge` opens WS (or SSH+WS) to a peer kernel's `web_ws`
+  `ws_bridge` opens WS (or SSH+WS) to a peer kernel's `web_ws`
   and ships raw call frames (asymmetric — no peer bridge needed);
   local agents reach remote agents through it without merging the two
   address spaces, and `watch_remote` streams a remote agent's emits
@@ -102,8 +102,8 @@ into it; the running artifact is a function of its *descriptance*, not its code.
   (`web_ws`) — bringing its own typed WS bridge, not a server-injected
   script. It is a canvas compositor + view-agents for terminal/chat/GL
   content, vendored hermetically (no CDN). Python knows
-  nothing of the `ts/` package — it's served weakly through a `file`
-  agent rooted at the built `ts/dist`, which serves both the bundle and
+  nothing of the `ts/` package — it's served weakly through a `file_bridge`
+  agent rooted at a copy of the built `ts/dist` inside the running dir, which serves both the bundle and
   a static `index.html` mount page over the web host's
   `/<file_id>/file/<path>` proxy. Frontend records persist back to host
   disk under `.fantastic/web/<session>/` via the frontend's
@@ -136,9 +136,9 @@ with a `pyproject.toml` are auto-picked up on the next `uv sync`.
 fantastic                                            # boot all + REPL (tty) + daemon (if web is persisted)
 fantastic <id> <verb> [k=v ...]                      # one-shot RPC
 fantastic reflect [<id>]                             # shorthand: <id> reflect (default kernel)
-fantastic fs_loader create_agent handler_module=web.tools port=8888    # persist web (one-shot; then `fantastic` daemonizes)
+fantastic kernel_state create_agent handler_module=web.tools port=8888    # persist web (one-shot; then `fantastic` daemonizes)
 # Equivalent direct invocation: `python main.py [args]`
-# main.py bootstraps: Kernel() -> fs_loader.read_tree('.fantastic') -> kernel.load(records).
+# main.py bootstraps: Kernel() -> kernel_state.read_tree('.fantastic') -> kernel.load(records).
 # Web composition is explicit — no --port flag. The kernel blocks only
 # when something keeps it alive (web agent on disk OR REPL stdin loop).
 ```
@@ -147,7 +147,7 @@ REPL example:
 
 ```
 fantastic> add web port=8888                        # uvicorn boots
-fantastic> add file
+fantastic> add file_bridge
 fantastic> add terminal_backend                      # PTY shell (xterm view lives in the TS frontend)
 # browse http://localhost:8888/  → tree view with ↗ visit links
 # the TS frontend kernel renders the canvas + its members (see ts/SERVE.md)
@@ -165,9 +165,9 @@ invocation surfaces are sub-agents of `web`:
 
 Compose them per project:
 ```bash
-fantastic fs_loader create_agent handler_module=web.tools port=8888
-fantastic fs_loader create_agent handler_module=web_ws.tools parent_id=<web_id>
-fantastic fs_loader create_agent handler_module=web_rest.tools parent_id=<web_id>
+fantastic kernel_state create_agent handler_module=web.tools port=8888
+fantastic kernel_state create_agent handler_module=web_ws.tools parent_id=<web_id>
+fantastic kernel_state create_agent handler_module=web_rest.tools parent_id=<web_id>
 ```
 
 After `fantastic`:
@@ -193,9 +193,9 @@ installable-bundle catalog, and the root readme with the
 transport/wire docs). Any LLM CLI dropped in cold can
 bootstrap from one WS or HTTP round-trip.
 
-**Weak binding for bridges.** `kernel_bridge` reaches a remote
+**Weak binding for bridges.** `ws_bridge` reaches a remote
 kernel's `web_ws` by URL + path only — `ws://host/<peer_id>/ws`,
-where `<peer_id>` is just the WS path segment (typically `fs_loader`). No
+where `<peer_id>` is just the WS path segment (typically `kernel_state`). No
 shared Python types cross the wire. (WS-only since the REST bridge
 transport was dropped; the `web_rest` diagnostic surface is
 unrelated and still ships.)
@@ -245,7 +245,7 @@ uv run pytest -n auto
 
 ```
 .                                            # project root
-├── main.py                                  # bootstrap: Kernel() -> fs_loader.read_tree('.fantastic') -> kernel.load(records)
+├── main.py                                  # bootstrap: Kernel() -> kernel_state.read_tree('.fantastic') -> kernel.load(records)
 ├── kernel/
 │   ├── __init__.py                          # public API re-exports
 │   ├── _agent.py                            # Agent (recursive) + ephemeral flag + on_delete hook
@@ -259,7 +259,7 @@ uv run pytest -n auto
 ├── conftest.py                               # pytest fixtures
 ├── tests/                                    # substrate-level tests
 └── bundled_agents/
-    ├── loader/fs_loader/                     # the ROOT agent + persistence/hydration root (owns .fantastic/)
+    ├── loader/kernel_state/                     # the ROOT agent + persistence/hydration root (owns .fantastic/)
     ├── cli/                                  # stdout renderer (ephemeral — composed when isatty)
     ├── web/                                  # HTTP+WS transport (uvicorn) + favicon
     ├── file/, scheduler/                     # filesystem + recurring tasks
@@ -270,9 +270,9 @@ uv run pytest -n auto
     ├── ai/ollama/ollama_backend              # local LLM (ollama) — thin binding over ai_core
     ├── ai/nvidia/nvidia_nim_backend          # NVIDIA NIM (OpenAI-compatible) — thin binding over ai_core + NIM-specific key/retry verbs
     ├── ai/anthropic/anthropic_backend        # Anthropic LLM (anthropic_backend.tools) — thin binding over ai_core
-    ├── bridge/bridge_core/                   # shared kernel-bridge engine (read loop, verbs, lifecycle, transport seam); a library, not an agent
-    ├── bridge/kernel_bridge/                 # cross-kernel WS bridge (asymmetric) — ws / ssh+ws transports
-    ├── bridge/cloud_bridge/                  # cross-kernel bridge via a zero-trust relay — dial-out + Noise E2E (CONTRACT v1)
+    ├── io/io_bridge/                         # the IO base — a reflectable keystone agent (channel model, rule registries, read loop/verbs/lifecycle, MemoryTransport); bridges + web faces derive from it; IO legs sealed by default
+    ├── io/ws_bridge/                     # cross-kernel WS bridge (asymmetric) — ws / ssh+ws transports
+    ├── io/cloud_bridge/                  # cross-kernel bridge via a zero-trust relay — dial-out + Noise E2E (CONTRACT v1)
     ├── runner/runner_core/                   # shared runner lifecycle + Transport seam; local_runner and ssh_runner bind to it
     └── runner/{local_runner, ssh_runner}     # spawn local / remote `fantastic`
 ```

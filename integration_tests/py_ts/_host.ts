@@ -3,12 +3,20 @@
 // *.itest.ts. NOT a *.test.ts file, so the unit run never imports it.
 //
 // web_ws must be nested UNDER the web agent on disk (create by targeting the
-// web agent, not fs_loader) — the tree comes from disk placement, and web mounts
+// web agent, not kernel_state) — the tree comes from disk placement, and web mounts
 // only its own children's get_routes. See bridge.ts's federation note.
 
 import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, statSync, readFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,12 +29,14 @@ const FANTASTIC = join(repoRoot, "python", ".venv", "bin", "fantastic");
 // runtime). The SAME tests run either way: seeding one-shots run INSIDE the
 // container (a rootless container's uid can't write a host-seeded .fantastic/),
 // the daemon publishes -p 127.0.0.1:port:port with FANTASTIC_HEAD=off, and the
-// frontend dist is bind-mounted in so the `ts_dist` file agent can serve it.
+// frontend dist is bind-mounted in so the `ts_dist` file_bridge agent can serve it.
 // e2e is host/browser → container only (no container↔container), so -p suffices.
 const TARGET = (process.env.FANTASTIC_TARGET ?? "local").trim().toLowerCase();
 const IMAGE = process.env.FANTASTIC_IMAGE ?? "fantastic:latest";
 const CONTAINER_BIN = "/opt/fantastic/venv/bin/fantastic"; // python in the image
-const CONTAINER_DIST = "/dist"; // where ts/dist is mounted in container mode
+// where ts/dist is mounted in container mode — INSIDE the workdir (/work), because
+// file_bridge clamps every root to the dir the kernel runs in (the running-dir law).
+const CONTAINER_DIST = "/work/dist";
 
 function resolveEngine(): string {
   for (const e of ["podman", "docker"]) {
@@ -128,28 +138,38 @@ export interface Host {
 }
 
 export interface BootOptions {
-  /** Also create a `web_loader` (an fs_loader rooted at .fantastic/web, alias
+  /** Also create a `web_loader` (an kernel_state rooted at .fantastic/web, alias
    *  `web_loader`) under the web agent — the frontend's persistence store. */
   webLoader?: boolean;
-  /** Also serve the built frontend (`ts/dist`) via a `file` agent (id
+  /** Also serve the built frontend (copied into the workdir) via a `file_bridge` agent (id
    *  `ts_dist`) under web — its ESM mounts at `/ts_dist/file/<path>`, on the
    *  same port as the WS. Requires `npm run build` to have run. */
   serveDist?: boolean;
   /** Also create a `python_runtime` agent (the background-script runner). */
   pythonRuntime?: boolean;
-  /** Also create an LLM backend agent (+ its history `file` agent). `bundle`
+  /** Also create an LLM backend agent (+ its history `file_bridge` agent). `bundle`
    *  picks the backend (default `ollama_backend.tools`; e.g.
    *  `anthropic_backend.tools` for Claude). `model`/`endpoint` are passed only
    *  when set (each bundle defaults its own). The repo `.env` is injected into
    *  the daemon env, so a key like ANTHROPIC_KEY reaches the backend. */
   llm?: { bundle?: string; model?: string; endpoint?: string; num_ctx?: number };
-  /** Also create a `scheduler` agent (+ a `file` agent `sched_files` for its
+  /** Also create a `scheduler` agent (+ a `file_bridge` agent `sched_files` for its
    *  schedules) — fire a chosen payload to a target after N seconds. */
   scheduler?: boolean;
 }
 
 /** Absolute path to the built frontend (`ts/dist`) — served when `serveDist`. */
 export const DIST_DIR = join(repoRoot, "ts", "dist");
+
+/** Write a mount/fixture file into the dir ACTUALLY served at
+ *  `/ts_dist/file/<name>` for THIS host. local: the workdir copy
+ *  (`ts_dist_src` — file_bridge clamps roots to the running dir, so bootHost
+ *  copies the dist in; post-boot writes to the repo `ts/dist` are invisible);
+ *  container: the live bind-mounted `ts/dist` at /work/dist. */
+export function writeServedDist(host: Host, name: string, content: string): void {
+  const dir = host.container ? DIST_DIR : join(host.tmp, "ts_dist_src");
+  writeFileSync(join(dir, name), content);
+}
 
 // ─── LLM backend selection — ONE env switch (`LLM_BACKEND`) so every live-LLM
 //     itest runs against either Claude or a local ollama model (parity). The
@@ -280,17 +300,25 @@ export async function bootHost(port = 8911, opts: BootOptions = {}): Promise<Hos
   if (TARGET === "container") mkdirSync(tmpBase, { recursive: true });
   const tmp = mkdtempSync(join(tmpBase, "ftbridge-"));
   const webOut = runCli(tmp, [
-    "fs_loader",
+    "kernel_state",
     "create_agent",
     "handler_module=web.tools",
     `port=${port}`,
   ]);
   const webId = extractId(webOut, "web");
-  // nest web_ws by TARGETING the web agent (disk placement = tree parent)
-  const wsOut = runCli(tmp, [webId, "create_agent", "handler_module=web_ws.tools"]);
+  // nest web_ws by TARGETING the web agent (disk placement = tree parent).
+  // The WS verb surface is an io leg — it SEALS by default (deny-all flip), so a
+  // bare web_ws refuses every forwarded call. Open it (allow_all): this is the
+  // drivable test surface, mirroring the python `seed_web_ws` helper.
+  const wsOut = runCli(tmp, [
+    webId,
+    "create_agent",
+    "handler_module=web_ws.tools",
+    "ingress_rule=allow_all",
+  ]);
   const webWsId = extractId(wsOut, "web_ws");
 
-  // optional frontend store: a SECOND fs_loader rooted at .fantastic/web,
+  // optional frontend store: a SECOND kernel_state rooted at .fantastic/web,
   // reachable over WS by its `web_loader` alias. Created BEFORE spawn (the
   // one-shot CLI is locked out once the daemon owns the dir).
   let webLoaderId: string | undefined;
@@ -298,28 +326,36 @@ export async function bootHost(port = 8911, opts: BootOptions = {}): Promise<Hos
     const wlOut = runCli(tmp, [
       webId,
       "create_agent",
-      "handler_module=fs_loader.tools",
+      "handler_module=kernel_state.tools",
       "root=.fantastic/web",
       "watch=false",
       "alias=web_loader",
     ]);
-    webLoaderId = extractId(wlOut, "fs_loader");
+    webLoaderId = extractId(wlOut, "kernel_state");
   }
 
   // optional static frontend: a `file` agent (fixed id `ts_dist`) rooted at the
   // build output. Its route mounts under web → `/ts_dist/file/<path>` serves
   // every ESM module on the SAME port as the WS surface.
   if (opts.serveDist === true) {
-    // container mode serves the dist from its bind-mount path; local from the
-    // host build dir. (The record only stores the path; the daemon — which has
-    // the mount — does the reading.)
-    const distRoot = TARGET === "container" ? CONTAINER_DIST : DIST_DIR;
+    // file_bridge clamps every root inside the running dir, so the dist must
+    // live IN the workdir. container: the bind-mount lands at /work/dist →
+    // relative root `dist`. local: copy the build output into the workdir and
+    // root it relatively. The fs edge seals by default → open it (allow_all).
+    let distRoot: string;
+    if (TARGET === "container") {
+      distRoot = "dist";
+    } else {
+      cpSync(DIST_DIR, join(tmp, "ts_dist_src"), { recursive: true });
+      distRoot = "ts_dist_src";
+    }
     runCli(tmp, [
       webId,
       "create_agent",
-      "handler_module=file.tools",
+      "handler_module=file_bridge.tools",
       "id=ts_dist",
       `root=${distRoot}`,
+      "ingress_rule=allow_all",
     ]);
   }
 
@@ -327,7 +363,7 @@ export async function bootHost(port = 8911, opts: BootOptions = {}): Promise<Hos
   let pyId: string | undefined;
   if (opts.pythonRuntime === true || opts.llm !== undefined) {
     const pyOut = runCli(tmp, [
-      "fs_loader",
+      "kernel_state",
       "create_agent",
       "handler_module=python_runtime.tools",
     ]);
@@ -341,14 +377,15 @@ export async function bootHost(port = 8911, opts: BootOptions = {}): Promise<Hos
   if (opts.llm !== undefined) {
     const bundle = opts.llm.bundle ?? "ollama_backend.tools";
     runCli(tmp, [
-      "fs_loader",
+      "kernel_state",
       "create_agent",
-      "handler_module=file.tools",
+      "handler_module=file_bridge.tools",
       "id=llm_files",
       "root=.fantastic",
+      "ingress_rule=allow_all", // the fs edge seals by default — open the backing
     ]);
     const args = [
-      "fs_loader",
+      "kernel_state",
       "create_agent",
       `handler_module=${bundle}`,
       "file_agent_id=llm_files",
@@ -364,14 +401,15 @@ export async function bootHost(port = 8911, opts: BootOptions = {}): Promise<Hos
   let schedulerId: string | undefined;
   if (opts.scheduler === true) {
     runCli(tmp, [
-      "fs_loader",
+      "kernel_state",
       "create_agent",
-      "handler_module=file.tools",
+      "handler_module=file_bridge.tools",
       "id=sched_files",
       "root=.fantastic",
+      "ingress_rule=allow_all", // the fs edge seals by default — open the backing
     ]);
     const schedOut = runCli(tmp, [
-      "fs_loader",
+      "kernel_state",
       "create_agent",
       "handler_module=scheduler.tools",
       "file_agent_id=sched_files",
@@ -450,7 +488,7 @@ export function teardownHost(host: Host): void {
 /** Restart the daemon IN PLACE: kill the running process, wait for its port to
  *  free, then re-spawn `fantastic` in the SAME tmp dir — the persisted `.fantastic/`
  *  rehydrates from disk. Mutates `host.proc`. Used to test save/load across a real
- *  daemon restart (the host fs_loader + the frontend store + the browser re-hydrate). */
+ *  daemon restart (the host kernel_state + the frontend store + the browser re-hydrate). */
 export async function restartHost(host: Host): Promise<void> {
   try {
     if (host.container) {

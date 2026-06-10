@@ -53,10 +53,11 @@ isn't set.
   — then `reflect` (asserts `connected`) and `forward` a reflect through the relay.
 - **Directional auth** (`test_relay_any_to_any`). Leg A carries `auth="deny_inbound"`
   (the hub→spoke push policy). The matrix asserts BOTH directions for every runtime
-  pair: A→B forward succeeds (B is the default `allow_all` leg), and B→A reverse is
-  refused on arrival at A with `{reason:"unauthorized"}` — the cross-runtime guard
-  that the per-leg `auth` gate (`bridge_core._authorizer` and its rust/swift mirrors)
-  produces an identical wire shape everywhere.
+  pair: A→B forward succeeds (B's leg is EXPLICITLY opened with `ingress_rule=allow_all`,
+  because IO legs now SEAL by default — an absent rule resolves to `deny_inbound`),
+  and B→A reverse is refused on arrival at A with `{reason:"unauthorized"}` — the
+  cross-runtime guard that the per-leg `auth` gate (`io_bridge.gate_inbound` and its
+  rust/swift mirrors) produces an identical wire shape everywhere.
 - **Group auth** (`test_relay_password_group_member` + `test_relay_password_rejects_outsider`).
   Both legs run `auth="password"`; the group token is injected into each daemon's
   env (`FANTASTIC_GROUP_TOKEN`, never persisted). When the tokens match (all 6

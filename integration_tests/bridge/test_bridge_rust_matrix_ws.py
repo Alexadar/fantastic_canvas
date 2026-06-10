@@ -14,7 +14,7 @@ boot), then `boot` is an idempotent connect guard.
 
 Root-id note: `_forward_reflect` dispatches via peer_id='kernel' and
 target='kernel' — the `kernel` alias resolves to the real root on any runtime
-(fs_loader for Python, core for rust/swift), so no forward test hardcodes a
+(kernel_state for Python, core for rust/swift), so no forward test hardcodes a
 runtime-specific root id.
 
 The stream test uses peer_id='core' literally because watch/emit do a literal
@@ -50,7 +50,7 @@ async def _forward_reflect(
     (id, sentence, tree).
 
     Both peer_id and target use the 'kernel' alias so the dispatch resolves
-    to the correct root id regardless of runtime (fs_loader or core).
+    to the correct root id regardless of runtime (kernel_state or core).
     """
     base = parity_tmp(tag)
     wa = base / "A_client"
@@ -63,7 +63,7 @@ async def _forward_reflect(
     seed_web(client_bin, wa, pa)
     seed_web_ws(client_bin, wa)
     # peer_id='kernel' selects the WS path on B using the runtime alias —
-    # resolves to 'fs_loader' (python) or 'core' (rust/swift) transparently.
+    # resolves to 'kernel_state' (python) or 'core' (rust/swift) transparently.
     seed_bridge_ws(client_bin, wa, agent_id="bridge", peer_id="kernel", peer_port=pb)
 
     seed_web(server_bin, wb, pb)

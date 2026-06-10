@@ -62,7 +62,7 @@ curl -s -X POST -H 'Content-Type: application/json' \
 reads `reflect` over `web_ws` (`/web/ws`) / `rest` (`POST /rest/<target>`) — **no
 client library, the protocol IS the API** — and then **builds** by composing
 agents (`create_agent` + wiring them with `send`) against the folder you mounted
-at **`/work`** (the `file` / `terminal` / `python_runtime` agents act on it). Hand
+at **`/work`** (the `file_bridge` / `terminal` / `python_runtime` agents act on it). Hand
 it a [recipe](container/recipes.md) and it assembles a working app — capability
 emerges from self-description, no bespoke glue. Full run contract + 7 recipes:
 [`container/README.md`](container/README.md) · [`container/recipes.md`](container/recipes.md).
@@ -75,7 +75,7 @@ three interchangeable **hosts** (python, swift, rust) plus the browser
 — **one host active per workdir at a time** (the `lock.json` PID guard).
 The ts frontend is the fourth kernel: it runs in the browser, federates to
 whichever host is up over the WS bridge, and any host serves it generically
-(a `file` agent over `ts/dist`) while knowing nothing about it.
+(a `file_bridge` agent over a workdir copy of `ts/dist`) while knowing nothing about it.
 
 ```
 fantastic_canvas/
@@ -117,13 +117,14 @@ fantastic_canvas/
 The host kernels render no UI of their own. The browser frontend lives
 in `ts/` (its own kernel — views are agents: `canvas`, `html_agent`,
 `gl_agent`, the `ai` and `terminal` views) and is served by **any** host
-through a generic `file` agent rooted at the built `ts/dist`. The host
+through a generic `file_bridge` agent rooted at a workdir copy of the
+built `ts/dist` (its root is clamped to the running dir). The host
 never imports, names, or knows about the frontend (weak binding); it
 persists frontend records opaquely and weak-loads past them. The same
 recipe serves any view package. The sovereign distribution artifact is
 `ts/dist/js_kernel.zip` (`cd ts && sh scripts/pack.sh`): one inlined
 `bundle.min.js` + `readme.md` + map, pulled on demand and served via a
-`file` agent — no import map, no CSS link (vendors + CSS are inlined).
+`file_bridge` agent — no import map, no CSS link (vendors + CSS are inlined).
 See [`ts/readme.md`](ts/readme.md) and [`ts/SERVE.md`](ts/SERVE.md).
 
 ## One runtime active per workdir
@@ -132,7 +133,7 @@ See [`ts/readme.md`](ts/readme.md) and [`ts/SERVE.md`](ts/SERVE.md).
 `.fantastic/lock.json` PID guard enforces it — no concurrent mode for a
 single dir. Switching is a reboot: stop one daemon, start another
 against the same dir. (Distinct kernels *do* talk across the WS
-`kernel_bridge` — that's separate, explicit wiring, not shared-dir
+`ws_bridge` — that's separate, explicit wiring, not shared-dir
 concurrency.)
 
 **Weak loading** keeps switching safe. If a persisted agent's

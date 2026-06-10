@@ -24,7 +24,7 @@ async def test_persistence_routing_through_file_agent(
     """ollama_backend.send writes per-client chat (default chat_cli.json) via the file agent at the right path."""
     ob = (
         await seeded_kernel.send(
-            "fs_loader",
+            "kernel_state",
             {
                 "type": "create_agent",
                 "handler_module": "ollama_backend.tools",
@@ -48,7 +48,7 @@ async def test_inter_llm_tool_call(seeded_kernel, file_agent):
     """ollama_A's tool_call to ollama_B routes through kernel.send and returns to A."""
     a = (
         await seeded_kernel.send(
-            "fs_loader",
+            "kernel_state",
             {
                 "type": "create_agent",
                 "handler_module": "ollama_backend.tools",
@@ -58,7 +58,7 @@ async def test_inter_llm_tool_call(seeded_kernel, file_agent):
     )["id"]
     b = (
         await seeded_kernel.send(
-            "fs_loader",
+            "kernel_state",
             {
                 "type": "create_agent",
                 "handler_module": "ollama_backend.tools",
@@ -103,7 +103,7 @@ async def test_scheduler_fires_through_kernel_send(seeded_kernel, file_agent):
     """A scheduled job fires kernel.send to its target; target gets the payload."""
     sid = (
         await seeded_kernel.send(
-            "fs_loader",
+            "kernel_state",
             {
                 "type": "create_agent",
                 "handler_module": "scheduler.tools",
@@ -139,13 +139,13 @@ async def test_records_carry_handler_module(seeded_kernel):
     to pick a view (inline by handler_module, else iframe via get_webapp)."""
     a = (
         await seeded_kernel.send(
-            "fs_loader",
+            "kernel_state",
             {"type": "create_agent", "handler_module": "frontend_view.tools"},
         )
     )["id"]
     b = (
         await seeded_kernel.send(
-            "fs_loader",
+            "kernel_state",
             {"type": "create_agent", "handler_module": "frontend_view.tools"},
         )
     )["id"]

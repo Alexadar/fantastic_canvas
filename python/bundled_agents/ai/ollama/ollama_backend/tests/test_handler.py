@@ -33,7 +33,7 @@ async def _make_ollama(kernel, file_agent_id=None):
     meta = {"handler_module": "ollama_backend.tools"}
     if file_agent_id is not None:
         meta["file_agent_id"] = file_agent_id
-    rec = await kernel.send("fs_loader", {"type": "create_agent", **meta})
+    rec = await kernel.send("kernel_state", {"type": "create_agent", **meta})
     return rec["id"]
 
 
@@ -233,7 +233,7 @@ async def test_tool_call_to_self_does_not_deadlock(seeded_kernel, file_agent):
 
 
 async def test_run_with_tool_call_iterates(seeded_kernel, file_agent):
-    """Model emits a tool_call to fs_loader, gets reply, second iteration finishes."""
+    """Model emits a tool_call to kernel_state, gets reply, second iteration finishes."""
     oid = await _make_ollama(seeded_kernel, file_agent)
     fp = _FakeProvider(
         [
@@ -244,7 +244,7 @@ async def test_run_with_tool_call_iterates(seeded_kernel, file_agent):
                         "id": "call_a",
                         "name": "send",
                         "arguments": {
-                            "target_id": "fs_loader",
+                            "target_id": "kernel_state",
                             "payload": {"type": "list_agents"},
                         },
                     }
@@ -299,14 +299,14 @@ async def test_run_persists_full_tool_call_round_trip(
     oid = await _make_ollama(seeded_kernel, file_agent)
     fp = _FakeProvider(
         [
-            # Iter 1: tool_call to fs_loader.list_agents
+            # Iter 1: tool_call to kernel_state.list_agents
             [
                 {
                     "tool_call": {
                         "id": "call_X",
                         "name": "send",
                         "arguments": {
-                            "target_id": "fs_loader",
+                            "target_id": "kernel_state",
                             "payload": {"type": "list_agents"},
                         },
                     }
@@ -331,7 +331,7 @@ async def test_run_persists_full_tool_call_round_trip(
         assert asst_tcs["tool_calls"], "tool_calls dropped from persistence"
         tc = asst_tcs["tool_calls"][0]
         assert tc["function"]["name"] == "send"
-        assert tc["function"]["arguments"]["target_id"] == "fs_loader"
+        assert tc["function"]["arguments"]["target_id"] == "kernel_state"
         # 2. tool reply linked by tool_call_id
         assert data[2]["tool_call_id"] == "call_X"
         assert data[2]["name"] == "send"
@@ -376,7 +376,7 @@ async def test_run_unbounded_steps_until_no_tool_calls(seeded_kernel, file_agent
                     "id": f"call_{i}",
                     "name": "send",
                     "arguments": {
-                        "target_id": "fs_loader",
+                        "target_id": "kernel_state",
                         "payload": {"type": "list_agents"},
                     },
                 }
@@ -504,14 +504,14 @@ async def test_menu_invalidates_after_tool_call(seeded_kernel, file_agent):
     oid = await _make_ollama(seeded_kernel, file_agent)
     fp = _FakeProvider(
         [
-            # iter 1: emit a tool_call to fs_loader
+            # iter 1: emit a tool_call to kernel_state
             [
                 {
                     "tool_call": {
                         "id": "call_a",
                         "name": "send",
                         "arguments": {
-                            "target_id": "fs_loader",
+                            "target_id": "kernel_state",
                             "payload": {"type": "list_agents"},
                         },
                     }
@@ -762,7 +762,7 @@ async def test_status_event_sequence_with_tool_call(seeded_kernel, file_agent):
                         "id": "call_a",
                         "name": "send",
                         "arguments": {
-                            "target_id": "fs_loader",
+                            "target_id": "kernel_state",
                             "payload": {"type": "list_agents"},
                         },
                     }

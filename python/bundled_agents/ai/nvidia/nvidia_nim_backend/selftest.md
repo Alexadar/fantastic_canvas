@@ -27,7 +27,7 @@ cd new_codebase
 rm -rf .fantastic
 PORT=18904
 pkill -9 -f "fantastic" 2>/dev/null
-uv run --active python fantastic fs_loader create_agent handler_module=web.tools port=$PORT >/dev/null
+uv run --active python fantastic kernel_state create_agent handler_module=web.tools port=$PORT >/dev/null
 WEB_ID=$(ls .fantastic/agents | grep '^web_' | head -1)
 uv run --active fantastic $WEB_ID create_agent handler_module=web_ws.tools >/dev/null
 uv run --active python fantastic > /tmp/n.log 2>&1 &
@@ -51,8 +51,8 @@ asyncio.run(main())
 PY
 }
 
-FA=$(call fs_loader '{"type":"create_agent","handler_module":"file.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-NB=$(call fs_loader "{\"type\":\"create_agent\",\"handler_module\":\"nvidia_nim_backend.tools\",\"file_agent_id\":\"$FA\"}" \
+FA=$(call kernel_state '{"type":"create_agent","handler_module":"file_bridge.tools","ingress_rule":"allow_all"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+NB=$(call kernel_state "{\"type\":\"create_agent\",\"handler_module\":\"nvidia_nim_backend.tools\",\"file_agent_id\":\"$FA\"}" \
   | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 ```
 
@@ -66,7 +66,7 @@ kill -9 $SPID 2>/dev/null; rm -rf .fantastic /tmp/n.log
 ### Test 1: `_send` failfast when `file_agent_id` unset
 
 ```bash
-NB2=$(call fs_loader '{"type":"create_agent","handler_module":"nvidia_nim_backend.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+NB2=$(call kernel_state '{"type":"create_agent","handler_module":"nvidia_nim_backend.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 call $NB2 '{"type":"send","text":"hi"}' | python -m json.tool
 ```
 Expected: `{"error":"nvidia_nim_backend: file_agent_id required"}`.
@@ -204,9 +204,9 @@ send/history/interrupt/status. The backend surface is covered by Tests
 ```bash
 # A NIM backend on the host; the TS ai_view (frontend) fronts it by id
 # over the bridge and renders the chat inline.
-NB2=$(call fs_loader '{"type":"create_agent","handler_module":"nvidia_nim_backend.tools","provider":"nvidia_nim"}' \
+NB2=$(call kernel_state '{"type":"create_agent","handler_module":"nvidia_nim_backend.tools","provider":"nvidia_nim"}' \
   | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-call fs_loader "{\"type\":\"update_agent\",\"id\":\"$NB2\",\"file_agent_id\":\"$FA\"}"
+call kernel_state "{\"type\":\"update_agent\",\"id\":\"$NB2\",\"file_agent_id\":\"$FA\"}"
 call $NB2 "{\"type\":\"set_api_key\",\"api_key\":\"$NVAPI_KEY\"}"
 echo "open the TS canvas in a browser, point ai_view at $NB2 — see ts/SERVE.md"
 ```

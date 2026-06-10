@@ -86,7 +86,7 @@ def expected_bundle_sha(zip_path: Path) -> str:
 def root_id(binary: Path, workdir: Path, *, timeout: float = 15.0) -> str:
     """Discover the runtime's ROOT agent id via a one-shot `reflect`.
 
-    Python's root is `fs_loader`; rust/swift use `core`. The harness must
+    Python's root is `kernel_state`; rust/swift use `core`. The harness must
     not hardcode either — seeds (and WS paths / reflect targets) that
     attach to the root resolve it here. Cached per (binary, workdir).
 
@@ -193,13 +193,21 @@ def seed_web(binary: Path, workdir: Path, port: int) -> None:
 def seed_web_ws(binary: Path, workdir: Path) -> None:
     """Persist a `web_ws` agent as a child of `web`. Required on BOTH
     kernels for WS — the host serves `/<id>/ws` only when a `web_ws`
-    child contributes the route (WS is opt-in, parity with Python)."""
+    child contributes the route (WS is opt-in, parity with Python).
+
+    Seeded EXPLICITLY OPEN (`ingress_rule=allow_all`). IO legs now SEAL
+    by default (an absent rule ⇒ `deny_inbound`), so a bare `web_ws` would
+    refuse every forwarded reflect/call the harness dispatches through it.
+    This is a drivable test surface — open it consciously. A test that
+    means to exercise a SEALED or credentialed leg sets its own rule
+    explicitly on the agent it cares about (not on this serving surface)."""
     reply = seed_create(
         binary,
         workdir,
         handler_module="web_ws.tools",
         agent_id="web_ws",
         parent_id="web",
+        ingress_rule="allow_all",
     )
     if "error" in reply and "no bundle" not in str(reply.get("error", "")):
         raise RuntimeError(f"web_ws seed failed: {reply}")
@@ -209,17 +217,35 @@ def seed_web_rest(binary: Path, workdir: Path, agent_id: str = "rest") -> str:
     """Persist a `web_rest` agent as a child of `web`. Contributes
     `POST /<self>/<target>` (verb in body) + `GET /<self>/_reflect`
     routes the host mounts at boot. Returns the agent id. Works on
-    both kernels (web_rest.tools is registered in each)."""
+    both kernels (web_rest.tools is registered in each).
+
+    Seeded EXPLICITLY OPEN (`ingress_rule=allow_all`). IO legs now SEAL
+    by default (an absent rule ⇒ `deny_inbound`), so a bare `web_rest`
+    would answer every harness POST with `403 {reason:"unauthorized"}`.
+    This is a drivable diagnostic surface — open it consciously."""
     reply = seed_create(
         binary,
         workdir,
         handler_module="web_rest.tools",
         agent_id=agent_id,
         parent_id="web",
+        ingress_rule="allow_all",
     )
     if "error" in reply and "no bundle" not in str(reply.get("error", "")):
         raise RuntimeError(f"web_rest seed failed: {reply}")
     return reply.get("id", agent_id)
+
+
+# Per-runtime `handler_module` for the WS bridge agent. Python renamed
+# `kernel_bridge` → `ws_bridge`; rust/swift still ship the bundle as
+# `kernel_bridge` (cross-runtime port deferred). Keyed by ROOT id, the only
+# runtime discriminator the harness already discovers (python=`kernel_state`,
+# rust/swift=`core`). The bridge is seeded on the DIALING kernel, so the
+# handler_module must match THAT kernel's runtime, not the peer's.
+_WS_BRIDGE_HANDLER_MODULE = {
+    "kernel_state": "ws_bridge.tools",  # python
+    "core": "kernel_bridge.tools",  # rust / swift
+}
 
 
 def seed_bridge_ws(
@@ -231,8 +257,8 @@ def seed_bridge_ws(
     peer_port: int,
     host: str = "127.0.0.1",
 ) -> dict[str, Any]:
-    """Persist a `kernel_bridge` agent for the WS transport
-    (asymmetric — no peer bridge needed).
+    """Persist a WS-transport bridge agent (asymmetric — no peer bridge
+    needed) on the DIALING kernel.
 
     - `agent_id`   local id for this bridge agent
     - `peer_id`    the WS path segment on the peer kernel —
@@ -251,11 +277,18 @@ def seed_bridge_ws(
     Note: `local_port` is the historical field name for "the port to
     dial" (shared with the ssh+ws tunnel path); here it carries
     `peer_port`.
+
+    The `handler_module` is resolved per the dialing runtime
+    (`_WS_BRIDGE_HANDLER_MODULE`): `ws_bridge.tools` on Python,
+    `kernel_bridge.tools` on rust/swift (their port is deferred).
     """
+    handler_module = _WS_BRIDGE_HANDLER_MODULE.get(
+        root_id(binary, workdir), "kernel_bridge.tools"
+    )
     reply = seed_create(
         binary,
         workdir,
-        handler_module="kernel_bridge.tools",
+        handler_module=handler_module,
         agent_id=agent_id,
         transport="ws",
         peer_id=peer_id,

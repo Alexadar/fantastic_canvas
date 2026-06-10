@@ -1,7 +1,7 @@
 # Serving a view package — the weak-binding recipe
 
 **The host must not know this package exists.** Client↔server is a *weak
-binding* (same rule as `kernel_bridge`: addressed by URL + path only, no shared
+binding* (same rule as `ws_bridge`: addressed by URL + path only, no shared
 types). The Python `web` bundle is a generic static host; it serves whatever
 `file` agents an operator (or an LLM following this recipe) wires
 up. Nothing in `python/` references `ts/`. That decoupling is the point — and it
@@ -42,10 +42,14 @@ integrity-check instructions.
 # 0. build the scattered ESM modules (one pinned dep for this path: typescript)
 cd ts && npm install && npm run build        # → ts/dist/*.js  (ES modules)
 
-# 1. a GENERIC file agent rooted at the build output.
-#    /ts_dist/file/<path> now serves every dist module; relative ESM imports
-#    (./kernel/kernel.js, ./transport/bridge.js, …) resolve under it.
-fantastic fs_loader create_agent handler_module=file.tools id=ts_dist root=/ABS/PATH/TO/ts/dist
+# 1. a GENERIC file_bridge agent rooted at the build output. The bridge is
+#    SEALED by default (open with ingress_rule=allow_all) and its root is
+#    CLAMPED to the running dir — copy the dist INTO the kernel's workdir
+#    and root it relatively. /ts_dist/file/<path> then serves every dist
+#    module; relative ESM imports (./kernel/kernel.js, ./transport/bridge.js,
+#    …) resolve under it.
+cp -R /PATH/TO/ts/dist ./ts_dist_src
+fantastic kernel_state create_agent handler_module=file_bridge.tools id=ts_dist root=ts_dist_src ingress_rule=allow_all
 ```
 
 The build emits **no** mount page — only the ESM modules and vendored bytes
@@ -60,7 +64,7 @@ or copy from. A minimal no-canvas mount page is just:
 ```
 
 Serve that page over `/ts_dist/file/<your-page>.html`. It loads `hello.js`,
-which `new WsBridge(...)`s to `/fs_loader/ws`, reflects the kernel, and renders
+which `new WsBridge(...)`s to `/kernel_state/ws`, reflects the kernel, and renders
 the live tree. The host never learned what `hello.js` is; it's just bytes served
 by the `file` agent.
 
@@ -69,7 +73,7 @@ by the `file` agent.
 `main.js` is the canvas bootstrap; `hello.js` is the no-canvas starter — both
 emitted by the same build and served by the same `file` agent (the build emits
 the modules only; you supply the mount page). The canvas boots against the
-host's **`web_loader` alias** (a `web/fs_loader` the operator created — see the
+host's **`web_loader` alias** (a `web/kernel_state` the operator created — see the
 root readme ["The frontend is decoupled"](../README.md#the-frontend-is-decoupled)):
 its JS-side `proxy_loader` hydrates the canvas's OWN member tree from the host's
 `.fantastic/web/` store and persists changes back through that alias — **no
@@ -96,7 +100,7 @@ fixture (`ts/dist/_test_canvas.html`); a minimal one is:
 ```
 
 Prereq: the operator created the `web_loader` store (`fantastic <web>
-create_agent handler_module=fs_loader.tools root=.fantastic/web watch=false
+create_agent handler_module=kernel_state.tools root=.fantastic/web watch=false
 alias=web_loader`). Heavy vendor loads lazily — `three` only when a `gl_view`
 mounts, xterm only when a terminal opens — so the canvas shell stays light.
 

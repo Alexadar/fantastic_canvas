@@ -24,7 +24,7 @@ rm -rf .fantastic
 ### Test 1: reflect lists the job verbs + 0 running
 
 ```bash
-PR=$(uv run --active fantastic call fs_loader create_agent handler_module=python_runtime.tools | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+PR=$(uv run --active fantastic call kernel_state create_agent handler_module=python_runtime.tools | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 echo "PR=$PR"
 uv run --active fantastic call $PR reflect | python -c "
 import json, sys

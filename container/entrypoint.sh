@@ -37,9 +37,9 @@ esac
 PY="${FANTASTIC_PY:-/opt/fantastic/venv/bin/fantastic}"
 RUST="${FANTASTIC_RUST:-/opt/fantastic/bin/fantastic-rust}"
 
-# Runtime → (binary, root id). python root = fs_loader; rust root = core.
+# Runtime → (binary, root id). python root = kernel_state; rust root = core.
 case "$RUNTIME" in
-  python) BIN="$PY";   ROOT="fs_loader" ;;
+  python) BIN="$PY";   ROOT="kernel_state" ;;
   rust)   BIN="$RUST"; ROOT="core" ;;
   *) echo "entrypoint: unknown FANTASTIC_RUNTIME='$RUNTIME' (use python|rust)" >&2
      exit 2 ;;
