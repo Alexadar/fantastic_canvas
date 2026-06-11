@@ -6,7 +6,7 @@ import type { Payload } from "./kernel/json.ts";
 // Starter entry — NO canvas. Proves the frontend kernel + bridge boot in the
 // browser and federate to the live host: dial /kernel_state/ws, reflect the kernel,
 // render the live agent tree. Served via the web/http alias method (an
-// html_agent renders the mount page; a file agent serves this dist/) — no new
+// html_agent renders the mount page; a file_bridge agent serves this dist/) — no new
 // host routes. The canvas view-agent layers on once this shape is approved.
 
 const CSS = `

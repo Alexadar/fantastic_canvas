@@ -240,7 +240,7 @@ echo "$out" | grep -iqF "content-type: text/plain" && echo "  text mime: OK; PAS
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$PORT/$FA/file/nope.txt")
 [ "$code" = "404" ] && echo "  missing → 404: OK" || echo "  FAIL: code=$code"
 
-# escape attempt → 404 (file agent's path-safety bubbles up)
+# escape attempt → 404 (file_bridge agent's path-safety bubbles up)
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$PORT/$FA/file/../../etc/passwd")
 [ "$code" = "404" ] && echo "  traversal → 404: OK" || echo "  FAIL: code=$code"
 rm -rf wfp

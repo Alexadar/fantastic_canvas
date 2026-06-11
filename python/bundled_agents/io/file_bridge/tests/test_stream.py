@@ -1,8 +1,6 @@
-"""file_bridge — the SOURCE/SINK stream protocol (stateless cursor)."""
+"""file_bridge — the SOURCE/SINK stream protocol (stateless cursor, RAW bytes)."""
 
 from __future__ import annotations
-
-import base64
 
 
 async def _open(kernel, **meta):
@@ -24,7 +22,7 @@ async def test_write_stream_then_read_stream_round_trips(
     monkeypatch.chdir(tmp_path)
     fid = await _open(seeded_kernel, root="sd")
     blob = bytes(range(256)) * 40  # 10240 bytes, binary
-    # push in 3 chunks (truncate on first, append after)
+    # push in 3 chunks (truncate on first, append after) — RAW bytes, no base64
     off = 0
     for i, start in enumerate(range(0, len(blob), 4096)):
         chunk = blob[start : start + 4096]
@@ -33,14 +31,14 @@ async def test_write_stream_then_read_stream_round_trips(
             {
                 "type": "write_stream",
                 "path": "x.bin",
-                "b64": base64.b64encode(chunk).decode("ascii"),
+                "bytes": chunk,
                 "truncate": i == 0,
             },
         )
         assert r["written"] == len(chunk)
         off = r["size"]
     assert off == len(blob)
-    # pull it back with the cursor until eof
+    # pull it back with the cursor until eof — chunk is RAW bytes
     got = b""
     offset = 0
     while True:
@@ -48,7 +46,8 @@ async def test_write_stream_then_read_stream_round_trips(
             fid,
             {"type": "read_stream", "path": "x.bin", "offset": offset, "length": 3000},
         )
-        got += base64.b64decode(r["b64"])
+        assert isinstance(r["bytes"], (bytes, bytearray))
+        got += r["bytes"]
         offset = r["next_offset"]
         if r["eof"]:
             break
@@ -80,7 +79,7 @@ async def test_pump_copies_between_bridges(seeded_kernel, tmp_path, monkeypatch)
         {
             "type": "write_stream",
             "path": "a.bin",
-            "b64": base64.b64encode(blob).decode("ascii"),
+            "bytes": blob,
             "truncate": True,
         },
     )
@@ -100,7 +99,7 @@ async def test_pump_copies_between_bridges(seeded_kernel, tmp_path, monkeypatch)
         c = await seeded_kernel.send(
             dst, {"type": "read_stream", "path": "b.bin", "offset": off}
         )
-        got += base64.b64decode(c["b64"])
+        got += c["bytes"]
         off = c["next_offset"]
         if c["eof"]:
             break

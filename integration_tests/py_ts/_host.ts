@@ -400,7 +400,7 @@ export async function bootHost(port = 8911, opts: BootOptions = {}): Promise<Hos
       "kernel_state",
       "create_agent",
       `handler_module=${bundle}`,
-      "file_agent_id=llm_files",
+      "file_bridge_id=llm_files",
     ];
     if (opts.llm.model) args.push(`model=${opts.llm.model}`);
     if (opts.llm.endpoint) args.push(`endpoint=${opts.llm.endpoint}`);
@@ -424,7 +424,7 @@ export async function bootHost(port = 8911, opts: BootOptions = {}): Promise<Hos
       "kernel_state",
       "create_agent",
       "handler_module=scheduler.tools",
-      "file_agent_id=sched_files",
+      "file_bridge_id=sched_files",
     ]);
     schedulerId = extractId(schedOut, "scheduler");
   }

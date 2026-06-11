@@ -3,6 +3,7 @@ plus the live subscribe→flush→rmtree wiring of the booted root loader."""
 
 import asyncio
 import json
+from pathlib import Path
 
 from _testkit import boot_root
 from kernel_state.tools import (
@@ -15,9 +16,13 @@ from kernel_state.tools import (
 from kernel import Kernel
 
 
-def _stage(tmp_path):
-    """Stage a nested .fantastic tree on disk and return its root dir."""
-    root = tmp_path / ".fantastic"
+def _stage(tmp_path, monkeypatch):
+    """chdir into tmp_path and stage a nested .fantastic tree under cwd (the disk
+    surface clamps to cwd, so the staged root must be cwd-relative). Returns the
+    cwd-relative root dir. (Staging writes directly — that's test setup; the code
+    under test, read_tree, goes through `fs`.)"""
+    monkeypatch.chdir(tmp_path)
+    root = Path(".fantastic")
     (root / "agents" / "web" / "agents" / "web_ws").mkdir(parents=True)
     (root / "agent.json").write_text(
         json.dumps({"id": "kernel_state", "handler_module": "kernel_state.tools"})
@@ -40,8 +45,8 @@ def _stage(tmp_path):
     return root
 
 
-def test_read_tree_flat_with_parent_ids(tmp_path):
-    root = _stage(tmp_path)
+def test_read_tree_flat_with_parent_ids(tmp_path, monkeypatch):
+    root = _stage(tmp_path, monkeypatch)
     records = read_tree(root)
     by_id = {r["id"]: r for r in records}
     assert set(by_id) == {"kernel_state", "web", "web_ws"}
@@ -51,8 +56,8 @@ def test_read_tree_flat_with_parent_ids(tmp_path):
     assert by_id["web"]["port"] == 8888
 
 
-def test_read_tree_feeds_kernel_load(tmp_path):
-    root = _stage(tmp_path)
+def test_read_tree_feeds_kernel_load(tmp_path, monkeypatch):
+    root = _stage(tmp_path, monkeypatch)
     k = Kernel()
     k.load(read_tree(root), root_path=root)
     assert set(k.agents) == {"kernel_state", "web", "web_ws"}
@@ -64,8 +69,9 @@ def test_read_tree_feeds_kernel_load(tmp_path):
     )
 
 
-def test_write_record_merge_not_overwrite(tmp_path):
-    d = tmp_path / "a"
+def test_write_record_merge_not_overwrite(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    d = Path("a")
     # a sidecar field a bundle wrote, plus a kernel field
     write_record(d, {"id": "a", "handler_module": "x.tools", "custom_sidecar": 1})
     # the kernel re-persists only its keys; the sidecar field must survive
@@ -76,8 +82,9 @@ def test_write_record_merge_not_overwrite(tmp_path):
     assert on_disk["id"] == "a"
 
 
-def test_rmtree_removes_dir(tmp_path):
-    d = tmp_path / "gone"
+def test_rmtree_removes_dir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    d = Path("gone")
     (d / "agents" / "child").mkdir(parents=True)
     (d / "agent.json").write_text("{}")
     rmtree(d)

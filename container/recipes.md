@@ -105,7 +105,7 @@ agents as tools** and routes its own output.
 
 ```text
 HOST:      ai backend (anthropic_backend | ollama_backend | nvidia_nim_backend)
-             + file agent (chat history sidecar; file_agent_id=…)
+             + file_bridge (chat history sidecar; file_bridge_id=…)
 FRONTEND:  ai_view (chat panel)  ── by id ──▶ the backend
 ```
 

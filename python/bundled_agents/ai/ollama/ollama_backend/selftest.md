@@ -8,7 +8,7 @@
 > out-of-scope: HTTP routes (covered by webapp selftest), browser
 
 Reflect-driven LLM agent. Tests prompt assembly, native tool-calls,
-file_agent persistence.
+file_bridge persistence.
 
 **Why a running serve is required:** ollama_backend caches the
 `OllamaProvider` HTTP client and in-flight `_run` tasks in
@@ -65,20 +65,20 @@ kill -9 $SPID 2>/dev/null; rm -rf .fantastic /tmp/s.log
 
 ## Tests
 
-### Test 1: send without file_agent_id → failfast
+### Test 1: send without file_bridge_id → failfast
 
 ```bash
 OB=$(call kernel_state '{"type":"create_agent","handler_module":"ollama_backend.tools"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 call $OB '{"type":"send","text":"hi"}'
 ```
-Expected: `{"error":"ollama_backend: file_agent_id required"}`.
+Expected: `{"error":"ollama_backend: file_bridge_id required"}`.
 
-### Test 2: configure file_agent_id, reflect shows it
+### Test 2: configure file_bridge_id, reflect shows it
 
 ```bash
 FA=$(call kernel_state '{"type":"create_agent","handler_module":"file_bridge.tools","ingress_rule":"allow_all"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-call kernel_state "{\"type\":\"update_agent\",\"id\":\"$OB\",\"file_agent_id\":\"$FA\"}"
-call $OB '{"type":"reflect"}' | python -m json.tool | grep -F "\"file_agent_id\": \"$FA\""
+call kernel_state "{\"type\":\"update_agent\",\"id\":\"$OB\",\"file_bridge_id\":\"$FA\"}"
+call $OB '{"type":"reflect"}' | python -m json.tool | grep -F "\"file_bridge_id\": \"$FA\""
 ```
 Expected: matches.
 
@@ -138,7 +138,7 @@ Regression signal: PASS missing → `_run` reverted to lossy persistence
 call $OB '{"type":"send","text":"my favorite color is teal, remember it"}' >/dev/null
 call $OB '{"type":"send","text":"what color did I just say?"}' | python -c "import json,sys; print(json.load(sys.stdin).get('final','').lower())"
 ```
-Expected: response mentions "teal" — proves chat_cli.json round-trip via file agent.
+Expected: response mentions "teal" — proves chat_cli.json round-trip via file_bridge agent.
 
 ### Test 6: history verb returns messages
 
@@ -306,8 +306,8 @@ Expected: `PASS`. The terminal `status` carries `detail.reason='interrupted'`.
 
 | # | Test | Pass |
 |---|------|------|
-| 1 | send fails without file_agent_id | |
-| 2 | reflect shows file_agent_id | |
+| 1 | send fails without file_bridge_id | |
+| 2 | reflect shows file_bridge_id | |
 | 3 | send streams + persists chat_<client_id>.json | |
 | 4 | tool-call round-trip + lossless tool history on disk | |
 | 5 | history persists across calls | |

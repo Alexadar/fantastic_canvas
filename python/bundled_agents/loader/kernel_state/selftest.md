@@ -204,7 +204,7 @@ Expected: `default-on-delete: PASS` and `record removed: OK`.
 
 ```bash
 rm -rf .fantastic
-# Spawn a file agent, then create a terminal_backend child under it.
+# Spawn a file_bridge agent, then create a terminal_backend child under it.
 PARENT=$(fantastic kernel_state create_agent handler_module=file_bridge.tools | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 CHILD=$(fantastic $PARENT create_agent handler_module=terminal_backend.tools | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 # Verify the child exists on disk under parent's agents/ dir.
@@ -220,7 +220,7 @@ rm -rf .fantastic
 ```
 Expected: `child dir present: OK`, `cascade-delete: PASS`, `parent
 dir removed: OK`. The cascade ran terminal_backend's `on_delete`
-(real run would kill the PTY) before removing the file agent.
+(real run would kill the PTY) before removing the file_bridge agent.
 
 ### Test 10: unknown verb / unknown agent rejected cleanly (substrate safety net)
 

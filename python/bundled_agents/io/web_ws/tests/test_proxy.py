@@ -7,6 +7,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from io_bridge import decode_frame, encode_frame
 from web.app import make_app
 from web_ws.tools import _make_endpoint
 
@@ -98,6 +99,98 @@ def test_ws_watch_routes_events(client, seeded_kernel):
         )
         msg = _read_until_reply(ws, "1")
         assert msg["data"] is not None
+
+
+def _send_frame(ws, frame):
+    """Encode a frame via the shared codec and send it on the right WS frame type — a
+    frame carrying raw `bytes` (a write_stream chunk) goes as a BINARY frame, a plain
+    frame as TEXT. Mirrors what a real client (browser / WSTransport) does."""
+    wire, is_binary = encode_frame(frame)
+    if is_binary:
+        ws.send_bytes(wire)
+    else:
+        ws.send_text(wire.decode("utf-8"))
+
+
+def _recv_until_reply(ws, call_id, max_frames=12):
+    """Drain frames (text OR binary) decoding each via the shared codec until the reply
+    for `call_id` lands. A read_stream reply carries raw `bytes` ⇒ it arrives as a
+    BINARY frame; auto-watch `event` frames may precede it."""
+    for _ in range(max_frames):
+        msg = ws.receive()
+        raw = msg.get("text")
+        if raw is None:
+            raw = msg.get("bytes")
+        f = decode_frame(raw)
+        if f.get("type") == "reply" and f.get("id") == call_id:
+            return f
+    raise AssertionError(f"no reply for id={call_id} within {max_frames} frames")
+
+
+def test_ws_read_stream_cursor_round_trips(
+    client, seeded_kernel, tmp_path, monkeypatch
+):
+    """The stream CURSOR + RAW BYTES survive a REAL WS round-trip. The pointer is a
+    plain payload field (offset out; next_offset/eof/size back); the chunk is raw
+    `bytes` carried as a BINARY WS frame `[len|header|body]` — never base64. Push a
+    multi-chunk binary file with `write_stream` (binary frame), pull it back over WS
+    `call` frames threading `next_offset` (binary replies), reassemble byte-for-byte."""
+    monkeypatch.chdir(tmp_path)
+    # An OPEN file_bridge SOURCE (sealed-by-default ⇒ open it so the verbs dispatch).
+    seeded_kernel.create(
+        "file_bridge.tools", id="fb_ws", root="sd", ingress_rule="allow_all"
+    )
+    blob = bytes(range(256)) * 40  # 10240 bytes, binary
+
+    with client.websocket_connect("/kernel_state/ws") as ws:
+        # SINK over WS: push the whole blob as a BINARY frame (payload carries raw bytes).
+        _send_frame(
+            ws,
+            {
+                "type": "call",
+                "id": "w",
+                "target": "fb_ws",
+                "payload": {
+                    "type": "write_stream",
+                    "path": "x.bin",
+                    "bytes": blob,
+                    "truncate": True,
+                },
+            },
+        )
+        assert _recv_until_reply(ws, "w")["data"]["size"] == len(blob)
+
+        # SOURCE over WS: pull it back, threading the cursor frame-to-frame. The read
+        # request has no bytes (text frame); each reply carries raw bytes (binary frame).
+        got, offset, frames = b"", 0, 0
+        while True:
+            cid = f"r{frames}"
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "call",
+                        "id": cid,
+                        "target": "fb_ws",
+                        "payload": {
+                            "type": "read_stream",
+                            "path": "x.bin",
+                            "offset": offset,
+                            "length": 3000,
+                        },
+                    }
+                )
+            )
+            data = _recv_until_reply(ws, cid)["data"]
+            assert isinstance(data["bytes"], (bytes, bytearray))
+            got += data["bytes"]
+            offset = data["next_offset"]
+            frames += 1
+            if data["eof"]:
+                break
+
+    assert got == blob
+    assert frames > 1, "multi-chunk: the cursor must have advanced across WS frames"
+    assert data["size"] == len(blob)
 
 
 def test_ws_call_state_event_carries_host_as_sender(client, seeded_kernel):

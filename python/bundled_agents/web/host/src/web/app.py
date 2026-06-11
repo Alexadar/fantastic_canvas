@@ -3,7 +3,7 @@
 Routes baked into make_app:
   GET  /                          -> agent index (HTML)
   GET  /_assets/favicon.png       -> bundled favicon (+ /favicon.png fallback)
-  GET  /{agent_id}/file/{path}    -> proxy to agent's `read_stream` (streamed) / `read`
+  GET  /{agent_id}/file/{path}    -> proxy to agent's `read_stream` (SOURCE; streamed)
 
 The web host does exactly two things: serve STATIC files through the `file`
 alias above, and carry `send()` calls + events over the WS bus (the `web_ws`
@@ -19,9 +19,7 @@ mounts them onto this app at runtime.
 
 from __future__ import annotations
 
-import base64
 import mimetypes
-import os
 from importlib import resources
 
 from fastapi import FastAPI
@@ -64,16 +62,9 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def root():
-        # Optional custom landing: if FANTASTIC_WEB_INDEX points at a readable
-        # HTML file, serve it at `/` (the container "head" mode uses this to make
-        # `/` the all-readmes descriptive page). Falls back to the agent index.
-        custom = os.environ.get("FANTASTIC_WEB_INDEX")
-        if custom:
-            try:
-                with open(custom, encoding="utf-8") as f:
-                    return HTMLResponse(f.read())
-            except OSError:
-                pass
+        # `/` is the agent-tree index. A custom landing page is NOT a web concern —
+        # serve it like any other file, through the gated `/file/` route via a
+        # file_bridge the operator wires (web does no direct disk IO of its own).
         return HTMLResponse(await _index_page(kernel))
 
     _favicon_bytes = (resources.files("web") / "favicon.png").read_bytes()
@@ -88,18 +79,18 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
 
     @app.get("/{agent_id}/file/{path:path}")
     async def agent_file(agent_id: str, path: str):
-        """Static-file proxy: any agent answering `read{path}` (or the
-        streaming `read_stream`) becomes an HTTP file server. file_bridge is
-        the canonical implementer. URL convention:
-        `<img src="/<file_agent>/file/imgs/foo.png">` works in any html_agent
-        without registration. The serving ALLOWANCE is the agent's own gate — a
-        sealed file_bridge's `read`/`read_stream` denies, so the URL 404s; and
-        the path stays clamped to the agent's root.
+        """Static-file proxy: any agent answering the SOURCE stream verb
+        `read_stream{path,offset,length}` becomes an HTTP file server. file_bridge
+        is the canonical implementer. URL convention:
+        `<img src="/<file_bridge>/file/imgs/foo.png">` works without registration.
+        The serving ALLOWANCE is the agent's own gate — a sealed file_bridge's
+        `read_stream` denies, so the URL 404s; the path stays clamped to its root.
 
-        Prefers the SOURCE stream verb (`read_stream`) so a LARGE file pipes out
-        chunk-by-chunk instead of loading whole into memory; falls back to the
-        whole-file `read` for agents that only answer it (and its image/content
-        special-casing)."""
+        ONE contract (no fallback): the file is piped chunk-by-chunk over
+        `read_stream` so a LARGE file never loads whole into memory. An agent that
+        wants to be HTTP-file-served implements `read_stream`; anything that doesn't
+        answer it with a chunk (denied gate, path escape, missing file, non-server)
+        is a 404."""
         if not kernel.get(agent_id):
             return Response(status_code=404)
         # Streaming path: read_stream chunk 0 doubles as the gate + size probe.
@@ -107,14 +98,16 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
             agent_id,
             {"type": "read_stream", "path": path, "offset": 0, "length": 262144},
         )
-        if isinstance(first, dict) and "b64" in first:
+        if isinstance(first, dict) and isinstance(
+            first.get("bytes"), (bytes, bytearray)
+        ):
             size = int(first.get("size", 0))
             mime, _ = mimetypes.guess_type(path)
 
             async def _stream():
                 chunk = first
                 while True:
-                    yield base64.b64decode(chunk["b64"])
+                    yield bytes(chunk["bytes"])
                     if chunk.get("eof"):
                         break
                     chunk = await kernel.send(
@@ -126,7 +119,9 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
                             "length": 262144,
                         },
                     )
-                    if not isinstance(chunk, dict) or "b64" not in chunk:
+                    if not isinstance(chunk, dict) or not isinstance(
+                        chunk.get("bytes"), (bytes, bytearray)
+                    ):
                         break
 
             return StreamingResponse(
@@ -134,26 +129,8 @@ def make_app(web_agent_id: str, kernel) -> FastAPI:
                 media_type=mime or "application/octet-stream",
                 headers={"content-length": str(size)} if size else None,
             )
-        # Fallback: whole-file `read` (images/content, or agents w/o read_stream).
-        r = await kernel.send(agent_id, {"type": "read", "path": path})
-        if not isinstance(r, dict) or r.get("error"):
-            return Response(status_code=404)
-        if "image_base64" in r:
-            return Response(
-                base64.b64decode(r["image_base64"]),
-                media_type=r.get("mime", "application/octet-stream"),
-            )
-        if isinstance(r.get("bytes"), (bytes, bytearray)):
-            return Response(
-                bytes(r["bytes"]),
-                media_type=r.get("mime", "application/octet-stream"),
-            )
-        if "content" in r:
-            mime, _ = mimetypes.guess_type(path)
-            return Response(
-                r["content"].encode("utf-8"),
-                media_type=mime or "text/plain; charset=utf-8",
-            )
+        # Not a SOURCE (denied gate, path escape, missing file, non-file-server):
+        # 404. No whole-file `read` fallback — read_stream is the one contract.
         return Response(status_code=404)
 
     return app

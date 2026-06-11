@@ -261,7 +261,7 @@ let buf = "";
 const out = () => document.getElementById("out");
 (async () => {
   await fantastic.send("kernel_state", { type: "create_agent",
-    handler_module: "anthropic_backend.tools", file_agent_id: "llm_files", id: "aileaf" });
+    handler_module: "anthropic_backend.tools", file_bridge_id: "llm_files", id: "aileaf" });
   fantastic.watch(${J(ai)}, (ev) => {
     if (!ev || ev.client_id !== "main") return;
     if (ev.type === "token") buf += (ev.text || "");

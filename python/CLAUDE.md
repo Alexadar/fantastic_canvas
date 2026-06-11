@@ -232,12 +232,12 @@ the frontend's `proxy_loader`. See "Two kernels" in the root readme.
 | `web_ws` | WebSocket verb-invocation surface — the **ws INBOUND derivation of `io_bridge`**. Child of a `web` agent. Mounts `/<host_id>/ws` on its parent web's FastAPI app. Gates every inbound frame at the shared `gate_inbound` choke point with the leg's own `ingress_rule` (credential on the frame envelope `auth_token`); `egress_rule`/`auth` per leg as on a bridge. **SEALED BY DEFAULT** — a freshly-created `web_ws` with no rule denies (a browser can't connect until opened); open it consciously (see "Run"). Opt-in: `create_agent handler_module=web_ws.tools parent_id=<web> ingress_rule=allow_all`. |
 | `web_rest` | REST diagnostic surface — the **http INBOUND derivation of `io_bridge`**. Child of a `web` agent. Mounts `POST /<self_id>/<target_id>` body=payload → kernel.send → JSON reply (+ `GET /_reflect` shortcuts). Gates each request via the leg's `ingress_rule` at `gate_inbound`; the credential rides the **`X-Fantastic-Auth` header** (http carrier, not the envelope). **SEALED BY DEFAULT** — absent rule ⇒ deny (`403 {reason:"unauthorized"}`); open with `ingress_rule=allow_all`/`password`. Multiple instances coexist with different ids. Opt-in. |
 | `io/file_bridge` | filesystem-as-agent (`read`, `write`, `list`, `delete`, `rename`, `mkdir`) — the **fs edge of the io family**: crossing kernel↔disk is gated like any io_bridge leg (same `ingress_rule`/`egress_rule`/`auth` fields + registries), **SEALED BY DEFAULT** (absent rule ⇒ every verb except `reflect` denies `{reason:"unauthorized"}`; open with `ingress_rule=allow_all`), and bound by the **running-dir law**: root + every path are clamped inside the dir the kernel runs in (`../`, `~`, absolute escapes, outward symlinks refuse) |
-| `scheduler` | recurring tasks; persistence routed through `file_agent_id` |
+| `scheduler` | recurring tasks; persistence routed through `file_bridge_id` |
 | `python_runtime` | async Python JOB spawner — `start` runs `python -u -c <code>` in the background (many in parallel), returns a `job_id` at once + streams `progress`/`job_done` events; `status`/`stop`/`interrupt`/`clear` by job_id over a RAM job table (`on_delete` kills the owner's jobs). No blocking run-and-wait. |
-| `yaml_state` | durable YAML key-value memory agent; mount anywhere (`mode=mem|data`); write-through sidecar (`state.yaml`) it owns directly |
+| `yaml_state` | durable YAML key-value memory agent; mount anywhere (`mode=mem|data`); persists `state.yaml` THROUGH a gated `file_bridge` agent referenced by `file_bridge_id` (deny-all by default; `set`/`delete`/`replace` failfast until wired+opened) — owns no disk surface of its own, like `scheduler`/`ai_core` |
 | `terminal_backend` | PTY shell backend (at `bundled_agents/terminal/`). VSCode-ported terminal robustness: streaming flow control (reader pauses past 100K unacked chars, resumes on the `ack` verb), incremental UTF-8 decode (no split-char `<?>` litter across `os.read` chunks), serialized full-buffer writes (bracketed-paste-safe), image-paste bridge (browser-clipboard image → `paste_image` → file saved + path typed into the PTY for a CLI like `claude`). The xterm view (`terminal_view`) lives in the TS frontend kernel (`ts/`). |
 | `ai/ollama/ollama_backend` | local LLM agent (ollama); per-client chat threads, FIFO lock, menu cache |
-| `ai/nvidia/nvidia_nim_backend` | NVIDIA NIM LLM agent (OpenAI-compatible); api_key sidecar via `file_agent_id`; rate-limit retry; same surface as ollama_backend |
+| `ai/nvidia/nvidia_nim_backend` | NVIDIA NIM LLM agent (OpenAI-compatible); api_key sidecar via `file_bridge_id`; rate-limit retry; same surface as ollama_backend |
 | `ai/anthropic/anthropic_backend` (`anthropic_backend.tools`) | Claude LLM agent — Anthropic Messages API (default model `claude-opus-4-8`); key from `ANTHROPIC_KEY`/`ANTHROPIC_API_KEY` (env / `.env`); per-client chat threads, FIFO lock, native tool-calls, menu cache; same surface as ollama_backend |
 | `io/io_bridge` | the **IO base — pure shared library, NOT a registered bundle/agent** (no entry point, never instantiated; the merge of the former `io_core` + `bridge_core` libs). Holds the channel model (`direction · modality · transport · rule · extractor`), the `ingress_rules`/`egress_rules` registries, the transport-agnostic bridge engine (read loop, the 6 verbs, lifecycle, `make_verbs` factory), the unified `gate_inbound`/`stamp_egress` choke point, and the in-process `MemoryTransport`. Every derivation (`ws_bridge`/`cloud_bridge`/`web_ws`/`web_rest`/`file_bridge`) **imports** from it and reuses `rule.authorize`. IO legs are **SEALED BY DEFAULT** (`resolve_ingress({})` ⇒ `DenyInbound`); the open interior is unaffected. A denied client is taught by the denial's `hint` (the inline recipe — `update_agent <id> ingress_rule=allow_all`) and `reflect readme=true` on the **sealed agent itself** (each derivation ships its own short readme). |
 | `io/ws_bridge` | cross-kernel comms — a thin **WS-only, asymmetric** transport **derivation of `io_bridge`** (was `kernel_bridge`). A bridge agent opens a WS to the remote's `web_ws` surface and ships raw `{type:"call", target, payload}` frames; the remote dispatches `kernel.send` exactly like a browser frame and replies over the same socket — **no peer bridge needed**. Transports: memory (test backbone) / ws / ssh+ws. Streaming via `watch_remote` (`{type:"watch", src}` out, `{type:"event"}` back, re-emitted on the bridge's own inbox). All transports are **weak binding** — addressed by URL + path only; no shared Python types with the remote kernel. Weak proxy: local→local stays direct. **Authorization**: two symmetric typed per-leg rules (enforced on the receiver) — `ingress_rule` (inbound FILTER, gated at the shared `gate_inbound` choke point) + `egress_rule` (outbound DECORATOR, stamps a credential on the frame envelope); `auth` is a shorthand for both. **SEALED BY DEFAULT** — absent rule ⇒ `deny_inbound` (reply `{reason:"unauthorized"}`); open consciously with `ingress_rule=allow_all`/`password` (kernel-GROUP shared secret from an env var). Resolved by name from the `io_bridge.ingress_rules` / `egress_rules` registries; shared with cloud_bridge. |
@@ -273,6 +273,13 @@ the next process start.
   readme.md). Verb signatures live in
   docstrings; `reflect` derives them. Discovery is one round-trip;
   transport/wire docs live in the root readme (`reflect readme=true`).
+  Each distilled **tree node** also carries the wiring/posture meta it
+  has — `ingress_rule`/`egress_rule`/`auth` (a leg's lock: `allow_all` =
+  open, `password` = gated, `deny_inbound` or **absent on an io leg** =
+  sealed-by-default), `root` (a file_bridge's served dir), `file_bridge_id`
+  (what a consumer persists THROUGH) — so the whole IO landscape (which
+  legs are open vs sealed, what's wired to what) is readable from ONE root
+  reflect, no per-agent round-trips.
   The **ROOT** reflect additionally carries `runtime` — a stable lowercase
   enum (`python` | `rust` | `swift` | `ts`) naming the kernel's runtime, so
   a client gates runtime-specific UI from one round-trip. Same field name +
@@ -289,6 +296,12 @@ the next process start.
   persisted to the portable `.fantastic` workdir, which can move host↔container)
   and root-only like `runtime`. The host runtimes read the envs; the browser
   `ts` kernel has no OS env, so it is always `env:"host"`, `version:null`.
+  The root reflect ALSO carries `persistence: {provider:<id>|null}` — WHICH
+  file_bridge the loader auto-persists records THROUGH (the discovered store),
+  or `null` = nothing wired (state in RAM). Contributed by the loader via a
+  duck-typed `reflect_root_extra(agent)` hook (no substrate↔bundle coupling),
+  so a client sees in one reflect whether persistence is wired — and, with the
+  provider's posture inline in the tree, whether the wired leg is actually open.
 - **`render_html`** — duck-typed presentation. Any agent returning
   `{html:str}` from `render_html` can be rendered by a view. This is now
   a FRONTEND pattern (a `*.ts` content agent holds the body in its
@@ -302,8 +315,8 @@ the next process start.
   subscribes to it; any agent that emits `{type:"reload_html"}` on its
   own inbox triggers a reload of the connected view. `set_html` and the
   canvas frame ⟳ button both go through it.
-- **`file_agent_id`** — bundles that need persistence (ollama_backend,
-  scheduler) carry an `file_agent_id` on
+- **`file_bridge_id`** — bundles that need persistence (ollama_backend,
+  scheduler) carry an `file_bridge_id` on
   their record. Failfast if unset (no implicit fallback).
 - **`delete_lock: true`** on a record refuses delete. The root's
   `delete_agent` returns `{error, locked:true, id}` so LLM callers
@@ -375,7 +388,7 @@ regression — it belongs in the root readme."
 - **Unit** — `pytest -n auto` (`pytest-xdist`). 420+ tests, parallel,
   in-process. Each bundle's tests live in `bundled_agents/<bundle>/tests/`;
   kernel-level tests live in `tests/`. `conftest.py` at root exposes
-  `kernel`, `seeded_kernel`, `file_agent` fixtures (the root is an
+  `kernel`, `seeded_kernel`, `file_bridge` fixtures (the root is an
   `kernel_state`); `_testkit.py` adds `boot_root` / `persist` for disk tests.
 - **Selftests** — scope-tagged markdown specs. AI agents read them,
   drive the system at the user-facing surface (CLI, HTTP, WS, PTY,
@@ -433,6 +446,49 @@ review, force-push surprise, polluted history) is high.
 - Use a `file_bridge` agent (rooted INSIDE the running dir — the clamp;
   created OPEN with `ingress_rule=allow_all`) for HTTP-served content:
   `<img src="/<file_id>/file/imgs/foo.png">` works in any html view.
+
+## Disk surface — ALL IO through the gated bridge
+
+**The model (the coherent end-state): ALL IO goes through a `file_bridge` AGENT, no
+exceptions, deny-all by default, opened on demand by the operator/LLM.** Two layers, both
+unbypassable:
+1. **The clamp** — `file_bridge.fs` (`io/file_bridge/.../fs.py`) is the SINGLE module that
+   calls `open()`; the running-dir law lives there, so nothing can read/write outside its
+   root by going around it (there's no other disk code to go around to).
+2. **The gate** — the `file_bridge` AGENT wraps `fs` with the io-bridge ingress rule:
+   **SEALED / deny-all by default** (every verb except `reflect` denies). A bundle that
+   needs disk does NOT import `fs`; it `send`s `read`/`write`/`read_stream`/`write_stream`
+   to a file_bridge agent referenced by **`file_bridge_id`** on its record. The operator/LLM
+   **wires + opens** that provider on demand (`create_agent file_bridge … ingress_rule=…`,
+   then set `file_bridge_id`). So the *access control* is real for in-process bundles too —
+   not just the clamp. `yaml_state` / `scheduler` / `ai_core` / `nvidia_nim` already route
+   this way; they failfast if `file_bridge_id` is unset (no silent RAM).
+
+The ONLY code that imports `fs` directly is **the file_bridge agent itself** (it IS the
+gate) and **the cold bootstrap** — the bring-up *before* any agent/gate exists, not an
+exception to access control: substrate fixed-path reads (`kernel/_lock.py`, `_env`,
+`Agent._read_readme`; the substrate is decoupled from bundles and cannot import one) +
+`kernel_state`'s boot-read of `.fantastic` (`read_tree`, the chicken-egg root hydration).
+*In flight toward the end-state:* `local_runner`/`terminal` still import `fs`
+(`external=True`) because they reach OUTSIDE cwd (sibling projects, /tmp) — they fold into
+the agent model once a file_bridge agent can carry an explicit external root. (`web` is
+already clean: `/` is the agent index, `/file/` proxies to gated agents, own assets are
+importlib package resources — no `fs`.)
+
+`fs`'s two surfaces, picked STATICALLY per call site (never tried in sequence — that would
+be a fallback, which this kernel refuses):
+- **clamped** (default) — `fs.read_text(root, path)`: `root` clamped to cwd, `path`
+  clamped within `root`. This is the kernel's OWN state (its `.fantastic`). The running-dir
+  law guarantees the kernel can't escape its own dir.
+- **external** (`fs.read_text(root, path, external=True)`) — `root` is an operator/peer
+  base that may live ANYWHERE; `path` still clamped within it. For surfaces that operate
+  OUTSIDE cwd BY DESIGN: `local_runner` orchestrating a SIBLING project, `terminal`'s
+  clipboard-image temp scratch dir.
+
+The ONLY disk code outside `fs`: the substrate's fixed-path bootstrap (`kernel/_lock.py`,
+`_env`, `Agent._read_readme` — the substrate is decoupled from bundles, cannot import one)
+and `importlib.resources` reads of a bundle's OWN baked-in assets (readme/help/index/
+favicon — a package lookup, not an arbitrary path).
 
 ## Path conventions
 

@@ -4,7 +4,7 @@
 > requires: `uv sync`
 > out-of-scope: HTTP, WS, AI
 
-Tick-loop + schedule persistence routed through file_agent.
+Tick-loop + schedule persistence routed through file_bridge.
 
 ## Pre-flight
 
@@ -15,23 +15,23 @@ rm -rf .fantastic
 
 ## Tests
 
-### Test 1: schedule without file_agent_id → failfast
+### Test 1: schedule without file_bridge_id → failfast
 
 ```bash
 SC=$(fantastic call kernel_state create_agent handler_module=scheduler.tools | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 fantastic call $SC schedule target=cli payload='{"type":"say","text":"x"}' interval_seconds=5
 ```
-Expected: `{"error":"scheduler: file_agent_id required"}`.
+Expected: `{"error":"scheduler: file_bridge_id required"}`.
 
-### Test 2: configure with file_agent_id, then schedule persists
+### Test 2: configure with file_bridge_id, then schedule persists
 
 ```bash
 FA=$(fantastic call kernel_state create_agent handler_module=file_bridge.tools ingress_rule=allow_all | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-fantastic call kernel_state update_agent id=$SC file_agent_id=$FA
+fantastic call kernel_state update_agent id=$SC file_bridge_id=$FA
 SCH=$(fantastic call $SC schedule target=cli payload='{"type":"say","text":"hello"}' interval_seconds=60 | python -c "import json,sys;print(json.load(sys.stdin)['schedule_id'])")
-test -f .fantastic/agents/$SC/schedules.json && echo "OK persisted via file agent"
+test -f .fantastic/agents/$SC/schedules.json && echo "OK persisted via file_bridge agent"
 ```
-Expected: `OK persisted via file agent`. File contents include the schedule_id.
+Expected: `OK persisted via file_bridge agent`. File contents include the schedule_id.
 
 ### Test 3: tick_now fires synchronously
 
@@ -75,8 +75,8 @@ Expected: `"count": <N>` with N ≥ 1.
 
 | # | Test | Pass |
 |---|------|------|
-| 1 | schedule fails without file_agent_id | |
-| 2 | schedule persists via file agent | |
+| 1 | schedule fails without file_bridge_id | |
+| 2 | schedule persists via file_bridge agent | |
 | 3 | tick_now fires | |
 | 4 | history.jsonl populated | |
 | 5 | pause + resume toggle | |

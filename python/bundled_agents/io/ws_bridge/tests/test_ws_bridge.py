@@ -535,6 +535,69 @@ async def test_event_frame_re_emits_on_bridge_inbox(two_kernels):
     )
 
 
+async def test_forward_read_stream_cursor_round_trips(two_kernels):
+    """The stream CURSOR survives a forward over the bridge transport. Kernel A
+    forwards `read_stream` to an OPEN file_bridge on kernel B, threading
+    `next_offset` across forwards, and reassembles a multi-chunk binary file
+    byte-for-byte. The cursor is a payload field tunneled through the bridge's JSON
+    frames — this proves MemoryTransport framing carries the stateless pointer; the
+    WSTransport path is the same swap."""
+    ka, kb_kern = two_kernels
+    a_id, b_id = await _wire_memory_pair(ka, kb_kern)
+
+    # B hosts the SOURCE: an OPEN file_bridge holding a multi-chunk blob.
+    rec = await kb_kern.send(
+        "kernel_state",
+        {
+            "type": "create_agent",
+            "handler_module": "file_bridge.tools",
+            "root": "bfiles",
+            "ingress_rule": "allow_all",
+        },
+    )
+    fb = rec["id"]
+    blob = bytes(range(256)) * 50  # 12800 bytes, binary
+    w = await kb_kern.send(
+        fb,
+        {
+            "type": "write_stream",
+            "path": "x.bin",
+            "bytes": blob,
+            "truncate": True,
+        },
+    )
+    assert w["size"] == len(blob)
+
+    # A pulls it over the bridge, threading the cursor across forwards. The chunk is
+    # RAW bytes — over MemoryTransport it rides the frame dict natively (over a real
+    # WSTransport it rides the shared binary frame); never base64.
+    got, offset, frames = b"", 0, 0
+    while True:
+        r = await ka.send(
+            a_id,
+            {
+                "type": "forward",
+                "target": fb,
+                "payload": {
+                    "type": "read_stream",
+                    "path": "x.bin",
+                    "offset": offset,
+                    "length": 4096,
+                },
+            },
+        )
+        assert isinstance(r, dict) and isinstance(r.get("bytes"), (bytes, bytearray)), r
+        got += r["bytes"]
+        offset = r["next_offset"]
+        frames += 1
+        if r["eof"]:
+            break
+
+    assert got == blob
+    assert frames > 1, "multi-chunk: the cursor must have advanced across forwards"
+    assert r["size"] == len(blob)
+
+
 async def test_unwatch_remote_sends_unwatch_frame(two_kernels):
     """unwatch_remote sends `{type:'unwatch', src:<target>}` so the
     remote stops pushing events for that subscription."""

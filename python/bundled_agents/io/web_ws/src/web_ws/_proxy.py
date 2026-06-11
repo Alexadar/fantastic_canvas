@@ -27,18 +27,21 @@ they receive `bytes` regardless of which wire format was used.
 from __future__ import annotations
 
 import asyncio
-import copy
 
 from starlette.websockets import WebSocketState
-import json
 import logging
 import secrets
-import struct
-from typing import Any
 
 from kernel import sender_context
 
-from io_bridge import gate_inbound, resolve_ingress
+from io_bridge import (
+    decode_frame,
+    encode_frame,
+    find_bytes_path,
+    gate_inbound,
+    resolve_ingress,
+    set_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,73 +50,15 @@ def _make_client_id() -> str:
     return f"_ws_{secrets.token_hex(3)}"
 
 
-# ─── binary frame helpers ───────────────────────────────────────
-
-
-def _find_bytes_path(obj: Any, prefix: str = "") -> tuple[str, bytes] | None:
-    """Walk obj; return (dotted_path, value) of first bytes value, or None."""
-    if isinstance(obj, bytes):
-        return (prefix, obj)
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            p = f"{prefix}.{k}" if prefix else k
-            r = _find_bytes_path(v, p)
-            if r is not None:
-                return r
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            p = f"{prefix}.{i}" if prefix else str(i)
-            r = _find_bytes_path(v, p)
-            if r is not None:
-                return r
-    return None
-
-
-def _set_path(obj: Any, path: str, value: Any) -> None:
-    parts = path.split(".")
-    for p in parts[:-1]:
-        obj = obj[int(p)] if isinstance(obj, list) else obj[p]
-    last = parts[-1]
-    if isinstance(obj, list):
-        obj[int(last)] = value
-    else:
-        obj[last] = value
-
-
-def encode_outbound(envelope: dict) -> tuple[bytes, bool]:
-    """Serialize an envelope for the wire.
-
-    Returns (frame_data, is_binary). If any bytes value is found, returns
-    a binary frame `[4-byte BE length | header JSON | body bytes]`.
-    Otherwise returns UTF-8-encoded JSON text.
-    """
-    found = _find_bytes_path(envelope)
-    if found is None:
-        return json.dumps(envelope, default=str).encode("utf-8"), False
-    path, body = found
-    head_obj = copy.deepcopy(envelope)
-    _set_path(head_obj, path, None)
-    head_obj["_binary_path"] = path
-    head_bytes = json.dumps(head_obj, default=str).encode("utf-8")
-    return struct.pack(">I", len(head_bytes)) + head_bytes + body, True
-
-
-def decode_inbound(data: bytes | str) -> dict:
-    """Parse a wire frame back into an envelope dict.
-
-    Text frames: JSON-decoded. Binary frames: reconstructed envelope
-    with bytes body restored at `_binary_path`.
-    """
-    if isinstance(data, str):
-        return json.loads(data)
-    # Binary frame
-    head_len = struct.unpack(">I", data[:4])[0]
-    head = json.loads(data[4 : 4 + head_len].decode("utf-8"))
-    body = data[4 + head_len :]
-    path = head.pop("_binary_path", None)
-    if path is not None:
-        _set_path(head, path, body)
-    return head
+# ─── binary frame codec ─────────────────────────────────────────
+# The codec is shared with every other transport — it lives in `io_bridge._codec`.
+# These module-level aliases keep the historical proxy-local names (used by tests +
+# the read loop below). A WS text frame ⇒ `encode_frame` returns (utf-8 json, False)
+# and we send it as text; bytes anywhere ⇒ (binary frame, True) sent as a binary frame.
+_find_bytes_path = find_bytes_path
+_set_path = set_path
+encode_outbound = encode_frame
+decode_inbound = decode_frame
 
 
 # ─── proxy loop ─────────────────────────────────────────────────

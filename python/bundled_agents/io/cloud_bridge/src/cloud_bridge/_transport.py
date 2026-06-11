@@ -13,11 +13,10 @@ handshake (the impostor can't prove control of an approved device's pinned key).
 from __future__ import annotations
 
 import asyncio
-import json
 import struct
 from typing import Any
 
-from io_bridge import ConnectionClosed, _BaseTransport
+from io_bridge import ConnectionClosed, _BaseTransport, decode_frame, encode_frame
 
 SUBPROTOCOL = "fantastic.relay.v1"
 KEEPALIVE_TYPE = "keepalive"
@@ -153,8 +152,13 @@ class CloudBridgeTransport(_BaseTransport):
             pass
 
     async def send(self, frame: dict) -> None:
-        data = json.dumps(frame, default=str).encode("utf-8")
-        payload = _LEN.pack(len(data)) + data  # length-delimited inside the TLS stream
+        # Shared codec: a frame carrying raw `bytes` (a read_stream chunk) encodes as a
+        # binary [len|header|body] record — no base64; a plain frame is UTF-8 JSON. A
+        # 1-byte tag (0=text, 1=binary) leads the length-delimited record so the byte
+        # stream (no WS text/binary distinction here) can pick the decode path.
+        wire, is_binary = encode_frame(frame)
+        rec = (b"\x01" if is_binary else b"\x00") + wire
+        payload = _LEN.pack(len(rec)) + rec  # length-delimited inside the TLS stream
         async with self._send_lock:
             try:
                 await _drive(self._ws, self._conn, lambda: self._conn.sendall(payload))
@@ -197,9 +201,11 @@ class CloudBridgeTransport(_BaseTransport):
                 if n > MAX_FRAME:
                     raise ConnectionClosed("cloud_bridge: frame exceeds cap")
                 if len(self._rbuf) >= _HDR + n:
-                    data = bytes(self._rbuf[_HDR : _HDR + n])
+                    rec = bytes(self._rbuf[_HDR : _HDR + n])
                     del self._rbuf[: _HDR + n]
-                    return json.loads(data)
+                    tag, body = rec[0], rec[1:]
+                    # str ⇒ text (JSON) frame; bytes ⇒ binary [len|header|body] frame.
+                    return decode_frame(body if tag == 1 else body.decode("utf-8"))
             await self._fill()
 
     async def recv(self) -> dict:

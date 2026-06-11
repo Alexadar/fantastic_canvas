@@ -463,17 +463,27 @@ dev = [
 name = "fantastic-kernel-state"
 version = "0.1.0"
 source = { editable = "bundled_agents/loader/kernel_state" }
+dependencies = [
+    { name = "fantastic-file-bridge" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "fantastic-file-bridge", editable = "bundled_agents/io/file_bridge" }]
 
 [[package]]
 name = "fantastic-local-runner"
 version = "0.1.0"
 source = { editable = "bundled_agents/runner/local_runner" }
 dependencies = [
+    { name = "fantastic-file-bridge" },
     { name = "fantastic-runner-core" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "fantastic-runner-core", editable = "bundled_agents/runner/runner_core" }]
+requires-dist = [
+    { name = "fantastic-file-bridge", editable = "bundled_agents/io/file_bridge" },
+    { name = "fantastic-runner-core", editable = "bundled_agents/runner/runner_core" },
+]
 
 [[package]]
 name = "fantastic-nvidia-nim-backend"
@@ -541,6 +551,12 @@ requires-dist = [{ name = "fantastic-runner-core", editable = "bundled_agents/ru
 name = "fantastic-terminal-backend"
 version = "0.1.0"
 source = { editable = "bundled_agents/terminal" }
+dependencies = [
+    { name = "fantastic-file-bridge" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "fantastic-file-bridge", editable = "bundled_agents/io/file_bridge" }]
 
 [[package]]
 name = "fantastic-web"

@@ -34,7 +34,7 @@ from helpers.seeding import (
 )
 
 
-async def _serves_frontend_bundle_via_file_agent(
+async def _serves_frontend_bundle_via_file_bridge(
     binary, spawn, parity_tmp, free_port, tag: str
 ) -> None:
     # Skip guard: require the built frontend artifact.
@@ -54,7 +54,7 @@ async def _serves_frontend_bundle_via_file_agent(
 
     port = free_port()
     seed_web(binary, workdir, port)
-    # Generic file agent — same recipe as the ts_dist file agent that serves ts/dist.
+    # Generic file_bridge agent — same recipe as the ts_dist file_bridge agent that serves ts/dist.
     # No view bundle involved: the host is completely view-agnostic.
     seed_create(
         binary,
@@ -88,14 +88,14 @@ async def _serves_frontend_bundle_via_file_agent(
 async def test_python_serves_frontend_bundle(
     python_binary, python_kernel, parity_tmp, free_port
 ) -> None:
-    await _serves_frontend_bundle_via_file_agent(
+    await _serves_frontend_bundle_via_file_bridge(
         python_binary, python_kernel, parity_tmp, free_port, "python_serve_frontend"
     )
 
 
 @pytest.mark.asyncio
 async def test_rust_serves_frontend_bundle(rust_binary, rust_kernel, parity_tmp, free_port) -> None:
-    await _serves_frontend_bundle_via_file_agent(
+    await _serves_frontend_bundle_via_file_bridge(
         rust_binary, rust_kernel, parity_tmp, free_port, "rust_serve_frontend"
     )
 
@@ -104,6 +104,6 @@ async def test_rust_serves_frontend_bundle(rust_binary, rust_kernel, parity_tmp,
 async def test_swift_serves_frontend_bundle(
     swift_binary, swift_kernel, parity_tmp, free_port
 ) -> None:
-    await _serves_frontend_bundle_via_file_agent(
+    await _serves_frontend_bundle_via_file_bridge(
         swift_binary, swift_kernel, parity_tmp, free_port, "swift_serve_frontend"
     )

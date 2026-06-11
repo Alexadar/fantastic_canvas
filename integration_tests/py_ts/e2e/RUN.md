@@ -70,7 +70,7 @@ read this repo's source or use any kernel tools.
 >      record persisted under `canvas` via the `web_loader` store, watching the host
 >      agent(s) by id.
 > Use the AI bundle `anthropic_backend.tools` (each AI needs its own history `file`
-> agent via `file_agent_id`); the scheduler needs a `file` agent too. Keep prompts
+> agent via `file_bridge_id`); the scheduler needs a `file` agent too. Keep prompts
 > tiny (one-word / one-number answers) to stay cheap. Make the schedule recurring
 > with a modest interval (~8s) so a browser opened later catches a fresh fire.
 >

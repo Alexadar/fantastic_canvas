@@ -15,8 +15,8 @@ Verbs:
   list   path?       -> {files: [{name, path, type, size?}, ...]}
   read   path        -> {path, content} | {path, image_base64, mime}
   write  path text   -> {path, written: true}            (refused if readonly)
-  read_stream  path offset? length?     -> {b64, next_offset, eof, size}  (SOURCE)
-  write_stream path b64 offset? truncate? -> {written, offset, size}      (SINK)
+  read_stream  path offset? length?        -> {bytes, next_offset, eof, size} (SOURCE)
+  write_stream path bytes offset? truncate? -> {written, offset, size}        (SINK)
   pump   source? source_path sink? sink_path? -> {bytes, chunks}  (server-side copy)
   delete path        -> {path, deleted: true}            (refused if readonly)
   rename old_path new_path -> {old_path, new_path}        (refused if readonly)
@@ -27,28 +27,22 @@ from __future__ import annotations
 
 import base64
 import mimetypes
-import os
-from pathlib import Path
+from pathlib import PurePosixPath
 
+from file_bridge import fs
 from io_bridge import describe as _describe
 from io_bridge import gate_inbound, resolve_ingress
 
 DEFAULT_HIDDEN = [".git", ".env", ".fantastic", "node_modules", "__pycache__"]
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 
+# The disk clamp + raw IO live in `fs` — the ONE disk surface. This agent is the
+# GATE (ingress rule) + verb shape over it; it never touches the disk directly.
 
-def _root(rec: dict) -> Path:
-    """The bridge's root, CLAMPED to the running dir: relative roots resolve under
-    cwd; an absolute root is allowed only if it lies inside cwd. `~`/`..` escapes
-    refuse loudly — a file_bridge can never see outside the dir the kernel runs in."""
-    r = rec.get("root", "") or ""
-    base = Path.cwd().resolve()
-    root = (Path(r) if Path(r).is_absolute() else base / r).resolve()
-    try:
-        root.relative_to(base)
-    except ValueError:
-        raise ValueError(f"file_bridge: root {r!r} escapes the running dir") from None
-    return root
+
+def _root_str(rec: dict) -> str:
+    """The bridge's configured root string — the clamp boundary `fs` enforces."""
+    return rec.get("root", "") or ""
 
 
 def _hidden(rec: dict) -> list[str]:
@@ -57,17 +51,6 @@ def _hidden(rec: dict) -> list[str]:
 
 def _is_hidden(name: str, hidden: list[str]) -> bool:
     return name in hidden or any(name == p for p in hidden)
-
-
-def _resolve_safe(rec: dict, path: str) -> Path:
-    root = _root(rec)
-    rel = (path or "").lstrip("/")
-    target = (root / rel).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError:
-        raise ValueError(f"path {path!r} escapes root") from None
-    return target
 
 
 def _readonly_or_none(rec: dict) -> dict | None:
@@ -83,11 +66,11 @@ async def _reflect(id, payload, kernel):
     """Identity + filesystem root + readonly flag + auth posture (ingress/egress/sealed/see). No args."""
     rec = kernel.get(id) or {}
     try:
-        root_display = str(_root(rec))
+        root_display = str(fs.resolve_root(_root_str(rec)))
         root_error = None
     except ValueError as e:
         # Reflect NEVER raises — show the configured string + the violation.
-        root_display = str(rec.get("root", "") or "")
+        root_display = _root_str(rec)
         root_error = str(e)
     out = {
         "id": id,
@@ -113,84 +96,73 @@ async def _boot(id, payload, kernel):
 async def _list(id, payload, kernel):
     """args: path:str (default ''). Returns {path, files:[{name, path, type, size?}, ...]}. Hides DEFAULT_HIDDEN entries (.git, .env, .fantastic, …)."""
     rec = kernel.get(id) or {}
+    root = _root_str(rec)
     path = payload.get("path", "")
     try:
-        root = _root(rec)
-        target = _resolve_safe(rec, path)
-    except ValueError as e:
+        if not fs.exists(root, path):
+            return {"error": f"path {path!r} does not exist"}
+        if not fs.is_dir(root, path):
+            return {"error": f"path {path!r} is not a directory"}
+        rdir = fs.resolve_root(root)
+        entries = fs.list_dir(root, path)
+    except (ValueError, OSError) as e:
         return {"error": str(e)}
-    if not target.exists():
-        return {"error": f"path {path!r} does not exist"}
-    if not target.is_dir():
-        return {"error": f"path {path!r} is not a directory"}
     hidden = _hidden(rec)
     files = []
-    try:
-        for entry in sorted(target.iterdir()):
-            if _is_hidden(entry.name, hidden):
-                continue
-            rel = str(entry.relative_to(root))
-            if entry.is_dir():
-                files.append({"name": entry.name, "path": rel, "type": "dir"})
-            else:
-                try:
-                    size = entry.stat().st_size
-                except OSError:
-                    size = -1
-                files.append(
-                    {
-                        "name": entry.name,
-                        "path": rel,
-                        "type": "file",
-                        "size": size,
-                    }
-                )
-    except PermissionError as e:
-        return {"error": str(e)}
+    for entry in entries:
+        if _is_hidden(entry.name, hidden):
+            continue
+        rel = str(entry.relative_to(rdir))
+        if entry.is_dir():
+            files.append({"name": entry.name, "path": rel, "type": "dir"})
+        else:
+            try:
+                sz = entry.stat().st_size
+            except OSError:
+                sz = -1
+            files.append({"name": entry.name, "path": rel, "type": "file", "size": sz})
     return {"path": path, "files": files}
 
 
 async def _read(id, payload, kernel):
     """args: path:str (req). Returns {path, content:str} for text, {path, image_base64, mime} for images, {path, bytes:bytes, mime} for any other binary (PDF, fonts, archives, etc.) — raw bytes ride the kernel's binary protocol over WS, zero-copy in-process. Refuses paths outside root."""
     rec = kernel.get(id) or {}
+    root = _root_str(rec)
     path = payload.get("path", "")
+    ext = PurePosixPath(path).suffix.lower()
     try:
-        target = _resolve_safe(rec, path)
-    except ValueError as e:
+        if not fs.is_file(root, path):
+            return {"error": f"file {path!r} not found"}
+        if ext in IMAGE_EXT:
+            data = fs.read_bytes(root, path)
+            mime = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".svg": "image/svg+xml",
+            }.get(ext, "application/octet-stream")
+            return {
+                "path": path,
+                "image_base64": base64.b64encode(data).decode("ascii"),
+                "mime": mime,
+            }
+        try:
+            content = fs.read_text(root, path)
+        except UnicodeDecodeError:
+            # Generic binary: PDF, font, archive, audio, video. Raw bytes — over WS
+            # the kernel's binary protocol ships a binary frame; in-process the
+            # webapp's /file/ route pipes them straight to the HTTP response.
+            data = fs.read_bytes(root, path)
+            mime, _ = mimetypes.guess_type(path)
+            return {
+                "path": path,
+                "bytes": data,
+                "mime": mime or "application/octet-stream",
+            }
+    except (ValueError, OSError) as e:
         return {"error": str(e)}
-    if not target.exists() or not target.is_file():
-        return {"error": f"file {path!r} not found"}
-    ext = target.suffix.lower()
-    if ext in IMAGE_EXT:
-        data = target.read_bytes()
-        mime = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-            ".svg": "image/svg+xml",
-        }.get(ext, "application/octet-stream")
-        return {
-            "path": path,
-            "image_base64": base64.b64encode(data).decode("ascii"),
-            "mime": mime,
-        }
-    try:
-        content = target.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        # Generic binary: PDF, font, archive, audio, video. Raw bytes —
-        # over WS the kernel's binary protocol (`_binary_path`) auto-
-        # detects + ships in a binary frame; in-process the webapp's
-        # /file/ route reads them and pipes straight to the HTTP
-        # response. No base64 round-trip in either path.
-        data = target.read_bytes()
-        mime, _ = mimetypes.guess_type(target.name)
-        return {
-            "path": path,
-            "bytes": data,
-            "mime": mime or "application/octet-stream",
-        }
     return {"path": path, "content": content}
 
 
@@ -202,23 +174,10 @@ async def _write(id, payload, kernel):
     path = payload.get("path", "")
     content = payload.get("content", "")
     try:
-        target = _resolve_safe(rec, path)
-    except ValueError as e:
+        fs.write_text(_root_str(rec), path, content)
+    except (ValueError, OSError) as e:
         return {"error": str(e)}
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
     return {"path": path, "written": True, "bytes": len(content.encode("utf-8"))}
-
-
-def _rmtree(target: Path) -> None:
-    """Recursive delete of a dir (depth-first). Clamping already done by the
-    caller via `_resolve_safe`, so this only ever walks inside `root`."""
-    for sub in target.iterdir():
-        if sub.is_dir() and not sub.is_symlink():
-            _rmtree(sub)
-        else:
-            sub.unlink()
-    target.rmdir()
 
 
 async def _delete(id, payload, kernel):
@@ -228,22 +187,13 @@ async def _delete(id, payload, kernel):
     rec = kernel.get(id) or {}
     if err := _readonly_or_none(rec):
         return err
+    root = _root_str(rec)
     path = payload.get("path", "")
     try:
-        target = _resolve_safe(rec, path)
-    except ValueError as e:
-        return {"error": str(e)}
-    if not target.exists():
-        return {"error": f"path {path!r} does not exist"}
-    try:
-        if target.is_dir():
-            if payload.get("recursive"):
-                _rmtree(target)
-            else:
-                os.rmdir(target)
-        else:
-            target.unlink()
-    except OSError as e:
+        if not fs.exists(root, path):
+            return {"error": f"path {path!r} does not exist"}
+        fs.remove(root, path, recursive=bool(payload.get("recursive")))
+    except (ValueError, OSError) as e:
         return {"error": str(e)}
     return {"path": path, "deleted": True}
 
@@ -253,17 +203,15 @@ async def _rename(id, payload, kernel):
     rec = kernel.get(id) or {}
     if err := _readonly_or_none(rec):
         return err
+    root = _root_str(rec)
     old = payload.get("old_path", "")
     new = payload.get("new_path", "")
     try:
-        o = _resolve_safe(rec, old)
-        n = _resolve_safe(rec, new)
-    except ValueError as e:
+        if not fs.exists(root, old):
+            return {"error": f"path {old!r} does not exist"}
+        fs.rename(root, old, new)
+    except (ValueError, OSError) as e:
         return {"error": str(e)}
-    if not o.exists():
-        return {"error": f"path {old!r} does not exist"}
-    n.parent.mkdir(parents=True, exist_ok=True)
-    o.rename(n)
     return {"old_path": old, "new_path": new}
 
 
@@ -274,10 +222,9 @@ async def _mkdir(id, payload, kernel):
         return err
     path = payload.get("path", "")
     try:
-        target = _resolve_safe(rec, path)
-    except ValueError as e:
+        fs.mkdir(_root_str(rec), path)
+    except (ValueError, OSError) as e:
         return {"error": str(e)}
-    target.mkdir(parents=True, exist_ok=True)
     return {"path": path, "created": True}
 
 
@@ -290,28 +237,26 @@ async def _mkdir(id, payload, kernel):
 
 async def _read_stream(id, payload, kernel):
     """args: path:str (req), offset:int=0, length:int=65536. The SOURCE half — returns
-    ONE chunk {path, offset, b64, next_offset, eof, size}; pull the next by calling
-    again with offset=next_offset until eof. `b64` is the chunk base64-encoded (JSON-
-    safe over any transport). Stateless cursor — no open handle, weak-coupled by id."""
+    ONE chunk {path, offset, bytes, next_offset, eof, size}; pull the next by calling
+    again with offset=next_offset until eof. `bytes` is the RAW chunk — it rides every
+    transport as raw bytes (web_ws / bridge binary frame, in-proc dict), NEVER base64.
+    Stateless cursor — no open handle, weak-coupled by id."""
     rec = kernel.get(id) or {}
+    root = _root_str(rec)
     path = payload.get("path", "")
     offset = int(payload.get("offset", 0) or 0)
     length = int(payload.get("length", 65536) or 65536)
     try:
-        target = _resolve_safe(rec, path)
-    except ValueError as e:
+        if not fs.is_file(root, path):
+            return {"error": f"file {path!r} not found"}
+        chunk, size = fs.read_chunk(root, path, offset, length)
+    except (ValueError, OSError) as e:
         return {"error": str(e)}
-    if not target.exists() or not target.is_file():
-        return {"error": f"file {path!r} not found"}
-    size = target.stat().st_size
-    with target.open("rb") as f:
-        f.seek(offset)
-        chunk = f.read(max(0, length))
     next_offset = offset + len(chunk)
     return {
         "path": path,
         "offset": offset,
-        "b64": base64.b64encode(chunk).decode("ascii"),
+        "bytes": chunk,
         "next_offset": next_offset,
         "eof": next_offset >= size,
         "size": size,
@@ -319,40 +264,32 @@ async def _read_stream(id, payload, kernel):
 
 
 async def _write_stream(id, payload, kernel):
-    """args: path:str (req), b64:str (req — one chunk, base64; or `content`:str for
-    text), offset:int? (default = append at end), truncate:bool=False. The SINK half —
-    a producer pushes chunks by calling repeatedly. Pass truncate:true on the first
-    chunk to start fresh. Returns {path, written, offset, size}. Refused if readonly."""
+    """args: path:str (req), bytes:bytes (req — ONE raw chunk), offset:int? (default =
+    append at end), truncate:bool=False. The SINK half — a producer pushes RAW chunks by
+    calling repeatedly. Pass truncate:true on the first chunk to start fresh. Returns
+    {path, written, offset, size}. Refused if readonly. The chunk is raw bytes — text
+    files go through the whole-file `write` verb, not here."""
     rec = kernel.get(id) or {}
     if err := _readonly_or_none(rec):
         return err
+    root = _root_str(rec)
     path = payload.get("path", "")
-    if "b64" in payload:
-        data = base64.b64decode(payload["b64"])
-    elif "content" in payload:
-        data = str(payload["content"]).encode("utf-8")
-    else:
-        data = payload.get("bytes", b"")
-        if isinstance(data, str):
-            data = data.encode("utf-8")
+    data = payload.get("bytes", b"")
+    if not isinstance(data, (bytes, bytearray)):
+        return {"error": "write_stream: `bytes` (one raw chunk) required"}
+    data = bytes(data)
+    off_in = payload.get("offset")
     try:
-        target = _resolve_safe(rec, path)
-    except ValueError as e:
+        off, size = fs.write_chunk(
+            root,
+            path,
+            data,
+            None if off_in is None else int(off_in),
+            truncate=bool(payload.get("truncate")),
+        )
+    except (ValueError, OSError) as e:
         return {"error": str(e)}
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if payload.get("truncate") or not target.exists():
-        target.write_bytes(b"")
-    offset = payload.get("offset")
-    offset = target.stat().st_size if offset is None else int(offset)
-    with target.open("r+b") as f:
-        f.seek(offset)
-        f.write(data)
-    return {
-        "path": path,
-        "written": len(data),
-        "offset": offset,
-        "size": target.stat().st_size,
-    }
+    return {"path": path, "written": len(data), "offset": off, "size": size}
 
 
 async def _pump(id, payload, kernel):
@@ -377,14 +314,16 @@ async def _pump(id, payload, kernel):
             src,
             {"type": "read_stream", "path": spath, "offset": offset, "length": length},
         )
-        if not isinstance(r, dict) or "b64" not in r:
+        if not isinstance(r, dict) or not isinstance(
+            r.get("bytes"), (bytes, bytearray)
+        ):
             return {"error": f"pump: read from {src!r} failed: {r}"}
         w = await kernel.send(
             sink,
             {
                 "type": "write_stream",
                 "path": dpath,
-                "b64": r["b64"],
+                "bytes": r["bytes"],
                 "offset": offset,
                 "truncate": first,
             },

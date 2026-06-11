@@ -14,7 +14,7 @@ example); point it at a `network_bridge` and the kernel's own state persists rem
 `load_tree`/`persist_record` verb contract (used by session/remote loaders) — NOT
 the auto-flush, which is provider-only.
 
-  persist  ->  send(store, write_stream {path:<rel>/agent.json, b64:<record>})
+  persist  ->  send(store, write_stream {path:<rel>/agent.json, bytes:<record>})
   forget   ->  send(store, delete {path:<rel>, recursive:true})
 
 Contract (duck-typed; any agent answering these is a loader):
@@ -33,104 +33,108 @@ Disk layout (provider-relative, under `.fantastic`):
 from __future__ import annotations
 
 import asyncio
-import base64
 import importlib.resources
 import json
-import os
 from pathlib import Path
 from typing import Any
 
+from file_bridge import fs
 from kernel import CURRENT_VERSION
 
 
-# ─── pure disk I/O (no kernel needed — the bootstrap calls these) ──
+# ─── disk I/O via `fs` (the ONE disk surface) — bootstrap cold primitives ──
+# These run before any agent exists, so they call `fs`'s functions directly (not the
+# file_bridge AGENT). Still the same clamped surface: every read/write goes through
+# `fs`, so nothing here escapes the running dir.
 
 
 def read_tree(root_dir: Path) -> list[dict]:
     """Walk a `.fantastic` tree → flat list of records (root + descendants).
     `parent_id` comes from disk position (authoritative). Pure read; the
     bootstrap calls this BEFORE any agent exists. Corrupt records skip."""
-    root_dir = Path(root_dir)
-    af = root_dir / "agent.json"
-    if not af.exists():
+    rd = str(root_dir)
+    if not fs.exists(rd, "agent.json"):
         return []
     try:
-        root_rec = json.loads(af.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        root_rec = json.loads(fs.read_text(rd, "agent.json"))
+    except (json.JSONDecodeError, OSError, ValueError):
         return []
     # The root record declares the children-dir name (declared config; default
     # "agents"). A self-describing layout sets e.g. "host_agents" / "web_agents".
     cd = root_rec.get("children_dir")
     children_dir = cd if isinstance(cd, str) and cd else "agents"
     records: list[dict] = [root_rec]
-    _walk(root_dir / children_dir, root_rec.get("id"), records, children_dir)
+    _walk(rd, children_dir, root_rec.get("id"), records, children_dir)
     return records
 
 
 def _walk(
-    agents_dir: Path, parent_id: str | None, out: list[dict], children_dir: str
+    root_dir: str,
+    rel_dir: str,
+    parent_id: str | None,
+    out: list[dict],
+    children_dir: str,
 ) -> None:
-    if not agents_dir.exists():
+    if not (fs.exists(root_dir, rel_dir) and fs.is_dir(root_dir, rel_dir)):
         return
-    for entry in sorted(agents_dir.iterdir()):
-        af = entry / "agent.json"
-        if not af.exists():
+    try:
+        entries = fs.list_dir(root_dir, rel_dir)
+    except (OSError, ValueError):
+        return
+    for entry in entries:
+        rel = f"{rel_dir}/{entry.name}".lstrip("/")
+        af = f"{rel}/agent.json"
+        if not fs.exists(root_dir, af):
             continue
         try:
-            rec = json.loads(af.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue  # corrupt sibling → skip (matches legacy behavior)
+            rec = json.loads(fs.read_text(root_dir, af))
+        except (json.JSONDecodeError, OSError, ValueError):
+            continue  # corrupt sibling → skip
         rec["parent_id"] = parent_id  # disk position is authoritative
         out.append(rec)
-        _walk(entry / children_dir, rec.get("id"), out, children_dir)
+        _walk(root_dir, f"{rel}/{children_dir}", rec.get("id"), out, children_dir)
 
 
 def write_record(root_path: Path, record: dict) -> None:
-    """Merge-write one record's `agent.json` at `root_path` (the agent's
-    own dir). Reads any existing file and overlays only the kernel-managed
-    keys, preserving unknown fields + sidecars (Rust `persistence::persist`
-    semantics). Atomic temp+rename. Also seeds the bundle's `readme.md`
-    (copy-if-missing) — the loader owns ALL of an agent's disk sidecars."""
-    root_path = Path(root_path)
-    root_path.mkdir(parents=True, exist_ok=True)
-    af = root_path / "agent.json"
+    """Merge-write one record's `agent.json` at `root_path` (the agent's own dir),
+    THROUGH `fs` (atomic temp+rename). Reads any existing file and overlays only the
+    kernel-managed keys, preserving unknown fields + sidecars. Also seeds the bundle's
+    `readme.md` (copy-if-missing) — the loader owns ALL of an agent's disk sidecars."""
+    rp = str(root_path)
     on_disk: dict[str, Any] = {}
-    if af.exists():
+    if fs.exists(rp, "agent.json"):
         try:
-            existing = json.loads(af.read_text(encoding="utf-8"))
+            existing = json.loads(fs.read_text(rp, "agent.json"))
             if isinstance(existing, dict):
                 on_disk = existing
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, ValueError):
             pass
     on_disk.update(record)
-    tmp = af.with_name("agent.json.tmp")
-    tmp.write_text(json.dumps(on_disk, indent=2), encoding="utf-8")
-    os.replace(tmp, af)
-    _seed_readme(root_path, record.get("handler_module"))
+    fs.write_text(rp, "agent.json", json.dumps(on_disk, indent=2))  # atomic
+    _seed_readme(rp, record.get("handler_module"))
 
 
-def _seed_readme(root_path: Path, handler_module: str | None) -> None:
-    """Copy a bundle's shipped `readme.md` into the agent's dir on first
-    persist. Copy-if-missing — operator edits + the GitHub-canonical
-    version are never clobbered. Bundle-agnostic: derives the package
-    from `handler_module` and asks `importlib.resources` whether it ships
-    a `readme.md`. No module / no readme → nothing seeded (not an error)."""
+def _seed_readme(root_path: Path | str, handler_module: str | None) -> None:
+    """Copy a bundle's shipped `readme.md` into the agent's dir on first persist,
+    THROUGH `fs`. Copy-if-missing. The SOURCE is a package resource (installed code
+    via importlib, not user disk); only the WRITE goes through `fs`."""
     if not handler_module:
         return
-    dest = root_path / "readme.md"
-    if dest.exists():
+    rp = str(root_path)
+    if fs.exists(rp, "readme.md"):
         return
     pkg = handler_module.split(".")[0]
     try:
         src = importlib.resources.files(pkg) / "readme.md"
         if src.is_file():
-            dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            fs.write_text(rp, "readme.md", src.read_text(encoding="utf-8"))
     except (
         ModuleNotFoundError,
         FileNotFoundError,
         OSError,
         TypeError,
         AttributeError,
+        ValueError,
     ):
         # AttributeError: handler modules that aren't proper packages
         # (single-file modules, synthetic test stubs). Nothing to seed.
@@ -138,21 +142,13 @@ def _seed_readme(root_path: Path, handler_module: str | None) -> None:
 
 
 def rmtree(path: Path) -> None:
-    """Recursive delete of an agent's dir (relocated from Agent._rmtree)."""
-    path = Path(path)
-    if not path.exists():
+    """Recursive delete of an agent's dir, THROUGH `fs` (clamped to cwd)."""
+    rp = str(path)
+    if not fs.exists(rp, ""):
         return
-    for sub in path.iterdir():
-        if sub.is_dir():
-            rmtree(sub)
-        else:
-            try:
-                sub.unlink()
-            except OSError:
-                pass
     try:
-        path.rmdir()
-    except OSError:
+        fs.remove(rp, "", recursive=True)
+    except (OSError, ValueError):
         pass
 
 
@@ -247,9 +243,9 @@ async def _persist_via_store(
     af = f"{reldir}/agent.json" if reldir else "agent.json"
     existing: dict = {}
     got = await kernel.send(store_id, {"type": "read_stream", "path": af})
-    if isinstance(got, dict) and "b64" in got:
+    if isinstance(got, dict) and isinstance(got.get("bytes"), (bytes, bytearray)):
         try:
-            parsed = json.loads(base64.b64decode(got["b64"]))
+            parsed = json.loads(bytes(got["bytes"]))
             if isinstance(parsed, dict):
                 existing = parsed
         except (ValueError, json.JSONDecodeError):
@@ -261,7 +257,7 @@ async def _persist_via_store(
         {
             "type": "write_stream",
             "path": af,
-            "b64": base64.b64encode(body).decode("ascii"),
+            "bytes": body,
             "truncate": True,
         },
     )
@@ -279,7 +275,7 @@ async def _seed_readme_via_store(
     kernel = agent.ctx
     path = f"{reldir}/readme.md" if reldir else "readme.md"
     got = await kernel.send(store_id, {"type": "read_stream", "path": path})
-    if isinstance(got, dict) and "b64" in got:
+    if isinstance(got, dict) and isinstance(got.get("bytes"), (bytes, bytearray)):
         return  # already present — never clobber operator edits
     pkg = handler_module.split(".")[0]
     try:
@@ -291,7 +287,7 @@ async def _seed_readme_via_store(
                 {
                     "type": "write_stream",
                     "path": path,
-                    "b64": base64.b64encode(data).decode("ascii"),
+                    "bytes": data,
                     "truncate": True,
                 },
             )
@@ -406,6 +402,16 @@ async def _reflect(id, payload, agent):
             n: (f.__doc__ or "").strip().splitlines()[0] for n, f in VERBS.items()
         },
     }
+
+
+def reflect_root_extra(agent) -> dict:
+    """Duck-typed root-reflect contribution (the substrate merges it on the ROOT only).
+    Surfaces WHICH file_bridge the loader auto-persists THROUGH — the discovered store
+    provider, or `null` when none is wired (state stays in RAM). The provider's own
+    posture (open / sealed) is visible inline in the tree node, so a client reads, in
+    ONE reflect, whether persistence is wired AND whether the wired leg is actually
+    open — no silent RAM/sealed surprise, no kernel guessing."""
+    return {"persistence": {"provider": _find_store(agent)}}
 
 
 async def _boot(id, payload, agent):

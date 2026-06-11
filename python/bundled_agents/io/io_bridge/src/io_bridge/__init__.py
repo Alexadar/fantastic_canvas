@@ -43,6 +43,7 @@ from io_bridge._engine import (
     stamp_egress,
 )
 from io_bridge._transport import ConnectionClosed, MemoryTransport, _BaseTransport
+from io_bridge._codec import decode_frame, encode_frame, find_bytes_path, set_path
 
 __all__ = [
     # decision surface
@@ -85,4 +86,9 @@ __all__ = [
     "MemoryTransport",
     "_BaseTransport",
     "ConnectionClosed",
+    # binary-safe frame codec (shared by every transport)
+    "encode_frame",
+    "decode_frame",
+    "find_bytes_path",
+    "set_path",
 ]

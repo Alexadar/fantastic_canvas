@@ -5,44 +5,44 @@ from __future__ import annotations
 import base64
 
 
-async def test_reflect(seeded_kernel, file_agent):
-    r = await seeded_kernel.send(file_agent, {"type": "reflect"})
+async def test_reflect(seeded_kernel, file_bridge):
+    r = await seeded_kernel.send(file_bridge, {"type": "reflect"})
     assert r["sentence"].startswith("Filesystem")
     assert r["readonly"] is False
 
 
-async def test_write_then_read(seeded_kernel, file_agent, tmp_path):
+async def test_write_then_read(seeded_kernel, file_bridge, tmp_path):
     await seeded_kernel.send(
-        file_agent, {"type": "write", "path": "hello.txt", "content": "hi there"}
+        file_bridge, {"type": "write", "path": "hello.txt", "content": "hi there"}
     )
-    r = await seeded_kernel.send(file_agent, {"type": "read", "path": "hello.txt"})
+    r = await seeded_kernel.send(file_bridge, {"type": "read", "path": "hello.txt"})
     assert r["content"] == "hi there"
     assert (tmp_path / "hello.txt").read_text() == "hi there"
 
 
-async def test_write_creates_parent_dirs(seeded_kernel, file_agent, tmp_path):
+async def test_write_creates_parent_dirs(seeded_kernel, file_bridge, tmp_path):
     await seeded_kernel.send(
-        file_agent, {"type": "write", "path": "a/b/c.txt", "content": "deep"}
+        file_bridge, {"type": "write", "path": "a/b/c.txt", "content": "deep"}
     )
     assert (tmp_path / "a" / "b" / "c.txt").read_text() == "deep"
 
 
-async def test_read_missing_file_errors(seeded_kernel, file_agent):
-    r = await seeded_kernel.send(file_agent, {"type": "read", "path": "nope.txt"})
+async def test_read_missing_file_errors(seeded_kernel, file_bridge):
+    r = await seeded_kernel.send(file_bridge, {"type": "read", "path": "nope.txt"})
     assert "error" in r
 
 
-async def test_read_image_returns_base64(seeded_kernel, file_agent, tmp_path):
+async def test_read_image_returns_base64(seeded_kernel, file_bridge, tmp_path):
     img_data = b"\x89PNG\r\n\x1a\nfake-png-bytes"
     (tmp_path / "img.png").write_bytes(img_data)
-    r = await seeded_kernel.send(file_agent, {"type": "read", "path": "img.png"})
+    r = await seeded_kernel.send(file_bridge, {"type": "read", "path": "img.png"})
     assert "image_base64" in r
     assert base64.b64decode(r["image_base64"]) == img_data
     assert r["mime"] == "image/png"
 
 
 async def test_read_pdf_returns_raw_bytes_with_mime(
-    seeded_kernel, file_agent, tmp_path
+    seeded_kernel, file_bridge, tmp_path
 ):
     """Generic binary (PDF, archive, font, etc.) returns raw bytes +
     mime so the webapp /file/ proxy can serve it as a real download.
@@ -50,7 +50,7 @@ async def test_read_pdf_returns_raw_bytes_with_mime(
     Without this, every non-image binary 404s."""
     pdf_data = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nendobj\nxref\n0 1\ntrailer\n<<>>\n%%EOF\n"
     (tmp_path / "doc.pdf").write_bytes(pdf_data)
-    r = await seeded_kernel.send(file_agent, {"type": "read", "path": "doc.pdf"})
+    r = await seeded_kernel.send(file_bridge, {"type": "read", "path": "doc.pdf"})
     assert "error" not in r, f"PDF read errored: {r}"
     assert isinstance(r.get("bytes"), (bytes, bytearray)), (
         "PDF must return raw bytes, not error / base64"
@@ -62,7 +62,7 @@ async def test_read_pdf_returns_raw_bytes_with_mime(
 
 
 async def test_read_unknown_binary_falls_back_to_octet_stream(
-    seeded_kernel, file_agent, tmp_path
+    seeded_kernel, file_bridge, tmp_path
 ):
     """Files with no recognizable extension still come back as bytes —
     just with application/octet-stream as the mime."""
@@ -72,73 +72,73 @@ async def test_read_unknown_binary_falls_back_to_octet_stream(
     blob = b"\xff\xfe\xfd\xfc binary blob"
     # `.bin` (and many short ones) aren't in mimetypes' DB → octet-stream.
     (tmp_path / "blob.bin").write_bytes(blob)
-    r = await seeded_kernel.send(file_agent, {"type": "read", "path": "blob.bin"})
+    r = await seeded_kernel.send(file_bridge, {"type": "read", "path": "blob.bin"})
     assert isinstance(r.get("bytes"), (bytes, bytearray))
     assert bytes(r["bytes"]) == blob
     assert r["mime"] == "application/octet-stream"
 
 
-async def test_list(seeded_kernel, file_agent, tmp_path):
+async def test_list(seeded_kernel, file_bridge, tmp_path):
     (tmp_path / "a.txt").write_text("a")
     (tmp_path / "b.txt").write_text("b")
     (tmp_path / "subdir").mkdir()
-    r = await seeded_kernel.send(file_agent, {"type": "list", "path": ""})
+    r = await seeded_kernel.send(file_bridge, {"type": "list", "path": ""})
     names = {f["name"] for f in r["files"]}
     assert {"a.txt", "b.txt", "subdir"} <= names
 
 
-async def test_list_excludes_hidden_default(seeded_kernel, file_agent, tmp_path):
+async def test_list_excludes_hidden_default(seeded_kernel, file_bridge, tmp_path):
     (tmp_path / ".git").mkdir()
     (tmp_path / "visible.txt").write_text("v")
-    r = await seeded_kernel.send(file_agent, {"type": "list", "path": ""})
+    r = await seeded_kernel.send(file_bridge, {"type": "list", "path": ""})
     names = {f["name"] for f in r["files"]}
     assert ".git" not in names
     assert "visible.txt" in names
 
 
-async def test_delete_file(seeded_kernel, file_agent, tmp_path):
+async def test_delete_file(seeded_kernel, file_bridge, tmp_path):
     (tmp_path / "x.txt").write_text("x")
-    r = await seeded_kernel.send(file_agent, {"type": "delete", "path": "x.txt"})
+    r = await seeded_kernel.send(file_bridge, {"type": "delete", "path": "x.txt"})
     assert r["deleted"] is True
     assert not (tmp_path / "x.txt").exists()
 
 
-async def test_rename(seeded_kernel, file_agent, tmp_path):
+async def test_rename(seeded_kernel, file_bridge, tmp_path):
     (tmp_path / "old.txt").write_text("o")
     r = await seeded_kernel.send(
-        file_agent,
+        file_bridge,
         {"type": "rename", "old_path": "old.txt", "new_path": "new.txt"},
     )
     assert r["new_path"] == "new.txt"
     assert (tmp_path / "new.txt").read_text() == "o"
 
 
-async def test_mkdir(seeded_kernel, file_agent, tmp_path):
-    r = await seeded_kernel.send(file_agent, {"type": "mkdir", "path": "newdir/sub"})
+async def test_mkdir(seeded_kernel, file_bridge, tmp_path):
+    r = await seeded_kernel.send(file_bridge, {"type": "mkdir", "path": "newdir/sub"})
     assert r["created"] is True
     assert (tmp_path / "newdir" / "sub").is_dir()
 
 
-async def test_path_safety_rejects_escape(seeded_kernel, file_agent):
+async def test_path_safety_rejects_escape(seeded_kernel, file_bridge):
     r = await seeded_kernel.send(
-        file_agent, {"type": "read", "path": "../../etc/passwd"}
+        file_bridge, {"type": "read", "path": "../../etc/passwd"}
     )
     assert "error" in r
     assert "escape" in r["error"]
 
 
-async def test_readonly_refuses_write(seeded_kernel, file_agent):
+async def test_readonly_refuses_write(seeded_kernel, file_bridge):
     await seeded_kernel.send(
         "kernel_state",
-        {"type": "update_agent", "id": file_agent, "readonly": True},
+        {"type": "update_agent", "id": file_bridge, "readonly": True},
     )
     r = await seeded_kernel.send(
-        file_agent, {"type": "write", "path": "x.txt", "content": "x"}
+        file_bridge, {"type": "write", "path": "x.txt", "content": "x"}
     )
     assert "error" in r
     assert "readonly" in r["error"]
 
 
-async def test_unknown_verb_errors(seeded_kernel, file_agent):
-    r = await seeded_kernel.send(file_agent, {"type": "garbage"})
+async def test_unknown_verb_errors(seeded_kernel, file_bridge):
+    r = await seeded_kernel.send(file_bridge, {"type": "garbage"})
     assert "error" in r

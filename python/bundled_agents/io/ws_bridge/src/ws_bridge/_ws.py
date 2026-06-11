@@ -10,14 +10,13 @@ the SSH tunnel helpers, and the reflect dressing.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import signal as signal_mod
 import socket
 import subprocess
 from typing import Any
 
-from io_bridge import ConnectionClosed, _BaseTransport
+from io_bridge import ConnectionClosed, _BaseTransport, decode_frame, encode_frame
 from io_bridge import _BridgeState
 
 TUNNEL_READY_TIMEOUT = 5.0
@@ -26,9 +25,10 @@ SENTENCE = "Cross-kernel comms bridge — WS-only, asymmetric (no peer bridge ne
 
 
 class WSTransport(_BaseTransport):
-    """websockets client connection wrapper. Frames serialize as JSON text
-    (matches web_ws/_proxy.py default mode — the binary path is reserved for the
-    kernel's binary_protocol; ws bridges don't currently mint binary)."""
+    """websockets client connection wrapper. Frames serialize via the shared
+    `io_bridge` codec: a frame carrying raw `bytes` (a `read_stream` chunk) goes as a
+    BINARY WS frame `[len|header|body]` — no base64; a plain frame goes as a TEXT WS
+    frame (UTF-8 JSON). web_ws on the far side decodes both via the same codec."""
 
     def __init__(self, ws: Any) -> None:
         self._ws = ws
@@ -45,8 +45,11 @@ class WSTransport(_BaseTransport):
         return getattr(self._ws, "closed", False)
 
     async def send(self, frame: dict) -> None:
+        wire, is_binary = encode_frame(frame)
         try:
-            await self._ws.send(json.dumps(frame, default=str))
+            # websockets sends a bytes arg as a binary frame, a str as a text frame —
+            # so the text/binary distinction the codec needs survives on the wire.
+            await self._ws.send(wire if is_binary else wire.decode("utf-8"))
         except Exception as e:
             raise ConnectionClosed(str(e)) from e
 
@@ -57,9 +60,8 @@ class WSTransport(_BaseTransport):
             raw = await self._ws.recv()
         except websockets.ConnectionClosed as e:
             raise ConnectionClosed(str(e)) from e
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        return json.loads(raw)
+        # str ⇒ text (JSON) frame; bytes ⇒ binary [len|header|body] frame.
+        return decode_frame(raw)
 
     async def close(self) -> None:
         try:

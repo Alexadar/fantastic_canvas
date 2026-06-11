@@ -182,12 +182,35 @@ two-tree federation, the plain WS bridge matrix, and the Swift `ParityHarness`):
   `watch`/`unwatch` shapes; `corr_id = f'{bridge_id}:{counter}'`; `auth_token` is an
   envelope sibling, never inside `payload`; a leg with no egress credential attaches
   no `auth_token` → byte-identical to pre-auth.
+- **Frame codec — raw bytes, never base64** (`io_bridge._codec`, shared by web_ws +
+  ws_bridge + cloud_bridge): a frame carrying a raw `bytes` value (a `read_stream`
+  chunk; `write_stream` takes `bytes`) serializes as a **binary frame**
+  `[4-byte BE header-len | JSON header (the bytes value → null + `_binary_path`) |
+  raw body]`; a plain frame is UTF-8 JSON. The text/binary split is carried by the
+  transport, not guessed: WS transports use the WS frame TYPE (text→`str`,
+  binary→`bytes`); cloud_bridge prepends a 1-byte tag (`0`=text,`1`=binary) to its
+  length-delimited TLS record. The stream chunk field is `bytes` (was `b64`) — there
+  is no base64 anywhere on the stream path. **Ports (#524/#525/#526) must mirror this
+  codec**, else cross-runtime file streaming drifts (the relay matrix would catch it
+  once a streaming case is added).
 - **The 6 verbs**: `reflect`, `boot` (idempotent), `reconnect`, `forward`,
   `watch_remote`, `unwatch_remote` — same signatures across all runtimes.
 - **Auth-denial wire shape**: `{error, reason:"unauthorized"}` (+ optional
   `hint`/`see`). The only intra-Python change is the `see` value `io_core` →
   `io_bridge` (rust/swift mirror on port; the cross-runtime matrix asserts only
   `reason:"unauthorized"`).
+- **Record field rename — `file_agent_id` → `file_bridge_id`** (python + ts done
+  2026-06-11; **rust/swift ports must mirror**, #524/#525). The meta field a bundle
+  (yaml_state / scheduler / ai backends) persists THROUGH — renamed after the
+  `file` → `file_bridge` bundle rename. Same with the persistence-sidecar PATHS: now
+  **store-relative** (`agents/<id>/…`, not `.fantastic/agents/<id>/…`), so wired to the
+  one `.fantastic` store the sidecar lands next to its `agent.json` (no `.fantastic/.fantastic/…`).
+- **Reflect self-describes the IO landscape** (python done; ports mirror): each distilled
+  **tree node** carries its wiring/posture meta (`ingress_rule`/`egress_rule`/`auth` —
+  absent on an io leg ⇒ sealed-by-default; `root`; `file_bridge_id`); the **root** reflect
+  adds `persistence: {provider:<id>|null}` (which file_bridge the loader persists through),
+  via a duck-typed `reflect_root_extra(agent)` hook. So a client reads the whole gate/wiring
+  state in ONE reflect — no per-agent round-trips, no kernel skip-sealed heuristic.
 - **Record fields** (`.fantastic`): `transport` (memory|ws|ssh+ws|cloud_bridge),
   per-leg `ingress_rule`/`egress_rule`/`auth`. `handler_module` strings:
   `cloud_bridge.tools`, `web.tools`, `web_ws.tools`, `web_rest.tools` stable;
