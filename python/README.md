@@ -165,19 +165,23 @@ invocation surfaces are sub-agents of `web`:
 - **`web_rest`** — REST diagnostic channel at `POST /<rest_id>/<target_id>`.
   Request/reply only; curl-friendly.
 
-Compose them per project:
+These call legs are **io_bridge derivations: SEALED by default** — a freshly-created
+`web_ws`/`web_rest` denies every inbound frame (`{reason:"unauthorized"}`, REST `403`)
+until you open it. Compose them per project, opening each consciously:
 ```bash
 fantastic kernel_state create_agent handler_module=web.tools port=8888
-fantastic kernel_state create_agent handler_module=web_ws.tools parent_id=<web_id>
-fantastic kernel_state create_agent handler_module=web_rest.tools parent_id=<web_id>
+# open the WS leg wide for local dev (or `ingress_rule=password` for a group token):
+fantastic kernel_state create_agent handler_module=web_ws.tools parent_id=<web_id> ingress_rule=allow_all
+fantastic kernel_state create_agent handler_module=web_rest.tools parent_id=<web_id> ingress_rule=allow_all
 ```
 
 After `fantastic`:
 ```bash
-# Rendering (always available)
+# Rendering: `/` is the agent-tree index; `/<id>/file/<path>` proxies to a gated
+# file_bridge's read_stream (a SEALED file_bridge 404s — the allowance is its own gate).
 curl http://localhost:8888/                            # root index — agent tree (HTML)
 curl http://localhost:8888/<id>/                       # agent UI (HTML) if it ships render_html
-curl http://localhost:8888/<id>/file/<path>            # file proxy for any agent answering `read`
+curl http://localhost:8888/<id>/file/<path>            # octet proxy → the agent's read_stream
 
 # WS (when web_ws is mounted)
 # open ws://host/<id>/ws and send

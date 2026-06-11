@@ -20,6 +20,18 @@ exists, it manages durable memory with judgment (saves salient facts, recalls
 them on a fresh turn, prunes the rest), entirely through `send`. Proof:
 [`integration_tests/memory/`](integration_tests/memory/test_ai_memory_judgment.py).
 
+**Every edge is sealed.** All IO — kernel↔kernel, kernel↔disk, kernel↔browser —
+crosses through a **gated bridge that is deny-all by default**, opened on demand
+(`ingress_rule=allow_all` / `password`). Disk is just another gated edge: a
+`file_bridge` agent is the single surface, and persistence routes through ONE
+`.fantastic` store — no provider wired ⇒ state stays in RAM (a kernel has **no silent
+fallbacks**, one path or none). And the whole lock/wiring landscape is **readable from
+one `reflect`**: each tree node carries its posture (`ingress_rule` / `root` /
+`file_bridge_id`), the root carries `persistence:{provider}`. So the same
+self-description that lets an AI *build* also lets it *see what's open* — and wire
+access **correctly and granularly** (one store reused for shared state; a separate
+narrow read-only bridge for public assets), not one blanket-open surface.
+
 ## Run it now — one container, driven by an AI
 
 The container ships as **two separate per-architecture images** (podman **and**
@@ -192,6 +204,10 @@ bundle scoreboard.
 | substrate                        | ✓ | ✓ | ✓ |
 | HTTP / WS / REST surfaces        | ✓ | ✓ | ✓ |
 | WS binary frames (incl. chunked) | ✓ | ✓ | ✓ |
+| io legs sealed-by-default (ingress rules) | ✓ | porting (#525) | porting (#524) |
+| all IO via gated `file_bridge` (`file_bridge_id`) | ✓ | porting (#525) | porting (#524) |
+| raw-bytes stream verbs (`read_stream`/`write_stream`) | ✓ | porting | porting |
+| reflect posture + `persistence.provider` | ✓ | porting | porting |
 | LLM backend bundles              | ollama / NIM / Anthropic | ollama / NIM / Apple FM | ollama / NIM |
 | terminal_backend (PTY)           | ✓ | ✓ (macOS only) | ✓ (full tier) |
 | serves the `ts/` frontend        | ✓ | ✓ | ✓ |
