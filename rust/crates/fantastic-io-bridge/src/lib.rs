@@ -4,6 +4,7 @@
 //! choke point. Mirrors `python/bundled_agents/io/io_bridge`.
 
 pub mod authorizer;
+pub mod codec;
 
 use std::sync::Arc;
 
