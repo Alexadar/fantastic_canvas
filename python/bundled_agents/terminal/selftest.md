@@ -9,7 +9,7 @@
 PTY shell agent. Done-token shell verb, timeout recovery, scrollback.
 
 **Why a running serve is required:** the PTY is a child process of the
-running kernel. `fantastic call …` spawns a fresh kernel for
+running kernel. A one-shot `fantastic <id> <verb> …` spawns a fresh kernel for
 each invocation; the PTY would be killed between calls. We use one
 persistent kernel via `serve` and drive it through a one-shot WS
 `call` frame.

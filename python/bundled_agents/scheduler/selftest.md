@@ -18,17 +18,17 @@ rm -rf .fantastic
 ### Test 1: schedule without file_bridge_id → failfast
 
 ```bash
-SC=$(fantastic call kernel_state create_agent handler_module=scheduler.tools | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-fantastic call $SC schedule target=cli payload='{"type":"say","text":"x"}' interval_seconds=5
+SC=$(fantastic kernel_state create_agent handler_module=scheduler.tools | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+fantastic $SC schedule target=cli payload='{"type":"say","text":"x"}' interval_seconds=5
 ```
 Expected: `{"error":"scheduler: file_bridge_id required"}`.
 
 ### Test 2: configure with file_bridge_id, then schedule persists
 
 ```bash
-FA=$(fantastic call kernel_state create_agent handler_module=file_bridge.tools root=.fantastic ingress_rule=allow_all | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-fantastic call kernel_state update_agent id=$SC file_bridge_id=$FA
-SCH=$(fantastic call $SC schedule target=cli payload='{"type":"say","text":"hello"}' interval_seconds=60 | python -c "import json,sys;print(json.load(sys.stdin)['schedule_id'])")
+FA=$(fantastic kernel_state create_agent handler_module=file_bridge.tools root=.fantastic ingress_rule=allow_all | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+fantastic kernel_state update_agent id=$SC file_bridge_id=$FA
+SCH=$(fantastic $SC schedule target=cli payload='{"type":"say","text":"hello"}' interval_seconds=60 | python -c "import json,sys;print(json.load(sys.stdin)['schedule_id'])")
 test -f .fantastic/agents/$SC/schedules.json && echo "OK persisted via file_bridge agent"
 ```
 Expected: `OK persisted via file_bridge agent`. File contents include the schedule_id.
@@ -36,7 +36,7 @@ Expected: `OK persisted via file_bridge agent`. File contents include the schedu
 ### Test 3: tick_now fires synchronously
 
 ```bash
-fantastic call $SC tick_now schedule_id=$SCH
+fantastic $SC tick_now schedule_id=$SCH
 ```
 Expected: `{"fired":true,"schedule_id":"<SCH>"}`.
 
@@ -50,24 +50,24 @@ Expected: ≥ 1.
 ### Test 5: pause + resume
 
 ```bash
-fantastic call $SC pause schedule_id=$SCH
-fantastic call $SC list | python -m json.tool | grep -F '"paused": true'
-fantastic call $SC resume schedule_id=$SCH
-fantastic call $SC list | python -m json.tool | grep -F '"paused": false'
+fantastic $SC pause schedule_id=$SCH
+fantastic $SC list | python -m json.tool | grep -F '"paused": true'
+fantastic $SC resume schedule_id=$SCH
+fantastic $SC list | python -m json.tool | grep -F '"paused": false'
 ```
 Expected: each grep matches.
 
 ### Test 6: unschedule
 
 ```bash
-fantastic call $SC unschedule schedule_id=$SCH
+fantastic $SC unschedule schedule_id=$SCH
 ```
 Expected: `{"removed":true,"schedule_id":"<SCH>"}`.
 
 ### Test 7: history endpoint
 
 ```bash
-fantastic call $SC history limit=10 | python -m json.tool | grep -F '"count"'
+fantastic $SC history limit=10 | python -m json.tool | grep -F '"count"'
 ```
 Expected: `"count": <N>` with N ≥ 1.
 

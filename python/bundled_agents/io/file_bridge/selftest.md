@@ -25,10 +25,10 @@ cd /tmp/fa_test
 ### Test 0: sealed by default — verbs deny until the edge is opened
 
 ```bash
-SEALED=$(fantastic call kernel_state create_agent handler_module=file_bridge.tools root=fa_root | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-fantastic call $SEALED read path=anything.txt
-fantastic call $SEALED reflect | python -m json.tool | grep -F '"sealed": true'
-fantastic call kernel_state delete_agent id=$SEALED
+SEALED=$(fantastic kernel_state create_agent handler_module=file_bridge.tools root=fa_root | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+fantastic $SEALED read path=anything.txt
+fantastic $SEALED reflect | python -m json.tool | grep -F '"sealed": true'
+fantastic kernel_state delete_agent id=$SEALED
 ```
 Expected: the read returns `{"error":…, "reason":"unauthorized", "hint":"…ingress_rule…"}`;
 reflect still answers (discovery is ungated) and shows `sealed: true`.
@@ -36,16 +36,16 @@ reflect still answers (discovery is ungated) and shows `sealed: true`.
 ### Test 1: write + read round-trip (opened leg)
 
 ```bash
-FA=$(fantastic call kernel_state create_agent handler_module=file_bridge.tools root=fa_root ingress_rule=allow_all | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-fantastic call $FA write path=hello.txt content="hi there"
-fantastic call $FA read path=hello.txt | python -m json.tool | grep -F '"content": "hi there"'
+FA=$(fantastic kernel_state create_agent handler_module=file_bridge.tools root=fa_root ingress_rule=allow_all | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+fantastic $FA write path=hello.txt content="hi there"
+fantastic $FA read path=hello.txt | python -m json.tool | grep -F '"content": "hi there"'
 ```
 Expected: grep matches.
 
 ### Test 2: write creates parent dirs
 
 ```bash
-fantastic call $FA write path=a/b/c.txt content=deep
+fantastic $FA write path=a/b/c.txt content=deep
 test -f /tmp/fa_test/fa_root/a/b/c.txt && cat /tmp/fa_test/fa_root/a/b/c.txt
 ```
 Expected: prints `deep`.
@@ -55,24 +55,24 @@ Expected: prints `deep`.
 ```bash
 mkdir /tmp/fa_test/fa_root/.git
 echo visible > /tmp/fa_test/fa_root/visible.txt
-fantastic call $FA list path="" | python -m json.tool | grep -E "\"name\": \"(.git|visible.txt)\""
+fantastic $FA list path="" | python -m json.tool | grep -E "\"name\": \"(.git|visible.txt)\""
 ```
 Expected: only `visible.txt` (the .git dir is filtered by DEFAULT_HIDDEN).
 
 ### Test 4: path safety rejects escape
 
 ```bash
-fantastic call $FA read path=../../etc/passwd
+fantastic $FA read path=../../etc/passwd
 ```
 Expected: `{"error":"…escape…"}`.
 
 ### Test 5: the running-dir law — a root outside cwd refuses
 
 ```bash
-ESC=$(fantastic call kernel_state create_agent handler_module=file_bridge.tools root=../escape ingress_rule=allow_all | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
-fantastic call $ESC list path=""
-fantastic call $ESC reflect | python -m json.tool | grep -F '"root_error"'
-fantastic call kernel_state delete_agent id=$ESC
+ESC=$(fantastic kernel_state create_agent handler_module=file_bridge.tools root=../escape ingress_rule=allow_all | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+fantastic $ESC list path=""
+fantastic $ESC reflect | python -m json.tool | grep -F '"root_error"'
+fantastic kernel_state delete_agent id=$ESC
 ```
 Expected: list returns `{"error":"…escapes the running dir…"}`; reflect
 still answers and carries `root_error`.
@@ -81,15 +81,15 @@ still answers and carries `root_error`.
 
 ```bash
 printf '\x89PNG\r\n\x1a\nfake' > /tmp/fa_test/fa_root/img.png
-fantastic call $FA read path=img.png | python -m json.tool | grep -F '"image_base64"'
-fantastic call $FA read path=img.png | python -m json.tool | grep -F '"mime": "image/png"'
+fantastic $FA read path=img.png | python -m json.tool | grep -F '"image_base64"'
+fantastic $FA read path=img.png | python -m json.tool | grep -F '"mime": "image/png"'
 ```
 Expected: both greps match.
 
 ### Test 7: delete file
 
 ```bash
-fantastic call $FA delete path=hello.txt
+fantastic $FA delete path=hello.txt
 test ! -f /tmp/fa_test/fa_root/hello.txt && echo OK
 ```
 Expected: `OK`.
@@ -98,7 +98,7 @@ Expected: `OK`.
 
 ```bash
 echo content > /tmp/fa_test/fa_root/old.txt
-fantastic call $FA rename old_path=old.txt new_path=new.txt
+fantastic $FA rename old_path=old.txt new_path=new.txt
 test -f /tmp/fa_test/fa_root/new.txt && echo OK
 ```
 Expected: `OK`.
@@ -106,7 +106,7 @@ Expected: `OK`.
 ### Test 9: mkdir recursive
 
 ```bash
-fantastic call $FA mkdir path=newdir/sub
+fantastic $FA mkdir path=newdir/sub
 test -d /tmp/fa_test/fa_root/newdir/sub && echo OK
 ```
 Expected: `OK`.
@@ -114,15 +114,15 @@ Expected: `OK`.
 ### Test 10: readonly refuses write
 
 ```bash
-fantastic call kernel_state update_agent id=$FA readonly=true
-fantastic call $FA write path=x.txt content=x
+fantastic kernel_state update_agent id=$FA readonly=true
+fantastic $FA write path=x.txt content=x
 ```
 Expected: `{"error":"…readonly…"}`.
 
 ### Test 11: cascade delete cleans up the file_bridge record
 
 ```bash
-fantastic call kernel_state delete_agent id=$FA
+fantastic kernel_state delete_agent id=$FA
 test ! -d /tmp/fa_test/.fantastic/agents/$FA && echo OK
 ```
 Expected: `OK` (substrate's cascade removed the on-disk record).
