@@ -62,7 +62,7 @@ async fn mk_kernel(tmp: &TempDir, endpoint: Option<String>) -> (Arc<Kernel>, Age
         "type":"create_agent",
         "handler_module":HANDLER_MODULE,
         "id": nim,
-        "file_agent_id": fid,
+        "file_bridge_id": fid,
         "model": "test-model",
     });
     if let Some(e) = endpoint {

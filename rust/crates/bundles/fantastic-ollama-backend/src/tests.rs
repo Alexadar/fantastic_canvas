@@ -64,7 +64,7 @@ async fn mk_kernel(tmp: &TempDir, tag: &str, endpoint: &str) -> (Arc<Kernel>, Ag
                 "type": "create_agent",
                 "handler_module": HANDLER_MODULE,
                 "id": backend_id,
-                "file_agent_id": file_id,
+                "file_bridge_id": file_id,
                 "endpoint": endpoint,
                 "model": "test-model",
             }),
