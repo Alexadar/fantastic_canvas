@@ -176,6 +176,15 @@ any other. Point it at a `network_bridge` instead and state persists to a remote
 store. (`allow_all` lets the loader's own writes through; **seal it and persistence
 stops** — that's your choice, with no fallback to soften it.)
 
+**You don't have to guess the wiring — read it.** The ROOT reflect carries
+`persistence: {provider:<id>|null}` (which store is persisting records, or `null`
+= RAM); each tree node carries its posture inline (`ingress_rule` — absent on an io
+leg ⇒ sealed; `root`; `file_bridge_id`). One `reflect tree=all` shows every leg's
+lock + the live provider. And **one store serves both**: bundles that need a sidecar
+(`yaml_state`, `scheduler`, the ai backends) point their `file_bridge_id` at this same
+`.fantastic` store and write store-relative `agents/<id>/<file>`, so their state lands
+next to their own `agent.json` — one bridge, records + sidecars together.
+
 ## Two kernels — host + browser frontend
 
 This is the HOST kernel (Python, `*.tools` bundles). A second kernel — a

@@ -76,7 +76,7 @@ Expected: `{"error":"ollama_backend: file_bridge_id required"}`.
 ### Test 2: configure file_bridge_id, reflect shows it
 
 ```bash
-FA=$(call kernel_state '{"type":"create_agent","handler_module":"file_bridge.tools","ingress_rule":"allow_all"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+FA=$(call kernel_state '{"type":"create_agent","handler_module":"file_bridge.tools","root":".fantastic","ingress_rule":"allow_all"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 call kernel_state "{\"type\":\"update_agent\",\"id\":\"$OB\",\"file_bridge_id\":\"$FA\"}"
 call $OB '{"type":"reflect"}' | python -m json.tool | grep -F "\"file_bridge_id\": \"$FA\""
 ```

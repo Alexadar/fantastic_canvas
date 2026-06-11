@@ -72,9 +72,11 @@ into it; the running artifact is a function of its *descriptance*, not its code.
   by job id; each job gets an injected `kernel` connector. Per-agent venv
   resolution (record `python` / `venv` fields override the interpreter).
 - **yaml_state** — durable YAML key-value memory agent; mount anywhere
-  (`mode=mem|data`). A write-through `state.yaml` sidecar it owns
-  directly. Reached like any other unit by id (`send(<id>, {...})`), so
-  compute, inference, and memory share one calling convention.
+  (`mode=mem|data`). Persists `state.yaml` THROUGH a gated `file_bridge`
+  agent (`file_bridge_id`, deny-all by default) — owns no disk surface of
+  its own; failfast until wired. Reached like any other unit by id
+  (`send(<id>, {...})`), so compute, inference, and memory share one
+  calling convention.
 - **terminal_backend** — PTY shell session. The browser xterm view
   (`terminal_view`) lives in the TS frontend kernel. The backend
   ports VSCode's terminal robustness: streaming **flow control** (the

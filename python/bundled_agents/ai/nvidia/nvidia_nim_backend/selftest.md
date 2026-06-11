@@ -51,7 +51,7 @@ asyncio.run(main())
 PY
 }
 
-FA=$(call kernel_state '{"type":"create_agent","handler_module":"file_bridge.tools","ingress_rule":"allow_all"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
+FA=$(call kernel_state '{"type":"create_agent","handler_module":"file_bridge.tools","root":".fantastic","ingress_rule":"allow_all"}' | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 NB=$(call kernel_state "{\"type\":\"create_agent\",\"handler_module\":\"nvidia_nim_backend.tools\",\"file_bridge_id\":\"$FA\"}" \
   | python -c "import json,sys;print(json.load(sys.stdin)['id'])")
 ```
