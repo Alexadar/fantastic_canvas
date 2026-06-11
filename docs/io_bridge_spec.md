@@ -144,22 +144,24 @@ fantastic <web> create_agent handler_module=web_rest.tools ingress_rule=password
 A freshly-created `web_ws`/`web_rest` with no rule mounts but a browser/REST client
 cannot connect until it is opened.
 
-### 2.6 Keystone reachability + the discovery loop
+### 2.6 Reachability + the discovery loop
 
-Because `io_bridge` is a real bundle agent, the discovery-through-denial loop closes
-end-to-end:
+`io_bridge` is a **shared abstract library, not an agent** (§2.1): every leg
+(`ws_bridge`/`cloud_bridge`/`web_ws`/`web_rest`/`file_bridge`) DERIVES from it. So the
+discovery-through-denial loop closes via **each derivation's OWN short readme** + the
+denial's inline `hint` — there is no keystone agent to reflect:
 
 ```
-1. try a verb over a sealed edge  → { reason:"unauthorized", hint, see:"io_bridge" }
-2. reflect readme=true on the sealed agent → its own short readme (the open recipe)
+1. try a verb over a sealed edge  → { reason:"unauthorized", hint }   # `see` is empty
+2. reflect readme=true on the SEALED AGENT ITSELF → its own short readme (the open recipe)
 3. set ingress_rule on the leg    → update_agent ingress_rule=password
 4. present the credential          → auth_token ON THE ENVELOPE (or X-Fantastic-Auth for http)
 5. the edge opens; the wire works
 ```
 
-The `see` pointer (in `deny_inbound.py`) and the leg descriptor `describe()` field
-both name `io_bridge` (renamed from the former `io_core`, which dangled because it
-had no entry point).
+The `see` field is **empty** (the keystone-agent boot/seed machinery was reverted —
+promoting a library to an agent just to serve a readme was a category error); the
+denial's `hint` carries the inline open recipe.
 
 ### 2.7 main.py — the `_build_kernel` seam
 
@@ -230,21 +232,17 @@ The following is decided-later and is **not** built; do not treat it as present:
 - **`http_bridge`** — an outbound-HTTP transport derivation (`build_transport(http)`
   + an http header extractor for symmetry). Not created. The keystone readme names it
   as *planned*.
-- **The `/file/` octet concern** — `/file/` stays today's open read-only static
-  proxy. Folding it under the base as a **stream/octet channel** (gate-at-open via a
-  `StreamGrantExtractor` + a signed single-use capability, distinct non-exported
-  signing key) is deferred. The channel model already reserves the
+- **The `/file/` octet concern (mostly SHIPPED — only the capability-URL tier is
+  deferred).** The `web` host's octet route `/{agent_id}/file/{path}`
+  (`bundled_agents/web/host/src/web/app.py`) is **`read_stream`-only and GATED by the
+  served agent's own seal**: it pipes the file chunk-by-chunk over the served agent's
+  `read_stream` (the SOURCE verb), so a **sealed `file_bridge` denies → 404** — the
+  allowance IS that agent's existing ingress gate (reused, no new mechanism), path
+  clamped to its root. There is NO anonymous/ungated read channel. What remains
+  DEFERRED is the **minted-alias capability URL tier** — an opaque single-use token
+  for one file (gate-at-open via a `StreamGrantExtractor` + a signed capability,
+  distinct non-exported signing key). The channel model reserves the
   `modality = stream` slot for it.
-
-  **Known, deliberately-deferred gap (documented, not a bug):** with the call legs
-  now sealed by default, the `web` host's octet route `/{agent_id}/file/{path}`
-  (`bundled_agents/web/host/src/web/app.py`) is currently **UNGATED** — it dispatches
-  `{type:"read", path}` to ANY agent that answers `read`, so it is an **anonymous HTTP
-  read channel** into any `read`-answering agent (a `file` agent's own path-safety
-  still confines reads to its configured root, so this is a read-only-within-root
-  exposure, not arbitrary filesystem access). Closing it is precisely the http_file
-  work: the stream-grant "gate at open" for the octet modality, so a `/file/` fetch
-  must present a capability the same way an inbound `call` now presents a credential.
 
 These two are jointly "http_file," to be revisited as one later decision. Other
 out-of-scope-for-now items: verb-level elevation/privileged-verb policy, the

@@ -2,6 +2,16 @@
 
 Branch `kernel_auth` · greenfield · no back-compat · single author · 2026-06-09
 
+> **⚠️ SUPERSEDED — historical design record, NOT current state.** What shipped diverged
+> from this blueprint on its two biggest open questions; for the current truth see
+> [`io_bridge_spec.md`](io_bridge_spec.md). Notably: (1) **io_bridge is a pure shared
+> LIBRARY, not an agent** — the "single reflectable base agent" / keystone-agent idea
+> below was reverted (the `see` field is empty; discovery is via each derivation's own
+> readme + the denial `hint`). (2) **Deny-all-by-default SHIPPED** — the blueprint's §6 Q7
+> recommends keeping permissive AllowAll defaults; that was overridden (io legs + the fs
+> edge SEAL by default). (3) `io_core`/`bridge_core` were merged and removed. Read this for
+> rationale only.
+
 This document is the build blueprint for collapsing the Fantastic kernel IO layer onto a single reflectable base agent, **io_bridge**, with all wire transports and web faces as thin derivations. It is written to the ratified decision; it does not relitigate it. Verified against the live tree on `kernel_auth` (the string `io_bridge` appears nowhere yet — this is net-new).
 
 ---
