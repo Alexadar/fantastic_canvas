@@ -28,8 +28,9 @@ const FANTASTIC = join(repoRoot, "python", ".venv", "bin", "fantastic");
 // runs the built venv binary; `container` runs the universal image (python
 // runtime). The SAME tests run either way: seeding one-shots run INSIDE the
 // container (a rootless container's uid can't write a host-seeded .fantastic/),
-// the daemon publishes -p 127.0.0.1:port:port with FANTASTIC_HEAD=off, and the
-// frontend dist is bind-mounted in so the `ts_dist` file_bridge agent can serve it.
+// the daemon publishes -p 127.0.0.1:port:port (its `/` is the dynamic agent
+// index), and the frontend dist is bind-mounted in so the `ts_dist` file_bridge
+// agent can serve it.
 // e2e is host/browser → container only (no container↔container), so -p suffices.
 const TARGET = (process.env.FANTASTIC_TARGET ?? "local").trim().toLowerCase();
 const IMAGE = process.env.FANTASTIC_IMAGE ?? "fantastic:latest";
@@ -62,8 +63,6 @@ function containerRunArgs(name: string, port: number, tmp: string, serveDist: bo
     "FANTASTIC_RUNTIME=python",
     "-e",
     `FANTASTIC_PORT=${port}`,
-    "-e",
-    "FANTASTIC_HEAD=off",
   ];
   if (serveDist) args.push("-v", `${DIST_DIR}:${CONTAINER_DIST}:ro`);
   // Forward LLM keys for the (opt-in, paid) live-LLM tests.

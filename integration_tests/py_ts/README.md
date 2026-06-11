@@ -48,7 +48,7 @@ FANTASTIC_IMAGE=fantastic:latest FANTASTIC_TARGET=container npm run test:integra
 
 Container target: needs the image built (`sh container/build.sh`, **host arch**)
 and podman/docker; the daemon runs the python runtime with `-p 127.0.0.1:port:port`
-and `FANTASTIC_HEAD=off`, seeding one-shots run inside the image, and the frontend
+(its `/` is the dynamic agent index), seeding one-shots run inside the image, and the frontend
 `dist/` is bind-mounted at `/work/dist` (inside the workdir — file_bridge
 clamps roots to the running dir) so the `ts_dist` file_bridge agent serves it. Everything is
 host/browser → container (no container↔container), so it works over `-p`. The

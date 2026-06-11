@@ -9,12 +9,14 @@
 #   FANTASTIC_PORT    = suggested port for a web you compose (default 8088); used
 #                       only in the "compose a web" hint, not bound by the entrypoint
 #   FANTASTIC_WORKDIR = /work (bind-mounted; holds .fantastic/lock.json)
-#   FANTASTIC_HEAD    = on (default) | off — IF you compose a web, serve the head at `/`
 #
-# FANTASTIC_HEAD only sets FANTASTIC_WEB_INDEX (an env hint). Honored by the RUST
-# head only — the python web's `/` is the agent-tree index (a custom landing is
-# served through the gated `/<file_bridge>/file/<path>` route, not this env). No web
-# → nothing serves.
+# On EVERY runtime the web's `/` is the agent-tree index — the kernel's own web
+# owns no `fs` surface. A custom landing (e.g. the all-readmes head page baked at
+# /opt/fantastic/head/index.html) is served the one gated way: create a read-only
+# `file_bridge` over that dir and let `/<file_bridge>/file/index.html` serve it.
+# There is no `FANTASTIC_WEB_INDEX` env back-channel any more (deleted to match
+# Python — no host reads a landing file off disk behind the gate). No web →
+# nothing serves.
 #
 # The frontend is the prebuilt zip at $FANTASTIC_JS_KERNEL_ZIP — the image only
 # CARRIES it (not a CDN); copy bundle.min.js out of it into your project and serve
@@ -28,13 +30,6 @@ WORKDIR="${FANTASTIC_WORKDIR:-/work}"
 # default is `-p 8088:8088` (same in/out).
 PORT="${FANTASTIC_PORT:-8088}"
 export FANTASTIC_JS_KERNEL_ZIP="${FANTASTIC_JS_KERNEL_ZIP:-/opt/fantastic/js_kernel.zip}"
-
-# Head ON by default; a flag turns it OFF (never on). off/0/false/no all disable.
-HEAD="${FANTASTIC_HEAD:-on}"
-case "$HEAD" in
-  off|0|false|no|OFF|FALSE|NO) : ;;   # head disabled → plain agent-tree index at /
-  *) export FANTASTIC_WEB_INDEX="${FANTASTIC_WEB_INDEX:-/opt/fantastic/head/index.html}" ;;
-esac
 
 PY="${FANTASTIC_PY:-/opt/fantastic/venv/bin/fantastic}"
 RUST="${FANTASTIC_RUST:-/opt/fantastic/bin/fantastic-rust}"

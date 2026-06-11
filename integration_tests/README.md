@@ -103,8 +103,8 @@ Container target notes:
   tests skip cleanly otherwise. The image must be the **host arch** (native) —
   a cross-arch image runs under emulation and is slow.
 - Seeding one-shots run **inside** the container too (a rootless container's uid
-  can't write a host-seeded `.fantastic/`), and the daemon runs with
-  `FANTASTIC_HEAD=off` so `/` is the dynamic readiness signal.
+  can't write a host-seeded `.fantastic/`); `/` is the dynamic agent index on
+  every runtime, so a 200 on `/` is the readiness signal.
 - **Swift** has no Linux container (Network.framework HTTP) → swift tests skip
   under `container`.
 - **Bridge across containers — each container is a unit at `host:port`, NO shared
