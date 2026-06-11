@@ -86,7 +86,7 @@ pub(crate) fn parse_spec(spec: Option<&Value>) -> Result<(Option<String>, Option
 
 /// The rule TYPE name for reflect — never surfaces the rule's config. Absent ⇒
 /// `default` (`allow_all` for ingress, `silent` for egress).
-pub(crate) fn rule_name(spec: Option<&Value>, default: &str) -> String {
+pub fn rule_name(spec: Option<&Value>, default: &str) -> String {
     match spec {
         Some(Value::String(s)) if !s.is_empty() => s.clone(),
         Some(Value::Object(o)) => o

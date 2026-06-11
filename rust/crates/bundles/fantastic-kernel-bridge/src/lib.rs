@@ -53,7 +53,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 
-pub mod authorizer;
+// The authorization rule registries live in the shared `fantastic-io-bridge` base
+// (every io derivation imports them); re-export so existing `authorizer::` paths hold.
+pub use fantastic_io_bridge::authorizer;
 pub mod transport;
 
 use authorizer::{Action, Decision, EgressRule, IngressRule};
