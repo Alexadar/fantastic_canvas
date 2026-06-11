@@ -299,6 +299,18 @@ export async function bootHost(port = 8911, opts: BootOptions = {}): Promise<Hos
     TARGET === "container" ? join(repoRoot, "integration_tests", "py_ts", "tmp") : tmpdir();
   if (TARGET === "container") mkdirSync(tmpBase, { recursive: true });
   const tmp = mkdtempSync(join(tmpBase, "ftbridge-"));
+  // Persistence provider FIRST. Under the no-fallback rule, kernel_state
+  // auto-persists ONLY through a discovered file_bridge@.fantastic; without one the
+  // one-shot seeds below stay in RAM and never reach disk, so the spawned daemon
+  // boots empty. Seeding the store first makes the whole seeded tree durable.
+  runCli(tmp, [
+    "kernel_state",
+    "create_agent",
+    "handler_module=file_bridge.tools",
+    "id=store",
+    "root=.fantastic",
+    "ingress_rule=allow_all",
+  ]);
   const webOut = runCli(tmp, [
     "kernel_state",
     "create_agent",

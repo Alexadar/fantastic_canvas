@@ -174,11 +174,41 @@ def _render(v: Any) -> str:
     return str(v)
 
 
+def seed_store(binary: Path, workdir: Path) -> None:
+    """Persist the kernel_state persistence PROVIDER — a `file_bridge` rooted at
+    `.fantastic` (id `store`, open). Must run BEFORE any other seed.
+
+    PYTHON ONLY. Under the no-fallback rule, python's `kernel_state` auto-persists
+    records ONLY through a discovered `file_bridge@.fantastic`; with none wired, the
+    one-shot seeds stay in RAM and never reach disk, so the spawned daemon would boot
+    empty. Seeding the store first makes every later seed persist. No-op on rust/swift
+    (root `core` writes directly). Idempotent (skips if a `store` already exists)."""
+    if root_id(binary, workdir) != "kernel_state":
+        return  # only python's kernel_state needs a discovered provider
+    proc = as_launcher(binary).cli(workdir, ["reflect", "tree=ids"], timeout=15.0)
+    if '"store"' in proc.stdout:
+        return  # already wired
+    reply = seed_create(
+        binary,
+        workdir,
+        handler_module="file_bridge.tools",
+        agent_id="store",
+        root=".fantastic",
+        ingress_rule="allow_all",
+    )
+    if "error" in reply:
+        raise RuntimeError(f"store seed failed: {reply}")
+
+
 def seed_web(binary: Path, workdir: Path, port: int) -> None:
     """Persist a `web` agent bound to `port`. Idempotent if the
     runtime's one-shot CLI handles "agent already exists" gracefully;
     otherwise call only once per workdir.
+
+    Ensures the persistence provider (`seed_store`) FIRST, so the seeded tree
+    actually reaches disk for the spawned daemon to load (python no-fallback rule).
     """
+    seed_store(binary, workdir)
     reply = seed_create(
         binary,
         workdir,
