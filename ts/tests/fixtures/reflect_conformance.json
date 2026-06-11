@@ -1,22 +1,37 @@
 {
   "_doc": "CROSS-LANGUAGE reflect contract. The ts kernel (tests/reflect.test.ts) and the python kernel must BOTH reproduce every case's `expect` from `tree`+`bundles`. Edit here once; both runtimes re-verify. This is what keeps a second kernel from drifting. NOTE: the root reflect carries a per-runtime `runtime` field (\"python\"|\"rust\"|\"swift\"|\"ts\"); this fixture is exercised by the ts kernel so the root cases expect \"ts\". The root also carries deployment context `env` + `version` (read from FANTASTIC_ENV / FANTASTIC_VERSION on the host runtimes; the browser ts kernel has no env, so it is always env=\"host\", version=null).",
-  "bundles": ["terminal_view.js", "canvas.js"],
+  "bundles": [
+    "terminal_view.js",
+    "canvas.js"
+  ],
   "tree": [
-    { "id": "kernel_state", "parentId": null, "root": true },
+    {
+      "id": "kernel_state",
+      "parentId": null,
+      "root": true
+    },
     {
       "id": "term1",
       "parentId": "kernel_state",
       "handlerModule": "terminal_view.js",
       "sentence": "xterm.js terminal view.",
-      "verbs": { "write": "write bytes to the PTY", "resize": "resize the grid" },
-      "meta": { "display_name": "Terminal", "description": "A PTY view." }
+      "verbs": {
+        "write": "write bytes to the PTY",
+        "resize": "resize the grid"
+      },
+      "meta": {
+        "display_name": "Terminal",
+        "description": "A PTY view."
+      }
     }
   ],
   "cases": [
     {
       "name": "root, default flags (tree=all, bundles=none, readme=false)",
       "target": "kernel",
-      "payload": { "type": "reflect" },
+      "payload": {
+        "type": "reflect"
+      },
       "expect": {
         "id": "kernel_state",
         "sentence": "Fantastic kernel. Everything is reachable by sending messages to agents.",
@@ -26,6 +41,9 @@
         "runtime": "ts",
         "env": "host",
         "version": null,
+        "persistence": {
+          "provider": null
+        },
         "tree": {
           "id": "kernel_state",
           "parent_id": null,
@@ -47,7 +65,10 @@
     {
       "name": "root via real id, tree=ids",
       "target": "kernel_state",
-      "payload": { "type": "reflect", "tree": "ids" },
+      "payload": {
+        "type": "reflect",
+        "tree": "ids"
+      },
       "expect": {
         "id": "kernel_state",
         "sentence": "Fantastic kernel. Everything is reachable by sending messages to agents.",
@@ -57,13 +78,23 @@
         "runtime": "ts",
         "env": "host",
         "version": null,
-        "tree": ["kernel_state", "term1"]
+        "persistence": {
+          "provider": null
+        },
+        "tree": [
+          "kernel_state",
+          "term1"
+        ]
       }
     },
     {
       "name": "root, tree=none + bundles=ids (atomic, context-light)",
       "target": "kernel_state",
-      "payload": { "type": "reflect", "tree": "none", "bundles": "ids" },
+      "payload": {
+        "type": "reflect",
+        "tree": "none",
+        "bundles": "ids"
+      },
       "expect": {
         "id": "kernel_state",
         "sentence": "Fantastic kernel. Everything is reachable by sending messages to agents.",
@@ -73,13 +104,22 @@
         "runtime": "ts",
         "env": "host",
         "version": null,
-        "bundles": ["canvas", "terminal_view"]
+        "persistence": {
+          "provider": null
+        },
+        "bundles": [
+          "canvas",
+          "terminal_view"
+        ]
       }
     },
     {
       "name": "leaf view-agent, declares sentence/verbs/description, tree=none",
       "target": "term1",
-      "payload": { "type": "reflect", "tree": "none" },
+      "payload": {
+        "type": "reflect",
+        "tree": "none"
+      },
       "expect": {
         "id": "term1",
         "sentence": "xterm.js terminal view.",
@@ -87,7 +127,10 @@
         "handler_module": "terminal_view.js",
         "display_name": "Terminal",
         "description": "A PTY view.",
-        "verbs": { "write": "write bytes to the PTY", "resize": "resize the grid" }
+        "verbs": {
+          "write": "write bytes to the PTY",
+          "resize": "resize the grid"
+        }
       }
     }
   ]

@@ -59,6 +59,9 @@ new WsBridge(kernel, { origin, controlEndpoint: LOADER });
 // The ONE auto-added agent in the JS runtime — its single autoagent (the loader),
 // mirroring the host root loader. Everything else below is explicit.
 const loader = new ProxyLoader(kernel, LOADER);
+// Surface the persistence provider on the root reflect (`persistence:{provider}`):
+// the frontend persists records THROUGH the host loader it proxies to.
+kernel.persistenceProvider = LOADER;
 
 const records = await loader.loadTree();
 if (records.length === 0) {

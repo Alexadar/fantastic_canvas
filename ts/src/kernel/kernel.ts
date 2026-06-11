@@ -37,6 +37,10 @@ export class Kernel {
   readonly agents: Map<string, Agent> = new Map();
   rootId: string | null = null;
   bridge: Bridge | null = null;
+  /** WHICH provider this kernel persists records THROUGH — surfaced on the root
+   *  reflect as `persistence:{provider}` (mirrors py). For the browser frontend the
+   *  loader sets this to the host loader id/alias it proxies to; null = unwired. */
+  persistenceProvider: string | null = null;
 
   /** handler_module -> the JS handler that runs that view bundle locally. */
   private readonly handlers: Map<string, Handler> = new Map();
