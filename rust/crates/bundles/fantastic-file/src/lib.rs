@@ -81,6 +81,32 @@ impl Bundle for FileBundle {
             None => DEFAULT_HIDDEN.iter().map(|s| s.to_string()).collect(),
         };
 
+        // GATE — the fs edge is an io_bridge leg: SEALED by default. Every verb except
+        // discovery/lifecycle (reflect/boot/shutdown) is denied until the leg is opened
+        // (`ingress_rule=allow_all`). Mirrors py file_bridge's gate_inbound choke point.
+        if !matches!(verb, "reflect" | "boot" | "shutdown") {
+            let spec = meta.get("ingress_rule").or_else(|| meta.get("auth"));
+            let rule = match fantastic_io_bridge::authorizer::ingress::resolve(spec) {
+                Ok(r) => r,
+                Err(e) => return Ok(Some(json!({"error": e}))),
+            };
+            let action = fantastic_io_bridge::authorizer::Action {
+                kind: "call",
+                target: agent_id.0.as_str(),
+                verb,
+                token: meta.get("auth_token").and_then(Value::as_str),
+            };
+            if let fantastic_io_bridge::authorizer::Decision::Deny(reason) =
+                fantastic_io_bridge::gate_inbound(&rule, &action)
+            {
+                return Ok(Some(json!({
+                    "error": reason,
+                    "reason": "unauthorized",
+                    "hint": "the fs edge is sealed; open it: update_agent <id> ingress_rule=allow_all",
+                })));
+            }
+        }
+
         let reply = match verb {
             "reflect" => reflect_reply(agent_id, &root, readonly, &hidden),
             "boot" | "shutdown" => Value::Null,

@@ -52,6 +52,7 @@ async fn mk_kernel(tmp: &TempDir) -> (Arc<Kernel>, AgentId) {
                 "handler_module":"file.tools",
                 "id": file_id,
                 "root": tmp.path().to_string_lossy(),
+                "ingress_rule": "allow_all",
             }),
         )
         .await;
