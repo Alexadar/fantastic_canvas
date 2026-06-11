@@ -1,12 +1,15 @@
 """kernel_state — the durable-state ROOT agent (a weak-bound STREAM CONSUMER).
 
 `kernel_state` IS the tree root (`id="kernel_state"`). It owns the record⇄bytes
-serialization, the tree→path mapping, and the auto-persist lifecycle — but it
-does NOT do raw disk I/O itself. It persists by driving the SOURCE/SINK stream
-protocol on a PROVIDER bound by id (`store` meta, default `kernel_store`): a
-`file_bridge` rooted at `.fantastic`, composed as an EPHEMERAL at bootstrap
-(`compose_store`). Swap that provider for a `network_bridge` and the kernel's
-own state persists to a remote store — the G1 generalization turned inward.
+serialization, the tree→path mapping, and the auto-persist lifecycle. By default it
+writes records directly (`write_record`); but if a stream PROVIDER is wired it
+persists THROUGH it instead. The provider is not kernel-composed and not a fixed id
+— it is DISCOVERED (`_find_store`): the first `file_bridge` child of the root whose
+root resolves to `.fantastic`. An operator/LLM creates that file_bridge (a normal,
+visible, gated agent — see the keystone readme example); kernel_state finds it and
+routes persistence through its stream verbs. Point such a provider at a remote store
+(a `network_bridge`) and the kernel's own state persists remotely — G1 turned inward.
+Stream persistence is thus EMERGENT + opt-in; nothing ephemeral, nothing hidden.
 
   persist  ->  send(store, write_stream {path:<rel>/agent.json, b64:<record>})
   forget   ->  send(store, delete {path:<rel>, recursive:true})
@@ -41,11 +44,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from kernel import CURRENT_VERSION, Agent
-
-# The default provider id kernel_state binds when its record carries no `store`
-# meta. `compose_store` creates an ephemeral `file_bridge` under this id.
-DEFAULT_STORE_ID = "kernel_store"
+from kernel import CURRENT_VERSION
 
 
 # ─── pure disk I/O (no kernel needed — the bootstrap calls these) ──
@@ -199,39 +198,34 @@ def _resolve_path(agent, record: dict) -> Path:
     return path
 
 
-# ─── the stream provider binding (weak-coupled by id) ──────────────
+# ─── the stream provider binding (DISCOVERED, weak-coupled) ────────
 
 
-class _StoreProvider(Agent):
-    """An EPHEMERAL `file_bridge` that backs kernel_state's record bytes. Ephemeral
-    so it is never itself persisted (no record on disk, skipped by the flush loop)
-    — it is per-process scaffolding, recomposed every boot by `compose_store`."""
-
-    ephemeral = True
-
-
-def compose_store(kernel, root_dir: Path | str | None = None):
-    """Compose the ephemeral `file_bridge` provider kernel_state persists through.
-    Idempotent. Call AFTER `kernel.load`, BEFORE the boot pass (so the flush loop,
-    started in kernel_state's boot, finds a live provider). `root_dir` is the
-    `.fantastic` dir (default: the root loader's own address)."""
-    existing = kernel.get_agent(DEFAULT_STORE_ID)
-    if existing is not None:
-        return existing
-    root = str(root_dir) if root_dir is not None else str(kernel.root._root_path)
-    return _StoreProvider(
-        DEFAULT_STORE_ID,
-        ctx=kernel,
-        parent=kernel.root,
-        handler_module="file_bridge.tools",
-        root=root,
-        ingress_rule="allow_all",
-    )
-
-
-def _store_id(agent) -> str:
-    s = agent.record.get("store")
-    return s if isinstance(s, str) and s else DEFAULT_STORE_ID
+def _find_store(agent) -> str | None:
+    """DISCOVER the persistence provider: the first `file_bridge` CHILD of the loader
+    whose root resolves to the loader's own `.fantastic` dir. Bound by MATCH, not a
+    fixed id and not kernel-composed — an operator/LLM creates it (see the keystone
+    readme example), the loader finds it. Returns its id, or None (→ direct
+    `write_record` fallback) when none is wired yet. So stream persistence is an
+    EMERGENT, opt-in capability; a bare kernel persists directly until you add one."""
+    kernel = agent.ctx
+    try:
+        want = _root(agent).resolve()
+    except (OSError, ValueError):
+        return None
+    base = Path.cwd().resolve()
+    for cid in agent.child_ids():
+        rec = kernel.get(cid) or {}
+        if rec.get("handler_module") != "file_bridge.tools":
+            continue
+        r = rec.get("root", "") or ""
+        try:
+            root = (Path(r) if Path(r).is_absolute() else base / r).resolve()
+        except (OSError, ValueError):
+            continue
+        if root == want:
+            return cid
+    return None
 
 
 def _store_reldir(agent, abs_path: Path) -> str:
@@ -247,10 +241,12 @@ def _store_reldir(agent, abs_path: Path) -> str:
 
 async def _persist_via_store(
     agent, store_id: str, abs_path: Path, record: dict
-) -> None:
+) -> bool:
     """Write one record's agent.json (+ seed its readme) THROUGH the provider's
     stream verbs. Merge-not-overwrite: read the existing bytes, overlay the
-    kernel-managed keys, write back — so sidecar fields survive."""
+    kernel-managed keys, write back — so sidecar fields survive. Returns False if the
+    provider refused the write (sealed/error) → the caller falls back to direct I/O,
+    so re-gating the store can never silently lose state."""
     kernel = agent.ctx
     reldir = _store_reldir(agent, abs_path)
     af = f"{reldir}/agent.json" if reldir else "agent.json"
@@ -265,7 +261,7 @@ async def _persist_via_store(
             existing = {}
     existing.update(record)
     body = json.dumps(existing, indent=2).encode("utf-8")
-    await kernel.send(
+    w = await kernel.send(
         store_id,
         {
             "type": "write_stream",
@@ -274,7 +270,10 @@ async def _persist_via_store(
             "truncate": True,
         },
     )
+    if not isinstance(w, dict) or w.get("error"):
+        return False
     await _seed_readme_via_store(agent, store_id, reldir, record.get("handler_module"))
+    return True
 
 
 async def _seed_readme_via_store(
@@ -308,14 +307,16 @@ async def _seed_readme_via_store(
         pass
 
 
-async def _forget_via_store(agent, store_id: str, abs_path: Path) -> None:
-    """Recursively remove one agent's dir THROUGH the provider (never the root)."""
+async def _forget_via_store(agent, store_id: str, abs_path: Path) -> bool:
+    """Recursively remove one agent's dir THROUGH the provider (never the root).
+    Returns False if the provider refused → caller falls back to direct `rmtree`."""
     reldir = _store_reldir(agent, abs_path)
     if not reldir:
-        return
-    await agent.ctx.send(
+        return True  # never remove the root; nothing to do
+    r = await agent.ctx.send(
         store_id, {"type": "delete", "path": reldir, "recursive": True}
     )
+    return isinstance(r, dict) and not r.get("error")
 
 
 # ─── the auto-flush loop (the root subscribes the live tree) ────────
@@ -323,9 +324,11 @@ async def _forget_via_store(agent, store_id: str, abs_path: Path) -> None:
 
 class _FlushLoop:
     """Subscribe to the kernel state stream; debounce-flush records on add/update,
-    remove on delete — THROUGH the bound stream provider (`_persist_via_store`).
-    Writing rides the provider's verbs (not the state stream), so it never feeds
-    back. If no provider is live, falls back to direct `write_record`/`rmtree`."""
+    remove on delete. If a stream provider is DISCOVERED (`_find_store` — a
+    file_bridge child rooted at `.fantastic`), persistence rides its verbs (not the
+    state stream, so it never feeds back); otherwise — or if the provider refuses —
+    it falls back to direct `write_record`/`rmtree`. So a bare kernel persists
+    directly; wiring a provider upgrades it to a stream consumer, emergently."""
 
     def __init__(self, agent) -> None:
         self.agent = agent
@@ -378,20 +381,25 @@ class _FlushLoop:
         self._persist.clear()
         forget = dict(self._forget)
         self._forget.clear()
-        store_id = _store_id(self.agent)
-        provider = self.kernel.get_agent(store_id)
+        store_id = _find_store(self.agent)  # discovered, may be None
         for aid in persist_ids:
             a = self.kernel.get_agent(aid)
             if a is None or type(a).ephemeral:
                 continue
-            if provider is not None:
+            ok = (
                 await _persist_via_store(self.agent, store_id, a._root_path, a.record)
-            else:
-                write_record(a._root_path, a.record)  # provider-less fallback
+                if store_id is not None
+                else False
+            )
+            if not ok:
+                write_record(a._root_path, a.record)  # no/denied provider → direct
         for path in forget.values():
-            if provider is not None:
+            ok = (
                 await _forget_via_store(self.agent, store_id, path)
-            else:
+                if store_id is not None
+                else False
+            )
+            if not ok:
                 rmtree(path)
 
     async def stop(self) -> None:

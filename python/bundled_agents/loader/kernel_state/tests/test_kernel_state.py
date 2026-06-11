@@ -6,7 +6,7 @@ import json
 
 from _testkit import boot_root
 from kernel_state.tools import (
-    compose_store,
+    _find_store,
     on_shutdown,
     read_tree,
     rmtree,
@@ -109,16 +109,21 @@ async def test_booted_loader_persists_then_forgets(tmp_path, monkeypatch):
         await on_shutdown(root)  # stop the loop + final flush
 
 
-async def test_booted_loader_persists_via_stream_provider(tmp_path, monkeypatch):
-    """The stream-consumer path: with a `file_bridge` provider composed, the booted
-    loader persists records THROUGH the provider's `write_stream` (weak-bound by
-    id) — not direct disk I/O. The record bytes + the seeded readme reach disk via
-    the SINK, and delete recurses through the provider."""
+async def test_booted_loader_persists_via_discovered_provider(tmp_path, monkeypatch):
+    """The stream-consumer path: an operator/LLM creates a PERSISTENT, gated
+    file_bridge child rooted at `.fantastic`; the booted loader DISCOVERS it (by
+    match, not a fixed id) and persists records THROUGH its `write_stream` — not
+    direct disk I/O. The record bytes + the seeded readme reach disk via the SINK,
+    and delete recurses through the provider."""
     monkeypatch.chdir(tmp_path)
     root = boot_root()
-    provider = compose_store(root.ctx)  # ephemeral file_bridge SINK at .fantastic
-    assert provider.handler_module == "file_bridge.tools"
-    assert type(provider).ephemeral  # never itself persisted
+    # operator/LLM wires the provider: a real, persisted, gated file_bridge child.
+    root.create(
+        "file_bridge.tools", id="store", root=".fantastic", ingress_rule="allow_all"
+    )
+    assert (
+        _find_store(root) == "store"
+    )  # discovered by match (root resolves to .fantastic)
     await root.send(root.id, {"type": "boot"})  # start the flush loop
     try:
         rec = await root.send(

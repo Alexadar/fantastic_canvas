@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from cli import Cli
-from kernel_state.tools import compose_store, read_tree, write_record
+from kernel_state.tools import read_tree, write_record
 
 from kernel import Kernel, _load_dotenv, dispatch_argv
 
@@ -38,11 +38,9 @@ def _bootstrap(kernel: Kernel, root_dir: Path = Path(".fantastic")) -> None:
         # `reflect` paths take no lock and write nothing).
         records = [{"id": "kernel_state", "handler_module": "kernel_state.tools"}]
     kernel.load(records, root_path=root_dir)
-    # Compose the ephemeral stream PROVIDER kernel_state persists through (a
-    # file_bridge rooted at `.fantastic`). After load, before the boot pass — so
-    # kernel_state's flush loop finds a live provider. The seed write below stays
-    # DIRECT: the provider isn't booted yet, and the cold path can't stream.
-    compose_store(kernel, root_dir)
+    # No stream provider is composed here. kernel_state persists records DIRECTLY by
+    # default; it DISCOVERS a provider (a file_bridge child rooted at `.fantastic`)
+    # if an operator/LLM has wired one. The seed write below is direct (cold path).
     if seeded:
         write_record(kernel.root._root_path, kernel.root.record)
     if sys.stdin.isatty():

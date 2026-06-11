@@ -65,31 +65,20 @@ async def test_kernel_alias_equals_core(seeded_kernel):
 
 
 async def test_reflect_tree_all_default(seeded_kernel):
-    """Default tree=all: nested distilled subtree. Persistent children appear;
-    ephemerals (the cli renderer, the stream provider) are omitted."""
-    await seeded_kernel.send(
-        "kernel_state",
-        {"type": "create_agent", "handler_module": "file_bridge.tools", "id": "vis"},
-    )
+    """Default tree=all: nested distilled subtree rooted at the agent."""
     r = await seeded_kernel.send("kernel", {"type": "reflect"})
     tree = r["tree"]
     assert tree["id"] == "kernel_state"
     child_ids = {c["id"] for c in tree.get("children", [])}
-    assert "vis" in child_ids  # persistent child shows
-    assert "cli" not in child_ids  # ephemeral scaffolding omitted
+    assert "cli" in child_ids
 
 
 async def test_reflect_tree_ids(seeded_kernel):
-    """tree=ids: a flat descendant-id list (self first); ephemerals omitted."""
-    await seeded_kernel.send(
-        "kernel_state",
-        {"type": "create_agent", "handler_module": "file_bridge.tools", "id": "vis"},
-    )
+    """tree=ids: a flat descendant-id list (self first)."""
     r = await seeded_kernel.send("kernel", {"type": "reflect", "tree": "ids"})
     assert isinstance(r["tree"], list)
     assert r["tree"][0] == "kernel_state"
-    assert "vis" in r["tree"]
-    assert "cli" not in r["tree"]
+    assert "cli" in r["tree"]
 
 
 async def test_reflect_tree_none_omits(seeded_kernel):

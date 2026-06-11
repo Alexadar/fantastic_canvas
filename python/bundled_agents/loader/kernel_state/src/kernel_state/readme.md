@@ -159,6 +159,23 @@ The container name is declared config (the root record's `children_dir`,
 default `agents`) — set `host_agents` here / `web_agents` on a `web_loader`
 for a self-describing layout.
 
+### Durable state: how records reach disk (and how to stream it)
+
+By default the root (`kernel_state`) writes each record straight to disk. You can
+upgrade it to persist THROUGH the stream protocol — useful to route the kernel's
+own state through a gated edge, or (with a `network_bridge`) to a remote store.
+You don't configure an id: the loader **discovers** its provider as the first
+`file_bridge` child of the root whose `root` resolves to `.fantastic`. Wire one:
+
+    fantastic kernel create_agent handler_module=file_bridge.tools \
+        id=store root=.fantastic ingress_rule=allow_all   # the persistence sink
+
+Once it exists, every record auto-persists through its `write_stream`/`delete`
+(readme-seeding too); if it's ever absent or sealed, the loader falls back to
+direct writes, so state is never lost. It's a normal, visible, re-gateable agent —
+reflect it like any other. (`allow_all` lets the loader's own writes through; gate
+it tighter only if you also accept the direct-write fallback for persistence.)
+
 ## Two kernels — host + browser frontend
 
 This is the HOST kernel (Python, `*.tools` bundles). A second kernel — a

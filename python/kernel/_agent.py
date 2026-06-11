@@ -316,13 +316,10 @@ class Agent:
         return reply
 
     def _descendant_ids(self) -> list[str]:
-        """Flat id index of self + all PERSISTENT descendants (DFS, self first).
-        Ephemerals (cli, the kernel_state stream provider) are omitted — they're
-        per-process scaffolding, not part of the durable graph."""
+        """Flat id index of self + all descendants (DFS, self first)."""
         out = [self.id]
         for c in self._children.values():
-            if not type(c).ephemeral:
-                out.extend(c._descendant_ids())
+            out.extend(c._descendant_ids())
         return out
 
     def child_ids(self) -> list[str]:
@@ -854,14 +851,9 @@ class Agent:
     def _tree(self, *, depth: int | None, details: bool, current_depth: int) -> dict:
         node = self._node_summary(details=details)
         if depth is None or current_depth < depth:
-            # Ephemeral agents (the cli renderer, the kernel_state stream
-            # provider) are per-process scaffolding, not part of the persistent
-            # agent graph — omitted from the tree the way `save()` skips them on
-            # disk, so reflect mirrors what's durable.
             node["children"] = [
                 c._tree(depth=depth, details=details, current_depth=current_depth + 1)
                 for c in self._children.values()
-                if not type(c).ephemeral
             ]
         else:
             node["children"] = []
