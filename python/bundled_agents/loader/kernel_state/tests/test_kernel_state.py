@@ -84,29 +84,28 @@ def test_rmtree_removes_dir(tmp_path):
     assert not d.exists()
 
 
-async def test_booted_loader_persists_then_forgets(tmp_path, monkeypatch):
-    """Live wiring: boot the root loader → it subscribes to the state
-    stream and debounce-flushes. Creating an agent writes its agent.json;
-    deleting it rmtrees the dir. This is the daemon's auto-persist path."""
+async def test_no_provider_state_stays_in_ram(tmp_path, monkeypatch):
+    """NO FALLBACK (kernel-style): with no persistence provider wired, the booted
+    loader does NOT write records to disk — state lives in RAM only. The loader
+    never papers over a missing provider with a direct-write back-channel."""
     monkeypatch.chdir(tmp_path)
     root = boot_root()
-    await root.send(root.id, {"type": "boot"})  # start the flush loop
+    await root.send(root.id, {"type": "boot"})  # start the flush loop (no provider)
     try:
         rec = await root.send(
             root.id,
-            {"type": "create_agent", "handler_module": "file_bridge.tools", "x": 9},
+            {
+                "type": "create_agent",
+                "handler_module": "yaml_state.tools",
+                "mode": "mem",
+            },
         )
         aid = rec["id"]
-        agent_dir = tmp_path / ".fantastic" / "agents" / aid
-        await asyncio.sleep(0.3)  # let the debounce flush
-        assert (agent_dir / "agent.json").exists()
-        assert json.loads((agent_dir / "agent.json").read_text())["x"] == 9
-
-        await root.send(root.id, {"type": "delete_agent", "id": aid})
-        await asyncio.sleep(0.3)  # let the removed event drive rmtree
-        assert not agent_dir.exists()
+        await asyncio.sleep(0.3)  # debounce window
+        assert root.ctx.get_agent(aid) is not None  # live in the tree (RAM)
+        assert not (tmp_path / ".fantastic" / "agents" / aid / "agent.json").exists()
     finally:
-        await on_shutdown(root)  # stop the loop + final flush
+        await on_shutdown(root)
 
 
 async def test_booted_loader_persists_via_discovered_provider(tmp_path, monkeypatch):

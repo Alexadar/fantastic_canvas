@@ -5,6 +5,18 @@ A medium that unifies humans and AIs into a single workspace. Recursive
 (`send(target_id, payload)`), plugin-discovered bundles. Every agent
 answers `{type:"reflect"}` — the universal discovery verb.
 
+> **NO FALLBACKS — this is a kernel, not a SaaS. Build it fallback-less, close to
+> the Linux kernel.** Every operation has exactly ONE path. If a precondition (a
+> wired provider, a gate, a dependency) is absent, the operation is a **no-op or
+> fails** — it NEVER silently routes around the gap via a second mechanism. No
+> `try X; else do Y`, no `if not provider: write_directly`, no "prefer X else Y",
+> no defensive default that papers over a missing dependency. Example: with no
+> persistence provider wired, `kernel_state` does NOT auto-persist — the tree stays
+> in RAM (lost on restart) until you wire one. That is correct. Fallbacks add
+> complexity, hide bugs, and create two truths; a kernel refuses them. Bootstrap
+> cold primitives (the one-time root seed, `read_tree` at boot) are the single cold
+> path, not fallbacks.
+
 > **This is the canonical reference implementation** of the Fantastic
 > protocol. When other runtimes (`swift/`, the Apple app's embedded
 > kernel) disagree with this kernel on wire shape, on-disk format,

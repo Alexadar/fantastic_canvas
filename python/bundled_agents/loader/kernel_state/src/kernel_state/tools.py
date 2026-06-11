@@ -1,15 +1,18 @@
 """kernel_state — the durable-state ROOT agent (a weak-bound STREAM CONSUMER).
 
 `kernel_state` IS the tree root (`id="kernel_state"`). It owns the record⇄bytes
-serialization, the tree→path mapping, and the auto-persist lifecycle. By default it
-writes records directly (`write_record`); but if a stream PROVIDER is wired it
-persists THROUGH it instead. The provider is not kernel-composed and not a fixed id
-— it is DISCOVERED (`_find_store`): the first `file_bridge` child of the root whose
-root resolves to `.fantastic`. An operator/LLM creates that file_bridge (a normal,
-visible, gated agent — see the keystone readme example); kernel_state finds it and
-routes persistence through its stream verbs. Point such a provider at a remote store
-(a `network_bridge`) and the kernel's own state persists remotely — G1 turned inward.
-Stream persistence is thus EMERGENT + opt-in; nothing ephemeral, nothing hidden.
+serialization, the tree→path mapping, and the auto-persist lifecycle. The auto-flush
+persists ONLY through a stream PROVIDER it DISCOVERS (`_find_store`: the first
+`file_bridge` child of the root whose root resolves to `.fantastic`). NO PROVIDER ⇒
+NO AUTO-PERSIST — state lives in RAM until one is wired. There is no direct-write
+fallback (kernel-style: one path, no defensive substitution). An operator/LLM wires
+the provider — a normal, visible, gated `file_bridge` (see the keystone readme
+example); point it at a `network_bridge` and the kernel's own state persists remotely
+(G1 turned inward). Stream persistence is EMERGENT + opt-in; nothing ephemeral.
+
+`read_tree`/`write_record` below are the BOOTSTRAP cold primitives + the explicit
+`load_tree`/`persist_record` verb contract (used by session/remote loaders) — NOT
+the auto-flush, which is provider-only.
 
   persist  ->  send(store, write_stream {path:<rel>/agent.json, b64:<record>})
   forget   ->  send(store, delete {path:<rel>, recursive:true})
@@ -21,13 +24,6 @@ Contract (duck-typed; any agent answering these is a loader):
 
 The root SUBSCRIBES to the kernel state stream and flushes on add/update/remove
 (dirty-queue + debounce). A loader serving a remote kernel sets `watch=false`.
-
-The COLD path stays direct, by necessity: the bootstrap reads the tree
-(`read_tree`) BEFORE any agent — including the stream provider — exists, so the
-first read can't be a stream. `read_tree`/`write_record` remain as the direct
-primitives the bootstrap + test harness use; the stream path is the running
-kernel's auto-persist. When no provider is bound, the flush falls back to
-direct `write_record` (so a provider-less kernel still persists).
 
 Disk layout (provider-relative, under `.fantastic`):
   agent.json                 root record
@@ -205,9 +201,8 @@ def _find_store(agent) -> str | None:
     """DISCOVER the persistence provider: the first `file_bridge` CHILD of the loader
     whose root resolves to the loader's own `.fantastic` dir. Bound by MATCH, not a
     fixed id and not kernel-composed — an operator/LLM creates it (see the keystone
-    readme example), the loader finds it. Returns its id, or None (→ direct
-    `write_record` fallback) when none is wired yet. So stream persistence is an
-    EMERGENT, opt-in capability; a bare kernel persists directly until you add one."""
+    readme example), the loader finds it. Returns its id, or None when none is wired
+    — in which case the flush does NOTHING (state stays in RAM). No fallback."""
     kernel = agent.ctx
     try:
         want = _root(agent).resolve()
@@ -241,12 +236,12 @@ def _store_reldir(agent, abs_path: Path) -> str:
 
 async def _persist_via_store(
     agent, store_id: str, abs_path: Path, record: dict
-) -> bool:
+) -> None:
     """Write one record's agent.json (+ seed its readme) THROUGH the provider's
     stream verbs. Merge-not-overwrite: read the existing bytes, overlay the
-    kernel-managed keys, write back — so sidecar fields survive. Returns False if the
-    provider refused the write (sealed/error) → the caller falls back to direct I/O,
-    so re-gating the store can never silently lose state."""
+    kernel-managed keys, write back — so sidecar fields survive. If the provider
+    refuses (sealed), the write simply doesn't land — NO fallback; gating the store
+    is the operator's choice and its consequences are theirs."""
     kernel = agent.ctx
     reldir = _store_reldir(agent, abs_path)
     af = f"{reldir}/agent.json" if reldir else "agent.json"
@@ -261,7 +256,7 @@ async def _persist_via_store(
             existing = {}
     existing.update(record)
     body = json.dumps(existing, indent=2).encode("utf-8")
-    w = await kernel.send(
+    await kernel.send(
         store_id,
         {
             "type": "write_stream",
@@ -270,10 +265,7 @@ async def _persist_via_store(
             "truncate": True,
         },
     )
-    if not isinstance(w, dict) or w.get("error"):
-        return False
     await _seed_readme_via_store(agent, store_id, reldir, record.get("handler_module"))
-    return True
 
 
 async def _seed_readme_via_store(
@@ -307,16 +299,14 @@ async def _seed_readme_via_store(
         pass
 
 
-async def _forget_via_store(agent, store_id: str, abs_path: Path) -> bool:
-    """Recursively remove one agent's dir THROUGH the provider (never the root).
-    Returns False if the provider refused → caller falls back to direct `rmtree`."""
+async def _forget_via_store(agent, store_id: str, abs_path: Path) -> None:
+    """Recursively remove one agent's dir THROUGH the provider (never the root)."""
     reldir = _store_reldir(agent, abs_path)
     if not reldir:
-        return True  # never remove the root; nothing to do
-    r = await agent.ctx.send(
+        return  # never remove the root
+    await agent.ctx.send(
         store_id, {"type": "delete", "path": reldir, "recursive": True}
     )
-    return isinstance(r, dict) and not r.get("error")
 
 
 # ─── the auto-flush loop (the root subscribes the live tree) ────────
@@ -324,11 +314,11 @@ async def _forget_via_store(agent, store_id: str, abs_path: Path) -> bool:
 
 class _FlushLoop:
     """Subscribe to the kernel state stream; debounce-flush records on add/update,
-    remove on delete. If a stream provider is DISCOVERED (`_find_store` — a
-    file_bridge child rooted at `.fantastic`), persistence rides its verbs (not the
-    state stream, so it never feeds back); otherwise — or if the provider refuses —
-    it falls back to direct `write_record`/`rmtree`. So a bare kernel persists
-    directly; wiring a provider upgrades it to a stream consumer, emergently."""
+    remove on delete — ONLY through a DISCOVERED provider (`_find_store`: a file_bridge
+    child rooted at `.fantastic`). Writing rides the provider's verbs (not the state
+    stream, so it never feeds back). No provider ⇒ the flush is a no-op and state
+    stays in RAM (no fallback). Wiring a provider makes the kernel a stream
+    consumer; until then it simply isn't persistent."""
 
     def __init__(self, agent) -> None:
         self.agent = agent
@@ -377,30 +367,20 @@ class _FlushLoop:
             pass
 
     async def aflush(self) -> None:
+        store_id = _find_store(self.agent)
+        if store_id is None:
+            return  # no provider wired → records stay queued until one is. NO fallback.
         persist_ids = list(self._persist.keys())
         self._persist.clear()
         forget = dict(self._forget)
         self._forget.clear()
-        store_id = _find_store(self.agent)  # discovered, may be None
         for aid in persist_ids:
             a = self.kernel.get_agent(aid)
             if a is None or type(a).ephemeral:
                 continue
-            ok = (
-                await _persist_via_store(self.agent, store_id, a._root_path, a.record)
-                if store_id is not None
-                else False
-            )
-            if not ok:
-                write_record(a._root_path, a.record)  # no/denied provider → direct
+            await _persist_via_store(self.agent, store_id, a._root_path, a.record)
         for path in forget.values():
-            ok = (
-                await _forget_via_store(self.agent, store_id, path)
-                if store_id is not None
-                else False
-            )
-            if not ok:
-                rmtree(path)
+            await _forget_via_store(self.agent, store_id, path)
 
     async def stop(self) -> None:
         if self._unsub is not None:
