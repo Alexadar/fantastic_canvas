@@ -3,17 +3,17 @@
 **The host must not know this package exists.** Client↔server is a *weak
 binding* (same rule as `ws_bridge`: addressed by URL + path only, no shared
 types). The Python `web` bundle is a generic static host; it serves whatever
-`file` agents an operator (or an LLM following this recipe) wires
+`file_bridge` agents an operator (or an LLM following this recipe) wires
 up. Nothing in `python/` references `ts/`. That decoupling is the point — and it
 means **the same recipe serves any view package** (this TS kernel, a different
-framework's `dist/`, a plain HTML app): point a `file` agent at its build output
+framework's `dist/`, a plain HTML app): point a `file_bridge` agent at its build output
 and let it serve a caller-supplied mount page from there too.
 
 One duck-typed alias in `python/bundled_agents/web/host/src/web/app.py` does all the work:
 
 | alias | route | what answers it |
 |---|---|---|
-| `read{path}` | `GET /{id}/file/{path}` | a `file` agent → static file server rooted at a dir |
+| `read{path}` | `GET /{id}/file/{path}` | a `file_bridge` agent → static file server rooted at a dir |
 
 ## Distribution — the sovereign artifact
 
@@ -30,7 +30,7 @@ The zip's only pinned dependency is the **vendored esbuild Go binary** (checked
 into `ts/src/vendor/` — see `ts/readme.md` and `ts/tools/esbuild/README.md`).
 There is **no npm step** and no import map, because every vendor (`three`,
 `@xterm/*`, `xterm.css`) is inlined by esbuild into `bundle.min.js`. Operators
-pull the zip on demand and serve `bundle.min.js` through a generic `file` agent
+pull the zip on demand and serve `bundle.min.js` through a generic `file_bridge` agent
 — the mount page is a single `<script type="module">` tag, no import map, no
 `<link rel="stylesheet">` (the xterm CSS is injected at runtime by a shim inside
 the bundle). See [`ts/readme.md`](readme.md) for the full revive recipe and
@@ -66,12 +66,12 @@ or copy from. A minimal no-canvas mount page is just:
 Serve that page over `/ts_dist/file/<your-page>.html`. It loads `hello.js`,
 which `new WsBridge(...)`s to `/kernel_state/ws`, reflects the kernel, and renders
 the live tree. The host never learned what `hello.js` is; it's just bytes served
-by the `file` agent.
+by the `file_bridge` agent.
 
 ### The canvas mount page (with vendored three/xterm)
 
 `main.js` is the canvas bootstrap; `hello.js` is the no-canvas starter — both
-emitted by the same build and served by the same `file` agent (the build emits
+emitted by the same build and served by the same `file_bridge` agent (the build emits
 the modules only; you supply the mount page). The canvas boots against the
 host's **`web_loader` alias** (a `web/kernel_state` the operator created — see the
 root readme ["The frontend is decoupled"](../README.md#the-frontend-is-decoupled)):
@@ -109,7 +109,7 @@ mounts, xterm only when a terminal opens — so the canvas shell stays light.
 Nothing above is TS-specific. To serve view package *X*:
 
 1. build it to some `X/dist`,
-2. `file` agent rooted at `X/dist` → all of `X`'s assets are served,
+2. `file_bridge` agent rooted at `X/dist` → all of `X`'s assets are served,
 3. provide a mount page (a tiny `<script type="module">` host page) and open it
    over `/<file_id>/file/<path>`; it loads `X`'s entry from the same `/file/`
    root.

@@ -11,8 +11,10 @@
 #   FANTASTIC_WORKDIR = /work (bind-mounted; holds .fantastic/lock.json)
 #   FANTASTIC_HEAD    = on (default) | off — IF you compose a web, serve the head at `/`
 #
-# FANTASTIC_HEAD only sets FANTASTIC_WEB_INDEX (an env hint); a web host you
-# compose then serves the descriptive head page at `/`. No web → nothing serves.
+# FANTASTIC_HEAD only sets FANTASTIC_WEB_INDEX (an env hint). Honored by the RUST
+# head only — the python web's `/` is the agent-tree index (a custom landing is
+# served through the gated `/<file_bridge>/file/<path>` route, not this env). No web
+# → nothing serves.
 #
 # The frontend is the prebuilt zip at $FANTASTIC_JS_KERNEL_ZIP — the image only
 # CARRIES it (not a CDN); copy bundle.min.js out of it into your project and serve

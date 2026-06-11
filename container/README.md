@@ -58,7 +58,7 @@ one matching `uname -m` (`x86_64`→`:amd64`, `arm64`/`aarch64`→`:arm64`). The
    (`POST /rest/<target>`) — **no client library, the protocol IS the API.** An LLM
    reads `reflect` (step 3), then **composes agents with `create_agent` and wires
    them with `send`** — building your app *inside this kernel*, operating on the
-   folder you mounted at **`/work`** (the `file` / `terminal_backend` /
+   folder you mounted at **`/work`** (the `file_bridge` / `terminal_backend` /
    `python_runtime` agents all act on it). Hand it a **[recipe](recipes.md)** plus
    the `reflect readme=true bundles=all` output and it assembles a working
    approximation — capability emerges from self-description, no bespoke glue.
@@ -228,7 +228,7 @@ and it assembles a working approximation by itself — `reflect` gives the live 
 Capability **emerges** from self-description. Full versions: **[`recipes.md`](recipes.md)**.
 
 Everything splits across **two kernels**: the **host** (this image — data/compute/
-transport: `kernel_state web web_ws web_rest file python_runtime terminal_backend ai_*
+transport: `kernel_state web web_ws web_rest file_bridge python_runtime terminal_backend ai_*
 yaml_state scheduler ws_bridge local_runner ssh_runner`) and the **frontend**
 (the embedded `js_kernel.zip` — the VIEW: `canvas terminal_view html_agent gl_agent
 ai_view`). The host serves the frontend + relays the WS bus; panels are frontend
@@ -240,16 +240,16 @@ agents see it.
    answering `get_webapp` becomes a draggable, persisted tile. *(the base for the rest)*
 2. **Terminal / dev console** — `terminal_backend` (PTY, cwd=project) + `terminal_view`
    (xterm), bound by id; flow-control + clipboard-image paste. *(PTY runs in-image)*
-3. **AI chat with tool-use** — an `ai_*` backend (+ a `file` for history) + `ai_view`;
-   the model calls `python_runtime`/`file`/`yaml_state` as tools and routes its own
+3. **AI chat with tool-use** — an `ai_*` backend (+ a `file_bridge` for history) + `ai_view`;
+   the model calls `python_runtime`/`file_bridge`/`yaml_state` as tools and routes its own
    output (emergent, no `reply_to`). *(key via `-e ANTHROPIC_KEY`)*
 4. **Background compute / training runner** — `python_runtime.start` → `job_id` +
    streamed `progress`/`job_done` → a live html panel (or the job's own UI via a
-   `file` agent). *(⚠ GPU = host's; this image is CPU-only)*
+   `file_bridge` agent). *(⚠ GPU = host's; this image is CPU-only)*
 5. **Live data / WebGL panel** — `gl_agent` (frontend) fed frames by a `python_runtime`
    job; assets via `/<file>/file/…`. *(⚠ your shaders are app content; headless WebGL off)*
 6. **Generative audio-visual panel** — `html_agent`/`gl_agent` (WebAudio+WebGL) driven
-   by a media `python_runtime`; serve audio via a `file` agent. *(⚠ WebAudio needs
+   by a media `python_runtime`; serve audio via a `file_bridge` agent. *(⚠ WebAudio needs
    iframe `allow=autoplay`; cross-panel sync must go through a HOST bus agent — you wire it)*
 7. **Federated multi-project canvas** — `local_runner` (local dir) / `ssh_runner`
    (remote) + `ws_bridge` per peer; one canvas tile per project, each its **own**

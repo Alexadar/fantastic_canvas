@@ -23,6 +23,11 @@ cover the user surface (CLI, HTTP, WS, PTY, browser).
 
 Strict rules:
 
+- **io legs SEAL by default — a denial is expected, not a failure.** A freshly-created
+  `web_ws` / `web_rest` / `file_bridge` denies every inbound frame/verb
+  (`{reason:"unauthorized"}`, REST `403`) until opened with `ingress_rule=allow_all`
+  (or `password`). Selftest pre-flights open the leg they exercise; if you compose your
+  own, open it too. Reading a seal as a test failure is the misread to avoid.
 - Never silently fake a skip.
 - Never run destructive ops without user confirmation if state exists.
 - If a regression signal in a test triggers, **STOP** that file's
