@@ -19,7 +19,7 @@ async fn mk_kernel(tmp: &TempDir) -> Arc<Kernel> {
     kernel.bundles.register(HANDLER_MODULE, KernelBridgeBundle);
     kernel
         .bundles
-        .register("file.tools", fantastic_file::FileBundle);
+        .register("file_bridge.tools", fantastic_file::FileBundle);
     let kernel = Arc::new(kernel);
     let root = Agent::new(
         AgentId::from("core"),
@@ -135,7 +135,7 @@ async fn forward_round_trip_over_memory() {
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": "file.tools",
+                "handler_module": "file_bridge.tools",
                 "id": file_id,
                 "root": tmp.path().to_string_lossy(),
             }),

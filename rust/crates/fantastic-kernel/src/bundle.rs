@@ -43,7 +43,7 @@ pub type BundleError = Box<dyn std::error::Error + Send + Sync>;
 #[async_trait]
 pub trait Bundle: Send + Sync {
     /// Stable bundle name. Matches what's stored in agent.json's
-    /// `handler_module` (e.g. `"file.tools"`, `"web.tools"`).
+    /// `handler_module` (e.g. `"file_bridge.tools"`, `"web.tools"`).
     fn name(&self) -> &str;
 
     /// Dispatch a verb. `payload["type"]` names the verb. Substrate
@@ -140,7 +140,7 @@ impl BundleRegistry {
 
     /// Register a bundle under its `handler_module` key.
     ///
-    /// The key is what appears in `agent.json` — e.g. `"file.tools"`
+    /// The key is what appears in `agent.json` — e.g. `"file_bridge.tools"`
     /// for the file bundle. Bundle authors choose this string; the
     /// substrate doesn't enforce a naming scheme.
     pub fn register<B: Bundle + 'static>(&mut self, handler_module: &str, bundle: B) {

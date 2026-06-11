@@ -33,7 +33,7 @@ async fn mk_kernel(tmp: &TempDir, endpoint: Option<String>) -> (Arc<Kernel>, Age
     kernel.bundles.register(HANDLER_MODULE, NvidiaNimBundle);
     kernel
         .bundles
-        .register("file.tools", fantastic_file::FileBundle);
+        .register("file_bridge.tools", fantastic_file::FileBundle);
     let kernel = Arc::new(kernel);
     let root = Agent::new(
         AgentId::from("core"),
@@ -52,7 +52,7 @@ async fn mk_kernel(tmp: &TempDir, endpoint: Option<String>) -> (Arc<Kernel>, Age
             &AgentId::from("core"),
             json!({
                 "type":"create_agent",
-                "handler_module":"file.tools",
+                "handler_module":"file_bridge.tools",
                 "id": fid,
                 "root": tmp.path().to_string_lossy(),
                 "ingress_rule": "allow_all",

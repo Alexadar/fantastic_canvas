@@ -159,7 +159,7 @@ async fn mk_kernel(tmp: &TempDir, tag: &str) -> (Arc<Kernel>, AgentId) {
     kernel.bundles.register(HANDLER_MODULE, MockBundle);
     kernel
         .bundles
-        .register("file.tools", fantastic_file::FileBundle);
+        .register("file_bridge.tools", fantastic_file::FileBundle);
     let kernel = Arc::new(kernel);
     let root = Agent::new(
         AgentId::from("core"),
@@ -179,7 +179,7 @@ async fn mk_kernel(tmp: &TempDir, tag: &str) -> (Arc<Kernel>, AgentId) {
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": "file.tools",
+                "handler_module": "file_bridge.tools",
                 "id": file_id,
                 "root": tmp.path().to_string_lossy(),
                 // the fs edge seals by default — open it so history persists through it

@@ -29,7 +29,7 @@ async fn mk_kernel(tmp: &TempDir) -> (Arc<Kernel>, AgentId) {
     kernel.bundles.register(HANDLER_MODULE, SchedulerBundle);
     kernel
         .bundles
-        .register("file.tools", fantastic_file::FileBundle);
+        .register("file_bridge.tools", fantastic_file::FileBundle);
     let kernel = Arc::new(kernel);
     let root = Agent::new(
         AgentId::from("core"),
@@ -49,7 +49,7 @@ async fn mk_kernel(tmp: &TempDir) -> (Arc<Kernel>, AgentId) {
             &AgentId::from("core"),
             json!({
                 "type":"create_agent",
-                "handler_module":"file.tools",
+                "handler_module":"file_bridge.tools",
                 "id": file_id,
                 "root": tmp.path().to_string_lossy(),
                 "ingress_rule": "allow_all",
@@ -101,7 +101,7 @@ async fn boot_refuses_without_file_bridge_id() {
     kernel.bundles.register(HANDLER_MODULE, SchedulerBundle);
     kernel
         .bundles
-        .register("file.tools", fantastic_file::FileBundle);
+        .register("file_bridge.tools", fantastic_file::FileBundle);
     let kernel = Arc::new(kernel);
     let root = Agent::new(
         AgentId::from("core"),

@@ -31,7 +31,7 @@ async fn mk_kernel(tmp: &TempDir, tag: &str, endpoint: &str) -> (Arc<Kernel>, Ag
     kernel.bundles.register(HANDLER_MODULE, OllamaBackendBundle);
     kernel
         .bundles
-        .register("file.tools", fantastic_file::FileBundle);
+        .register("file_bridge.tools", fantastic_file::FileBundle);
     let kernel = Arc::new(kernel);
     let root = Agent::new(
         AgentId::from("core"),
@@ -51,7 +51,7 @@ async fn mk_kernel(tmp: &TempDir, tag: &str, endpoint: &str) -> (Arc<Kernel>, Ag
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": "file.tools",
+                "handler_module": "file_bridge.tools",
                 "id": file_id,
                 "root": tmp.path().to_string_lossy(),
                 "ingress_rule": "allow_all",

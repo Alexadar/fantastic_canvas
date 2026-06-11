@@ -78,7 +78,7 @@ fn one_shot_create_agent_persists_record() {
         .args([
             "core",
             "create_agent",
-            "handler_module=file.tools",
+            "handler_module=file_bridge.tools",
             "id=ff",
             "root=/tmp",
         ])
@@ -93,7 +93,7 @@ fn one_shot_create_agent_persists_record() {
     let path = tmp.path().join(".fantastic/agents/ff/agent.json");
     assert!(path.exists(), "agent.json not written");
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("file.tools"));
+    assert!(content.contains("file_bridge.tools"));
     assert!(content.contains("/tmp"));
 }
 
@@ -105,7 +105,7 @@ fn one_shot_dispatch_returns_json_reply() {
         .args([
             "core",
             "create_agent",
-            "handler_module=file.tools",
+            "handler_module=file_bridge.tools",
             "id=ff",
             "root=/tmp",
         ])

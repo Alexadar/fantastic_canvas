@@ -44,7 +44,7 @@ pub fn mint_id(handler_module: &str) -> String {
 ///
 /// `payload` shape (matches the workdir wire format):
 /// ```json
-/// {"type":"create_agent","handler_module":"file.tools","id":"opt"}
+/// {"type":"create_agent","handler_module":"file_bridge.tools","id":"opt"}
 /// ```
 /// Any extra fields become the new agent's meta.
 pub(crate) async fn create_from_payload(

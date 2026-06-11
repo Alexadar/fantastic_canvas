@@ -47,7 +47,7 @@ fn mk_kernel_with_storage(
 
 #[tokio::test]
 async fn mint_id_format_is_bundle_underscore_hex6() {
-    let id = mint_id("file.tools");
+    let id = mint_id("file_bridge.tools");
     assert!(id.starts_with("file_"));
     // 6 hex chars after the underscore.
     let suffix = &id["file_".len()..];

@@ -59,7 +59,7 @@ echo "SKIP: requires fantastic-html-agent (Phase 2)"
 ```bash
 mkdir -p /tmp/fw_root
 echo "file content" > /tmp/fw_root/test.txt
-$FANTASTIC core create_agent handler_module=file.tools id=fw_f root=/tmp/fw_root
+$FANTASTIC core create_agent handler_module=file_bridge.tools id=fw_f root=/tmp/fw_root
 # Daemon needs to be aware of the new agent — restart cycle:
 kill $DAEMON_PID; sleep 1
 $FANTASTIC &

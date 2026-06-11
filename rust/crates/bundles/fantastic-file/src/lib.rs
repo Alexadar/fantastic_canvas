@@ -31,7 +31,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 /// `handler_module` key under which this bundle registers.
-pub const HANDLER_MODULE: &str = "file.tools";
+pub const HANDLER_MODULE: &str = "file_bridge.tools";
 
 /// readme.md auto-seeded into the agent's dir on creation.
 pub const README: &str = include_str!("readme.md");
@@ -48,7 +48,7 @@ pub struct FileBundle;
 #[async_trait]
 impl Bundle for FileBundle {
     fn name(&self) -> &str {
-        "file"
+        "file_bridge"
     }
 
     fn readme(&self) -> Option<&'static str> {

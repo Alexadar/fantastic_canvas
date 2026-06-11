@@ -436,9 +436,17 @@ dependencies = [
  "async-trait",
  "base64",
  "fantastic-bundle",
+ "fantastic-io-bridge",
  "fantastic-kernel",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "fantastic-io-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -465,6 +473,7 @@ dependencies = [
  "async-trait",
  "base64",
  "fantastic-file",
+ "fantastic-io-bridge",
  "fantastic-kernel",
  "futures-util",
  "nix 0.29.0",
