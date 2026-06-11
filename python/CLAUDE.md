@@ -434,7 +434,7 @@ review, force-push surprise, polluted history) is high.
   Process-memory state (PTY child, uvicorn server, in-flight tasks)
   is per-process and visible only to the kernel that owns it —
   reflect from the live `serve` to see it, NOT via a fresh
-  `fantastic call` (which spawns a separate kernel).
+  `fantastic <id> <verb>` (which spawns a separate kernel).
 
 ## Storage policy
 
@@ -492,7 +492,7 @@ favicon — a package lookup, not an arbitrary path).
 
 ## Path conventions
 
-- All paths relative when invoked via `fantastic call` (cwd = project
+- All paths relative when invoked via `fantastic <id> <verb>` (cwd = project
   dir).
 - The file_bridge's path-safety refuses anything escaping its `root`, and
   the running-dir law clamps the `root` itself inside the kernel's cwd.

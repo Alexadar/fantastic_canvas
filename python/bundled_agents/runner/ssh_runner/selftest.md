@@ -18,7 +18,7 @@ asserts the bundle invokes them with correctly-shaped arguments
 (quoted paths, ports, log redirection, lock.json polling).
 
 ```bash
-uv run pytest bundled_agents/ssh_runner/tests/ -v
+uv run pytest bundled_agents/runner/ssh_runner/tests/ -v
 ```
 Expected: 11 tests pass.
 

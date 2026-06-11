@@ -17,8 +17,8 @@ uv run --active fantastic kernel_state create_agent handler_module=web.tools por
 WEB_ID=$(ls .fantastic/agents | grep '^web_' | head -1)
 # WS verb channel + REST surface as children of web. Call create_agent
 # on the web agent (not kernel_state) so the new agents land under web's dir.
-uv run --active fantastic $WEB_ID create_agent handler_module=web_ws.tools >/dev/null
-uv run --active fantastic $WEB_ID create_agent handler_module=web_rest.tools >/dev/null
+uv run --active fantastic $WEB_ID create_agent handler_module=web_ws.tools ingress_rule=allow_all >/dev/null
+uv run --active fantastic $WEB_ID create_agent handler_module=web_rest.tools ingress_rule=allow_all >/dev/null
 uv run --active fantastic > /tmp/serve.log 2>&1 &
 SPID=$!
 for i in $(seq 1 20); do grep -q "kernel up" /tmp/serve.log 2>/dev/null && break; sleep 0.5; done
@@ -84,7 +84,7 @@ uv run --active python -c "
 import asyncio, json, websockets
 async def main():
     async with websockets.connect('ws://localhost:$PORT/kernel_state/ws') as ws:
-        await ws.send(json.dumps({'type':'call','target':'kernel_state','payload':{'type':'create_agent','handler_module':'web_rest.tools','parent_id':'$WEB_ID'},'id':'1'}))
+        await ws.send(json.dumps({'type':'call','target':'kernel_state','payload':{'type':'create_agent','handler_module':'web_rest.tools','parent_id':'','ingress_rule':'allow_all'},'id':'1'}))
         while True:
             m = json.loads(await ws.recv())
             if m.get('id')=='1' and m.get('type')=='reply':

@@ -24,7 +24,7 @@ inbox so local watchers see remote streams through
 ## Test 1 — MemoryTransport pair round-trip + streaming (in-process)
 
 The headline correctness suite. Covered by the unit tests at
-`bundled_agents/bridge/ws_bridge/tests/test_ws_bridge.py`:
+`bundled_agents/io/ws_bridge/tests/test_ws_bridge.py`:
 
   - `test_memory_transport_pair_round_trip` — two `Kernel()` instances,
     two paired `MemoryTransport`s, a
@@ -49,7 +49,7 @@ The headline correctness suite. Covered by the unit tests at
     resolve by name from the `ingress_rules` / `egress_rules` registries.
 
 ```bash
-uv run pytest bundled_agents/bridge/ws_bridge/tests/ -v
+uv run pytest bundled_agents/io/ws_bridge/tests/ -v
 ```
 Expected: all 20 tests pass.
 

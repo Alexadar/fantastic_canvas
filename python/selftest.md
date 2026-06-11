@@ -41,7 +41,7 @@ Strict rules:
 ## Stateful bundles need a running `serve`
 
 Some bundles hold state in process-memory that doesn't survive
-separate `fantastic call …` invocations:
+separate `fantastic <id> <verb> …` invocations:
 
 - `terminal_backend` — PTY child process; dies with the kernel.
 - `ollama_backend` — cached HTTP client + in-flight `_run` tasks.
@@ -80,7 +80,7 @@ Usage: `call <id> '{"type":"<verb>", ...}'` — prints the reply (or
 error) data as JSON on stdout. Same I/O shape as the old curl helper.
 
 **Stateless bundles** (`cli`, `file_bridge`, `scheduler`) keep state on disk
-only and run fine via `fantastic call`. Admin
+only and run fine via `fantastic <id> <verb>`. Admin
 verbs (`create_agent` / `delete_agent` / `update_agent` /
 `list_agents`) are baked into the `Agent` class itself — every
 agent answers them natively for its own children, so there's no
@@ -107,14 +107,14 @@ agent answers them natively for its own children, so there's no
 |---|---|
 | `kernel` | in-process Agent tree only; no HTTP, no PTY |
 | `cli` | drives REPL via stdin |
-| `subprocess` | uses `fantastic call/reflect/serve` |
+| `subprocess` | uses `fantastic <id> <verb>` / `reflect` / `serve` |
 | `http` | needs running webapp (uvicorn) |
 | `ws` | exercises WebSocket proxy |
 | `web` | superset of http+ws (any browser-touching server flow) |
 | `webapp` | a TS frontend view (canvas compositor / terminal_view / ai_view / GL host — in `ts/`) |
 | `pty` | requires real PTY |
 | `ai` | needs live LLM provider |
-| `persistence` | exercises file-agent-routed I/O |
+| `persistence` | exercises file_bridge-routed I/O |
 | `binary` | bytes through WS binary protocol |
 | `cascade` | exercises substrate cascade-delete + lock semantics |
 
