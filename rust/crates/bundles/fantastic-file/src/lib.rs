@@ -29,6 +29,7 @@ use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// `handler_module` key under which this bundle registers.
 pub const HANDLER_MODULE: &str = "file_bridge.tools";
@@ -81,30 +82,9 @@ impl Bundle for FileBundle {
             None => DEFAULT_HIDDEN.iter().map(|s| s.to_string()).collect(),
         };
 
-        // GATE — the fs edge is an io_bridge leg: SEALED by default. Every verb except
-        // discovery/lifecycle (reflect/boot/shutdown) is denied until the leg is opened
-        // (`ingress_rule=allow_all`). Mirrors py file_bridge's gate_inbound choke point.
-        if !matches!(verb, "reflect" | "boot" | "shutdown") {
-            let spec = meta.get("ingress_rule").or_else(|| meta.get("auth"));
-            let rule = match fantastic_io_bridge::authorizer::ingress::resolve(spec) {
-                Ok(r) => r,
-                Err(e) => return Ok(Some(json!({"error": e}))),
-            };
-            let action = fantastic_io_bridge::authorizer::Action {
-                kind: "call",
-                target: agent_id.0.as_str(),
-                verb,
-                token: meta.get("auth_token").and_then(Value::as_str),
-            };
-            if let fantastic_io_bridge::authorizer::Decision::Deny(reason) =
-                fantastic_io_bridge::gate_inbound(&rule, &action)
-            {
-                return Ok(Some(json!({
-                    "error": reason,
-                    "reason": "unauthorized",
-                    "hint": "the fs edge is sealed; open it: update_agent <id> ingress_rule=allow_all",
-                })));
-            }
+        // GATE — the fs edge is an io_bridge leg: SEALED by default (see `gate`).
+        if let Some(denied) = gate(&meta, agent_id, verb) {
+            return Ok(Some(denied));
         }
 
         let reply = match verb {
@@ -140,10 +120,280 @@ impl Bundle for FileBundle {
                     mkdir_reply(&root, payload)
                 }
             }
+            // The PUMP coordinates a SOURCE→SINK copy over the binary channel
+            // (it never touches bytes itself), so it rides the text channel.
+            "pump" => pump_reply(agent_id, payload, kernel).await,
+            // Stream verbs carry RAW BYTES — they only exist on the binary
+            // channel (`send_with_binary`). A text dispatch can't carry the
+            // chunk, so redirect rather than silently mis-handle.
+            "read_stream" | "write_stream" => json!({
+                "error": format!(
+                    "{verb} carries raw bytes — call it on the binary channel \
+                     (send_with_binary), not text send"
+                ),
+            }),
             other => json!({"error": format!("unknown verb {other:?}")}),
         };
         Ok(Some(reply))
     }
+
+    /// Binary channel: `read_stream` (empty request blob → reply BODY = the
+    /// raw chunk) and `write_stream` (request blob = the raw chunk → status
+    /// reply, no body). Symmetric with Python's `bytes`-in-the-dict; never
+    /// base64. Any other verb falls back to the default (base64→`handle`).
+    async fn handle_binary(
+        &self,
+        agent_id: &AgentId,
+        header: Value,
+        blob: Vec<u8>,
+        kernel: &Arc<Kernel>,
+    ) -> Result<(Reply, Vec<u8>), BundleError> {
+        let verb = header.get("type").and_then(Value::as_str).unwrap_or("");
+        if !matches!(verb, "read_stream" | "write_stream") {
+            // file_bridge has no other binary verb — route the header through
+            // the text path (which gates + dispatches); the blob is unused.
+            let reply = self.handle(agent_id, &header, kernel).await?;
+            return Ok((reply, Vec::new()));
+        }
+        let agent = match kernel.agents.get(agent_id) {
+            Some(e) => std::sync::Arc::clone(&e),
+            None => {
+                return Ok((Some(json!({"error": format!("no agent {agent_id}")})), Vec::new()))
+            }
+        };
+        let meta = agent.meta.read().expect("meta poisoned").clone();
+        // GATE — same sealed-by-default choke point as the text channel.
+        if let Some(denied) = gate(&meta, agent_id, verb) {
+            return Ok((Some(denied), Vec::new()));
+        }
+        let root = root_of(&meta);
+        let readonly = meta
+            .get("readonly")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        match verb {
+            "read_stream" => {
+                let (reply, body) = read_stream_reply(&root, &header);
+                Ok((Some(reply), body))
+            }
+            "write_stream" => {
+                if readonly {
+                    Ok((Some(json!({"error": "agent is readonly"})), Vec::new()))
+                } else {
+                    Ok((Some(write_stream_reply(&root, &header, &blob)), Vec::new()))
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// The sealed-by-default GATE — the fs edge is an io_bridge leg. Every verb
+/// except discovery/lifecycle (`reflect`/`boot`/`shutdown`) is denied until
+/// the leg is opened (`ingress_rule=allow_all`). Mirrors py file_bridge's
+/// `gate_inbound` choke point. Returns `Some(error)` on deny, `None` to admit.
+/// Shared by the text (`handle`) and binary (`handle_binary`) channels so a
+/// sealed bridge refuses streamed bytes exactly like a text call.
+fn gate(meta: &serde_json::Map<String, Value>, agent_id: &AgentId, verb: &str) -> Option<Value> {
+    if matches!(verb, "reflect" | "boot" | "shutdown") {
+        return None;
+    }
+    let spec = meta.get("ingress_rule").or_else(|| meta.get("auth"));
+    let rule = match fantastic_io_bridge::authorizer::ingress::resolve(spec) {
+        Ok(r) => r,
+        Err(e) => return Some(json!({"error": e})),
+    };
+    let action = fantastic_io_bridge::authorizer::Action {
+        kind: "call",
+        target: agent_id.0.as_str(),
+        verb,
+        token: meta.get("auth_token").and_then(Value::as_str),
+    };
+    if let fantastic_io_bridge::authorizer::Decision::Deny(reason) =
+        fantastic_io_bridge::gate_inbound(&rule, &action)
+    {
+        return Some(json!({
+            "error": reason,
+            "reason": "unauthorized",
+            "hint": "the fs edge is sealed; open it: update_agent <id> ingress_rule=allow_all",
+        }));
+    }
+    None
+}
+
+/// The SOURCE half — read ONE raw chunk at `offset`. Returns
+/// `({path, offset, next_offset, eof, size}, raw_bytes)`; the bytes ride the
+/// binary channel's reply BODY, never base64. Stateless cursor (no open
+/// handle): pull the next chunk by calling again with `offset=next_offset`.
+/// Mirrors py `file_bridge._read_stream`.
+fn read_stream_reply(root: &Path, header: &Value) -> (Value, Vec<u8>) {
+    let path_str = header.get("path").and_then(Value::as_str).unwrap_or("");
+    let offset = header.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    let length = header
+        .get("length")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+        .unwrap_or(65536);
+    let target = match resolve_safe(root, path_str) {
+        Ok(p) => p,
+        Err(e) => return (json!({"error": e}), Vec::new()),
+    };
+    if !target.is_file() {
+        return (json!({"error": format!("file {path_str:?} not found")}), Vec::new());
+    }
+    let size = match std::fs::metadata(&target) {
+        Ok(m) => m.len(),
+        Err(e) => return (json!({"error": format!("stat {}: {e}", target.display())}), Vec::new()),
+    };
+    let chunk = match read_chunk(&target, offset, length) {
+        Ok(b) => b,
+        Err(e) => return (json!({"error": e}), Vec::new()),
+    };
+    let next_offset = offset + chunk.len() as u64;
+    let header = json!({
+        "path": path_str,
+        "offset": offset,
+        "next_offset": next_offset,
+        "eof": next_offset >= size,
+        "size": size,
+        "bytes_len": chunk.len(),
+    });
+    (header, chunk)
+}
+
+/// Read up to `length` bytes from `target` starting at `offset` (seek + read).
+fn read_chunk(target: &Path, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(target).map_err(|e| format!("open {}: {e}", target.display()))?;
+    f.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("seek {}: {e}", target.display()))?;
+    let mut buf = vec![0u8; length as usize];
+    let n = f
+        .read(&mut buf)
+        .map_err(|e| format!("read {}: {e}", target.display()))?;
+    buf.truncate(n);
+    Ok(buf)
+}
+
+/// The SINK half — write ONE raw chunk (`blob`) at `offset` (default: append
+/// at end). `truncate:true` on the first chunk starts fresh. Returns
+/// `{path, written, offset, size}`. Mirrors py `file_bridge._write_stream`.
+fn write_stream_reply(root: &Path, header: &Value, blob: &[u8]) -> Value {
+    let path_str = header.get("path").and_then(Value::as_str).unwrap_or("");
+    let truncate = header.get("truncate").and_then(Value::as_bool).unwrap_or(false);
+    let off_in = header.get("offset").and_then(Value::as_u64);
+    let target = match resolve_safe(root, path_str) {
+        Ok(p) => p,
+        Err(e) => return json!({"error": e}),
+    };
+    if let Some(parent) = target.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return json!({"error": format!("mkdir parent: {e}")});
+        }
+    }
+    match write_chunk(&target, blob, off_in, truncate) {
+        Ok((offset, size)) => json!({
+            "path": path_str,
+            "written": blob.len(),
+            "offset": offset,
+            "size": size,
+        }),
+        Err(e) => json!({"error": e}),
+    }
+}
+
+/// Write `blob` at `offset` (None ⇒ append at current end). `truncate` opens
+/// the file fresh (length 0) before writing. Returns `(write_offset, new_size)`.
+fn write_chunk(
+    target: &Path,
+    blob: &[u8],
+    offset: Option<u64>,
+    truncate: bool,
+) -> Result<(u64, u64), String> {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true);
+    if truncate {
+        opts.truncate(true);
+    }
+    let mut f = opts
+        .open(target)
+        .map_err(|e| format!("open {}: {e}", target.display()))?;
+    let off = match offset {
+        Some(o) => f
+            .seek(SeekFrom::Start(o))
+            .map_err(|e| format!("seek {}: {e}", target.display()))?,
+        None => f
+            .seek(SeekFrom::End(0))
+            .map_err(|e| format!("seek end {}: {e}", target.display()))?,
+    };
+    f.write_all(blob)
+        .map_err(|e| format!("write {}: {e}", target.display()))?;
+    let size = f
+        .metadata()
+        .map(|m| m.len())
+        .map_err(|e| format!("stat {}: {e}", target.display()))?;
+    Ok((off, size))
+}
+
+/// The PUMP — a server-side SOURCE→SINK copy, chunk by chunk, in ONE call.
+/// Storage-agnostic: both ends are bound BY ID + the duck-typed stream verbs
+/// over the binary channel, so a `network_bridge` SOURCE pumps to a
+/// `file_bridge` SINK the same as fs→fs. Each end SELF-gates + SELF-clamps —
+/// the pump only coordinates, never touching bytes, so a sealed end refuses
+/// it. Mirrors py `file_bridge._pump`. Returns `{source, sink, bytes, chunks}`.
+async fn pump_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>) -> Value {
+    let self_id = agent_id.0.as_str();
+    let src = payload
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or(self_id);
+    let sink = payload.get("sink").and_then(Value::as_str).unwrap_or(self_id);
+    let spath = payload
+        .get("source_path")
+        .or_else(|| payload.get("path"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let dpath = payload
+        .get("sink_path")
+        .and_then(Value::as_str)
+        .unwrap_or(spath);
+    let chunk = payload
+        .get("chunk")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+        .unwrap_or(65536);
+    let (src_id, sink_id) = (AgentId::from(src), AgentId::from(sink));
+    let (mut offset, mut first, mut chunks) = (0u64, true, 0u64);
+    loop {
+        let (rmeta, body) = kernel
+            .send_with_binary(
+                &src_id,
+                json!({"type": "read_stream", "path": spath, "offset": offset, "length": chunk}),
+                Vec::new(),
+            )
+            .await;
+        if let Some(err) = rmeta.get("error") {
+            return json!({"error": format!("pump: read from {src:?} failed: {err}")});
+        }
+        let (wmeta, _) = kernel
+            .send_with_binary(
+                &sink_id,
+                json!({"type": "write_stream", "path": dpath, "offset": offset, "truncate": first}),
+                body,
+            )
+            .await;
+        if let Some(err) = wmeta.get("error") {
+            return json!({"error": format!("pump: write to {sink:?} failed: {err}")});
+        }
+        first = false;
+        chunks += 1;
+        offset = rmeta.get("next_offset").and_then(Value::as_u64).unwrap_or(offset);
+        if rmeta.get("eof").and_then(Value::as_bool).unwrap_or(true) {
+            break;
+        }
+    }
+    json!({"source": spath, "sink": dpath, "bytes": offset, "chunks": chunks})
 }
 
 fn root_of(meta: &serde_json::Map<String, Value>) -> PathBuf {
@@ -222,6 +472,9 @@ fn reflect_reply(agent_id: &AgentId, root: &Path, readonly: bool, hidden: &[Stri
             "delete": "args: path:str (req).",
             "rename": "args: old_path:str (req), new_path:str (req).",
             "mkdir": "args: path:str (req).",
+            "read_stream": "BINARY channel. args: path:str (req), offset:int=0, length:int=65536. Reply body = one raw chunk.",
+            "write_stream": "BINARY channel. args: path:str (req), offset:int? (default append), truncate:bool=false; request body = one raw chunk.",
+            "pump": "args: source:str? + source_path:str (req) + sink:str? + sink_path:str? + chunk:int=65536. Server-side SOURCE→SINK copy.",
         }
     })
 }

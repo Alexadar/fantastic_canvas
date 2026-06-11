@@ -48,9 +48,10 @@ fn mk_kernel_with_storage(
 #[tokio::test]
 async fn mint_id_format_is_bundle_underscore_hex6() {
     let id = mint_id("file_bridge.tools");
-    assert!(id.starts_with("file_"));
-    // 6 hex chars after the underscore.
-    let suffix = &id["file_".len()..];
+    assert!(id.starts_with("file_bridge_"));
+    // 6 hex chars after the final underscore (the bundle name itself
+    // contains an underscore, so split off the trailing token).
+    let suffix = &id["file_bridge_".len()..];
     assert_eq!(suffix.len(), 6);
     assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
 }

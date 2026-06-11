@@ -1351,6 +1351,29 @@ struct ChunkBuffer {
 /// On any decode error the frame is dropped silently (we log a debug
 /// trace) — the WS stays open. The shape is documented + a single
 /// malformed frame from a JS client shouldn't kill the channel.
+/// Build the WS reply frame for a binary dispatch. The reply HEADER is
+/// always a JSON `{type:reply, id, data}` text frame. A non-empty reply
+/// `body` (e.g. `file_bridge.read_stream` bytes) would need a binary
+/// reply frame — the current out channel is text-only, so wiring the
+/// outbound binary frame is step 4b (codec into the WS sink). Until then
+/// we refuse honestly rather than drop the bytes: a non-empty body yields
+/// an explicit `error` frame, never a silent truncation.
+fn binary_reply_frame(id: Option<Value>, reply: Value, body: Vec<u8>) -> String {
+    if body.is_empty() {
+        return json!({ "type": "reply", "id": id, "data": reply }).to_string();
+    }
+    json!({
+        "type": "error",
+        "id": id,
+        "error": format!(
+            "binary reply ({} bytes) cannot ride the text WS channel yet \
+             (read_stream over WS pending codec wiring); use GET /<id>/file/<path>",
+            body.len()
+        ),
+    })
+    .to_string()
+}
+
 async fn handle_binary_frame(
     state: &AppState,
     client_id: &AgentId,
@@ -1444,19 +1467,13 @@ async fn handle_binary_frame(
     let out = out_tx.clone();
     let header_for_dispatch = header.clone();
     tokio::spawn(async move {
-        let reply = fantastic_kernel::send::with_sender(sender_for_scope, async {
+        let (reply, body) = fantastic_kernel::send::with_sender(sender_for_scope, async {
             kernel
                 .send_with_binary(&target, header_for_dispatch, blob)
                 .await
         })
         .await;
-        // Verb-level errors live inside `data.error` (Python wire shape).
-        let frame = json!({
-            "type": "reply",
-            "id": id,
-            "data": reply,
-        });
-        let _ = out.send(frame.to_string()).await;
+        let _ = out.send(binary_reply_frame(id, reply, body)).await;
     });
 }
 
@@ -1656,19 +1673,13 @@ async fn handle_chunked_frame(
             let sender_for_scope = client_id.clone();
             let out = out_tx.clone();
             tokio::spawn(async move {
-                let reply = fantastic_kernel::send::with_sender(sender_for_scope, async {
+                let (reply, body) = fantastic_kernel::send::with_sender(sender_for_scope, async {
                     kernel
                         .send_with_binary(&target, base_header, full_blob)
                         .await
                 })
                 .await;
-                // Verb-level errors live inside `data.error` (Python wire shape).
-                let frame = json!({
-                    "type": "reply",
-                    "id": id,
-                    "data": reply,
-                });
-                let _ = out.send(frame.to_string()).await;
+                let _ = out.send(binary_reply_frame(Some(id), reply, body)).await;
             });
         }
         None => {
