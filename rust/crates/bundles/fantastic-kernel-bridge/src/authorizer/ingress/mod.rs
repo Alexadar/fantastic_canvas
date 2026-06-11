@@ -19,12 +19,13 @@ pub use deny_inbound::DenyInbound;
 pub use password::Password;
 
 /// Resolve an ingress rule spec (string | `{type, env}` | null) BY NAME. Absent ⇒
-/// `AllowAll` (back-compat no-op). Unknown type ⇒ `Err` (fail the boot loudly).
+/// `DenyInbound` — **SEALED by default** (every io leg + the fs edge denies until
+/// opened with `ingress_rule=allow_all`/`password`). Unknown type ⇒ `Err` (fail loudly).
 pub fn resolve(spec: Option<&Value>) -> Result<Arc<dyn IngressRule>, String> {
     let (name, token_env) = parse_spec(spec)?;
     let rule: Arc<dyn IngressRule> = match name.as_deref() {
-        None | Some("allow_all") => Arc::new(AllowAll),
-        Some("deny_inbound") => Arc::new(DenyInbound),
+        None | Some("deny_inbound") => Arc::new(DenyInbound),
+        Some("allow_all") => Arc::new(AllowAll),
         Some("password") => Arc::new(Password::new(token_env)),
         Some(other) => return Err(format!("unknown ingress rule type {other:?}")),
     };

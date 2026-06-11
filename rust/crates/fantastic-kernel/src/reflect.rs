@@ -188,6 +188,16 @@ pub fn tree_node(target: &Agent) -> Value {
     if let Some(d) = target.description() {
         obj.insert("description".to_string(), json!(d));
     }
+    // Wiring/posture meta surfaced inline (mirrors py _POSTURE_KEYS in kernel/_agent.py):
+    // a client reads the IO landscape — which legs are open vs sealed-by-default, what a
+    // consumer persists through — from ONE root reflect. Same keys + order across runtimes.
+    if let Ok(meta) = target.meta.read() {
+        for k in ["ingress_rule", "egress_rule", "auth", "root", "file_bridge_id"] {
+            if let Some(v) = meta.get(k) {
+                obj.insert(k.to_string(), v.clone());
+            }
+        }
+    }
     let mut children: Vec<Value> = target
         .children
         .iter()

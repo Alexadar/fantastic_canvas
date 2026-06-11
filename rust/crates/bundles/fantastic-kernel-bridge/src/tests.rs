@@ -47,6 +47,8 @@ fn id_for(prefix: &str, tmp: &TempDir) -> String {
 }
 
 async fn create_bridge(kernel: &Arc<Kernel>, id: &str, peer_id: &str, transport: &str) {
+    // io legs SEAL by default; these functional round-trip helpers open the leg so the
+    // receiver dispatches inbound frames (mirrors py's _wire_memory_pair allow_all).
     kernel
         .send(
             &AgentId::from("core"),
@@ -56,6 +58,7 @@ async fn create_bridge(kernel: &Arc<Kernel>, id: &str, peer_id: &str, transport:
                 "id": id,
                 "peer_id": peer_id,
                 "transport": transport,
+                "ingress_rule": "allow_all",
             }),
         )
         .await;
@@ -482,13 +485,20 @@ fn call_action(token: Option<&str>) -> Action<'_> {
 #[test]
 fn ingress_resolves_allow_and_deny() {
     use authorizer::ingress::resolve;
-    // absent / null / empty ⇒ AllowAll (back-compat no-op)
+    // absent / null ⇒ DenyInbound (SEALED by default)
     assert!(matches!(
         resolve(None).unwrap().authorize(&call_action(None)),
-        Decision::Allow
+        Decision::Deny(_)
     ));
     assert!(matches!(
         resolve(Some(&Value::Null))
+            .unwrap()
+            .authorize(&call_action(None)),
+        Decision::Deny(_)
+    ));
+    // explicit allow_all opens it
+    assert!(matches!(
+        resolve(Some(&json!("allow_all")))
             .unwrap()
             .authorize(&call_action(None)),
         Decision::Allow
@@ -629,12 +639,23 @@ async fn deny_inbound_refuses_inbound_call() {
 }
 
 #[tokio::test]
-async fn allow_all_default_permits_inbound_call() {
+async fn deny_inbound_default_refuses_inbound_call() {
     let tmp = TempDir::new().unwrap();
     let kernel = mk_kernel(&tmp).await;
-    let bid = id_for("brg_allow", &tmp);
-    // No `auth` meta ⇒ AllowAll (back-compat no-op).
-    create_bridge(&kernel, &bid, "stand_in", "memory").await;
+    let bid = id_for("brg_sealed", &tmp);
+    // No `ingress_rule` meta ⇒ DenyInbound (SEALED by default).
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": HANDLER_MODULE,
+                "id": bid,
+                "peer_id": "stand_in",
+                "transport": "memory",
+            }),
+        )
+        .await;
     let peer = inject_one(&AgentId::from(bid.as_str()));
     let _ = kernel
         .send(&AgentId::from(bid.as_str()), json!({"type": "boot"}))
@@ -642,7 +663,7 @@ async fn allow_all_default_permits_inbound_call() {
     let reflect = kernel
         .send(&AgentId::from(bid.as_str()), json!({"type": "reflect"}))
         .await;
-    assert_eq!(reflect["auth"], "allow_all");
+    assert_eq!(reflect["auth"], "deny_inbound");
 
     peer.send_frame(json!({
         "type": "call",
@@ -654,7 +675,10 @@ async fn allow_all_default_permits_inbound_call() {
     .unwrap();
     let reply = peer.recv_frame().await.expect("a reply frame");
     assert_eq!(reply["type"], "reply");
-    assert_eq!(reply["data"]["id"], "core", "dispatched reply: {reply}");
+    assert_eq!(
+        reply["data"]["reason"], "unauthorized",
+        "sealed-by-default leg must deny: {reply}"
+    );
 
     let _ = kernel
         .send(&AgentId::from(bid.as_str()), json!({"type": "shutdown"}))

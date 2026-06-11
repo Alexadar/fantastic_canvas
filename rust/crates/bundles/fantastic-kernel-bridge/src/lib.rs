@@ -278,9 +278,9 @@ fn reflect_reply(agent_id: &AgentId, kernel: &Kernel) -> Value {
         "peer_id": meta_string(agent_id, kernel, "peer_id"),
         "local_port": meta_u64(agent_id, kernel, "local_port"),
         "remote_port": meta_u64(agent_id, kernel, "remote_port"),
-        "ingress": authorizer::rule_name(rule_spec(agent_id, kernel, "ingress_rule").as_ref(), "allow_all"),
+        "ingress": authorizer::rule_name(rule_spec(agent_id, kernel, "ingress_rule").as_ref(), "deny_inbound"),
         "egress": authorizer::rule_name(rule_spec(agent_id, kernel, "egress_rule").as_ref(), "silent"),
-        "auth": authorizer::rule_name(rule_spec(agent_id, kernel, "ingress_rule").as_ref(), "allow_all"),
+        "auth": authorizer::rule_name(rule_spec(agent_id, kernel, "ingress_rule").as_ref(), "deny_inbound"),
         "pending_count": pending,
         "verbs": {
             "reflect": "Identity + transport + connectivity. No args.",
