@@ -32,6 +32,16 @@ import pytest
 from helpers.seeding import seed_bridge_ws, seed_web, seed_web_ws
 from helpers.streaming import assert_watch_remote_streams
 
+import os as _os
+
+# Local-loopback (127.0.0.1) bridge addressing — meaningless inside a container.
+# The cross-container bridge is covered by test_bridge_container_to_container
+# (host.containers.internal); skip this local matrix under the container target.
+pytestmark = pytest.mark.skipif(
+    _os.environ.get("FANTASTIC_TARGET", "local").strip().lower() == "container",
+    reason="local-loopback bridge; container path = test_bridge_container_to_container",
+)
+
 
 async def _forward_reflect(
     client_bin: Path,
