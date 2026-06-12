@@ -38,10 +38,15 @@ fn mk_kernel_with_storage(
     deletes: Arc<AtomicUsize>,
     storage: crate::storage::StorageMode,
 ) -> Arc<Kernel> {
-    let mut kernel = Kernel::with_storage(storage);
+    let mut kernel = Kernel::with_storage(storage.clone());
     kernel
         .bundles
         .register("counting.tools", CountingBundle { deletes });
+    // Disk mode persists THROUGH a provider — register the fake `file_bridge`
+    // store rooted at the workdir so a test can wire one (see `wire_fake_store`).
+    if let Some(wd) = storage.workdir() {
+        crate::test_support::register_fake_store(&mut kernel.bundles, wd);
+    }
     Arc::new(kernel)
 }
 
@@ -77,6 +82,9 @@ async fn create_then_delete_unregisters_and_calls_hook() {
     );
     let _rx = kernel.register(Arc::clone(&root));
     kernel.set_root(Arc::clone(&root));
+    // Wire the persistence provider (rooted at the workdir) so records land on
+    // disk — persistence is provider-routed now, RAM without one.
+    crate::test_support::wire_fake_store(&kernel, tmp.path()).await;
 
     // Create one child via the system verb.
     let v = kernel

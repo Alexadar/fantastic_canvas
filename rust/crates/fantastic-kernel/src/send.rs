@@ -441,11 +441,11 @@ async fn update_from_payload(kernel: &Arc<Kernel>, caller: &Arc<Agent>, payload:
         }
     }
     let rec = target.update_meta(patch);
-    // Disk-mode persist of the updated record. Merge-only — the
-    // existing agent.json's other fields (bundle-specific, user
-    // additions) survive. InMemory mode no-ops. See
+    // Persist the updated record THROUGH the discovered provider. Merge-only —
+    // the existing agent.json's other fields (bundle-specific, user additions)
+    // survive. No-op in InMemory mode or when no provider is wired (RAM). See
     // `persistence::persist` for the dirty-binding semantics.
-    let _ = crate::persistence::persist(&target, &kernel.storage);
+    let _ = crate::persistence::persist(kernel, &target).await;
     let rec_value = serde_json::to_value(&rec).unwrap_or(Value::Null);
     // Telemetry state event — Python parity (`_agent.py:637-657`):
     // publish the full record + the list of changed fields, not just

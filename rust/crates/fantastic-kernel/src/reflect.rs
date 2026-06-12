@@ -114,6 +114,14 @@ pub fn apply_reflect_flags(
             "version".to_string(),
             json!(std::env::var("FANTASTIC_VERSION").ok()),
         );
+        // WHICH file_bridge the loader auto-persists records THROUGH (the
+        // discovered store), or null = nothing wired (state in RAM). With the
+        // provider's posture inline in the tree, a client sees in one reflect
+        // whether persistence is wired AND whether the wired leg is open.
+        obj.insert(
+            "persistence".to_string(),
+            json!({ "provider": crate::persistence::find_store(kernel).map(|id| id.0) }),
+        );
     }
     match payload.get("tree").and_then(Value::as_str).unwrap_or("all") {
         "all" => {

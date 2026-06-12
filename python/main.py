@@ -38,9 +38,11 @@ def _bootstrap(kernel: Kernel, root_dir: Path = Path(".fantastic")) -> None:
         # `reflect` paths take no lock and write nothing).
         records = [{"id": "kernel_state", "handler_module": "kernel_state.tools"}]
     kernel.load(records, root_path=root_dir)
-    # No stream provider is composed here. kernel_state persists records DIRECTLY by
-    # default; it DISCOVERS a provider (a file_bridge child rooted at `.fantastic`)
-    # if an operator/LLM has wired one. The seed write below is direct (cold path).
+    # No stream provider is composed here. kernel_state's AUTO-FLUSH persists ONLY
+    # through a DISCOVERED provider (a file_bridge child rooted at `.fantastic` that an
+    # operator/LLM wires) — with none wired the live tree stays in RAM (no fallback).
+    # The COLD primitives are direct by design: this one-time seed write below, and
+    # `read_tree` at boot — the chicken-egg bring-up before any provider can exist.
     if seeded:
         write_record(kernel.root._root_path, kernel.root.record)
     if sys.stdin.isatty():

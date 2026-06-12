@@ -152,14 +152,15 @@ fn meta_bool(agent_id: &AgentId, kernel: &Kernel, key: &str) -> bool {
     meta.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
-fn update_meta(agent_id: &AgentId, kernel: &Kernel, key: &str, value: Value) {
+async fn update_meta(agent_id: &AgentId, kernel: &Arc<Kernel>, key: &str, value: Value) {
     let Some(agent) = kernel.agents.get(agent_id).map(|e| Arc::clone(&e)) else {
         return;
     };
     let mut patch = Map::new();
     patch.insert(key.to_string(), value);
     agent.update_meta(patch);
-    let _ = fantastic_kernel::persistence::persist(&agent, &kernel.storage);
+    // Persist the meta change THROUGH the discovered provider (no-op if none).
+    let _ = fantastic_kernel::persistence::persist(kernel, &agent).await;
 }
 
 // ── file-agent-routed persistence ───────────────────────────────────
@@ -541,7 +542,7 @@ async fn pause_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>) 
         }
         return json!({"paused": touched > 0, "schedule_id": sid});
     }
-    update_meta(agent_id, kernel, "paused", json!(true));
+    update_meta(agent_id, kernel, "paused", json!(true)).await;
     json!({"paused": true, "scheduler_id": agent_id.as_str()})
 }
 
@@ -562,7 +563,7 @@ async fn resume_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>)
         }
         return json!({"resumed": touched > 0, "schedule_id": sid});
     }
-    update_meta(agent_id, kernel, "paused", json!(false));
+    update_meta(agent_id, kernel, "paused", json!(false)).await;
     json!({"resumed": true, "scheduler_id": agent_id.as_str()})
 }
 
