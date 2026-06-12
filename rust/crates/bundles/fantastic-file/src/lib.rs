@@ -69,7 +69,9 @@ impl Bundle for FileBundle {
             None => return Ok(Some(json!({"error": format!("no agent {agent_id}")}))),
         };
         let meta = agent.meta.read().expect("meta poisoned").clone();
-        let root = root_of(&meta);
+        // `raw_root` is the configured root verbatim (reflect shows it). Data
+        // verbs operate on the CLAMPED root (running-dir law) — resolved below.
+        let raw_root = root_of(&meta);
         let readonly = meta
             .get("readonly")
             .and_then(Value::as_bool)
@@ -88,51 +90,40 @@ impl Bundle for FileBundle {
         }
 
         let reply = match verb {
-            "reflect" => reflect_reply(agent_id, &root, readonly, &hidden),
+            // Discovery shows the configured root verbatim (no clamp — py parity).
+            "reflect" => reflect_reply(agent_id, &raw_root, readonly, &hidden),
             "boot" | "shutdown" => Value::Null,
-            "list" => list_reply(&root, payload, &hidden),
-            "read" => read_reply(&root, payload),
-            "write" => {
-                if readonly {
-                    json!({"error": "agent is readonly"})
-                } else {
-                    write_reply(&root, payload)
-                }
-            }
-            "delete" => {
-                if readonly {
-                    json!({"error": "agent is readonly"})
-                } else {
-                    delete_reply(&root, payload)
-                }
-            }
-            "rename" => {
-                if readonly {
-                    json!({"error": "agent is readonly"})
-                } else {
-                    rename_reply(&root, payload)
-                }
-            }
-            "mkdir" => {
-                if readonly {
-                    json!({"error": "agent is readonly"})
-                } else {
-                    mkdir_reply(&root, payload)
-                }
-            }
-            // The PUMP coordinates a SOURCE→SINK copy over the binary channel
-            // (it never touches bytes itself), so it rides the text channel.
+            // The PUMP coordinates a SOURCE→SINK copy by id; it never touches
+            // bytes/root itself, so it rides the text channel without a clamp.
             "pump" => pump_reply(agent_id, payload, kernel).await,
-            // Stream verbs carry RAW BYTES — they only exist on the binary
-            // channel (`send_with_binary`). A text dispatch can't carry the
-            // chunk, so redirect rather than silently mis-handle.
+            // Stream verbs carry RAW BYTES — binary channel only.
             "read_stream" | "write_stream" => json!({
                 "error": format!(
                     "{verb} carries raw bytes — call it on the binary channel \
                      (send_with_binary), not text send"
                 ),
             }),
-            other => json!({"error": format!("unknown verb {other:?}")}),
+            // Every data verb clamps the root to the running dir FIRST (a root
+            // that escapes it refuses — the running-dir law).
+            _ => {
+                let root = match clamp_root(&raw_root, &workdir_base(kernel)) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(Some(json!({"error": e, "reason": "root_escapes_running_dir"}))),
+                };
+                match verb {
+                    "list" => list_reply(&root, payload, &hidden),
+                    "read" => read_reply(&root, payload),
+                    "write" if readonly => json!({"error": "agent is readonly"}),
+                    "write" => write_reply(&root, payload),
+                    "delete" if readonly => json!({"error": "agent is readonly"}),
+                    "delete" => delete_reply(&root, payload),
+                    "rename" if readonly => json!({"error": "agent is readonly"}),
+                    "rename" => rename_reply(&root, payload),
+                    "mkdir" if readonly => json!({"error": "agent is readonly"}),
+                    "mkdir" => mkdir_reply(&root, payload),
+                    other => json!({"error": format!("unknown verb {other:?}")}),
+                }
+            }
         };
         Ok(Some(reply))
     }
@@ -166,7 +157,16 @@ impl Bundle for FileBundle {
         if let Some(denied) = gate(&meta, agent_id, verb) {
             return Ok((Some(denied), Vec::new()));
         }
-        let root = root_of(&meta);
+        // Running-dir law — clamp the root for stream ops too.
+        let root = match clamp_root(&root_of(&meta), &workdir_base(kernel)) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok((
+                    Some(json!({"error": e, "reason": "root_escapes_running_dir"})),
+                    Vec::new(),
+                ))
+            }
+        };
         let readonly = meta
             .get("readonly")
             .and_then(Value::as_bool)
@@ -401,6 +401,75 @@ fn root_of(meta: &serde_json::Map<String, Value>) -> PathBuf {
         Some(s) if !s.is_empty() => expanduser(s),
         _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     }
+}
+
+/// The kernel's RUNNING DIRECTORY — the dir that holds its `.fantastic` (the
+/// root loader's `root_path` parent). In production this IS the process cwd (you
+/// run the kernel in your project dir), so the clamp matches Python's
+/// `Path.cwd()`; deriving it from the root's location instead of reading the
+/// process cwd keeps it robust under embedding/tests where they can differ.
+fn workdir_base(kernel: &Kernel) -> PathBuf {
+    kernel
+        .root()
+        .and_then(|r| r.root_path.parent().map(|p| p.to_path_buf()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// THE RUNNING-DIR LAW — clamp the configured root to the kernel's running
+/// directory (`base`). A relative root resolves under `base`; an absolute root
+/// is allowed ONLY if it lies inside `base`; `..`/outside escapes refuse.
+/// Mirrors py `fs.resolve_root` (whose base is `Path.cwd()`). Returns the
+/// clamped absolute root, or an error string. This guarantees a file_bridge
+/// can't be pointed outside the kernel's own dir (the single disk surface stays
+/// bounded); reaching OUTSIDE is a separate `external` concern (not yet here),
+/// not a misconfigured root.
+fn clamp_root(raw: &Path, base: &Path) -> Result<PathBuf, String> {
+    // Compare LEXICALLY (no canonicalize) so the check doesn't require the dir
+    // to exist AND both sides stay in the same path form — canonicalizing only
+    // the base would mismatch a non-canonical absolute root on macOS (`/var`
+    // vs `/private/var`). The base is absolutized against cwd if relative.
+    let base = if base.is_absolute() {
+        normalize_lexical(base)
+    } else {
+        normalize_lexical(&std::env::current_dir().unwrap_or_default().join(base))
+    };
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        base.join(raw)
+    };
+    let norm = normalize_lexical(&joined);
+    if !norm.starts_with(&base) {
+        return Err(format!(
+            "root {} escapes the running dir {}",
+            norm.display(),
+            base.display()
+        ));
+    }
+    Ok(norm)
+}
+
+/// Absolutize-and-fold `.`/`..` lexically (no filesystem access). Used by the
+/// running-dir clamp so a root can be validated before its dir exists.
+fn normalize_lexical(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out: Vec<Component> = Vec::new();
+    for c in p.components() {
+        match c {
+            Component::ParentDir => {
+                if matches!(out.last(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
+                    out.push(c);
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out.iter().collect()
 }
 
 /// Tilde expansion so `root=~/projects/foo` works the same as Python's

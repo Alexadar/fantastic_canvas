@@ -106,6 +106,22 @@ fn write_stream_appends_when_offset_omitted() {
 }
 
 #[test]
+fn clamp_root_refuses_outside_base_and_allows_relative() {
+    let base = tempfile::TempDir::new().unwrap();
+    let b = &base.path().canonicalize().unwrap();
+    // Relative roots resolve under the base and pass.
+    assert!(clamp_root(Path::new(".fantastic"), b).is_ok());
+    assert!(clamp_root(Path::new("sub/dir"), b).is_ok());
+    // An absolute root inside the base passes.
+    assert!(clamp_root(&b.join("served"), b).is_ok());
+    // An absolute root outside the base refuses (the running-dir law).
+    let err = clamp_root(Path::new("/"), b).unwrap_err();
+    assert!(err.contains("escapes the running dir"), "{err}");
+    // A `..` climb above the base refuses.
+    assert!(clamp_root(Path::new("../../../etc"), b).is_err());
+}
+
+#[test]
 fn gate_seals_by_default_and_opens_with_allow_all() {
     let id = AgentId::from("fb");
     // No ingress_rule ⇒ SEALED: read/write denied, reflect admitted.
