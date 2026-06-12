@@ -123,6 +123,8 @@ struct HTTPServerTests {
                 "handler_module": .string("file_bridge.tools"),
                 "id": .string("assets"),
                 "root": .string(rel),
+                // The fs edge SEALS by default — open it for the /file/ proxy.
+                "ingress_rule": .string("allow_all"),
             ]))
         _ = await kernel.send(
             AgentId("web"), .object(["type": .string("boot")]))

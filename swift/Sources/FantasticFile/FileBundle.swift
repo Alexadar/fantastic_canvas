@@ -7,6 +7,7 @@
 //
 // Verbs: reflect / boot / list / read / write / delete / rename / mkdir.
 
+import FantasticIoBridge
 import FantasticJSON
 import FantasticKernel
 import Foundation
@@ -41,6 +42,17 @@ public struct FileBundle: AgentBundle {
         let verb = payload["type"].asString ?? ""
         guard let agent = kernel.agent(agentId) else {
             return .object(["error": .string("no agent \(agentId)")])
+        }
+        // GATE — the fs edge is an io_bridge leg: SEALED by default. Every verb
+        // except discovery/lifecycle is denied until opened (ingress_rule=allow_all).
+        if let denied = gateVerb(
+            ingressRule: agent.metaValue(forKey: "ingress_rule"),
+            auth: agent.metaValue(forKey: "auth"),
+            authToken: agent.metaValue(forKey: "auth_token")?.asString,
+            agentId: agent.id.value,
+            verb: verb)
+        {
+            return denied
         }
         switch verb {
         case "reflect":

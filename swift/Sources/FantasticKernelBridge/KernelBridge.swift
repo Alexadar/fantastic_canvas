@@ -21,6 +21,7 @@
 //   - shutdown : same as detach (substrate lifecycle hook)
 //   - reflect  : identity + connectivity + verb docs
 
+@_exported import FantasticIoBridge
 import FantasticJSON
 import FantasticKernel
 import Foundation
@@ -393,8 +394,9 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
             // gates only the cloud_bridge inbound-call path.
             let a = kernel.agent(agentId)
             let authMeta = a?.metaValue(forKey: "auth")
+            // SEALED BY DEFAULT — an io leg with no rule reflects as deny_inbound.
             let ingressName = ruleName(
-                a?.metaValue(forKey: "ingress_rule") ?? authMeta, default: "allow_all")
+                a?.metaValue(forKey: "ingress_rule") ?? authMeta, default: "deny_inbound")
             let egressName = ruleName(
                 a?.metaValue(forKey: "egress_rule") ?? authMeta, default: "silent")
             return [

@@ -29,6 +29,7 @@
 // `watch`/`unwatch` are ignored, matching the Python/Rust read loops.)
 
 import Crypto
+import FantasticIoBridge
 import FantasticJSON
 import FantasticKernel
 import Foundation

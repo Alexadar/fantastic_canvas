@@ -180,12 +180,17 @@ struct CloudBridgeTransportTests {
     }
 
     @Test func ingressRegistryResolvesByName() throws {
-        // absent / null / empty ⇒ AllowAll (back-compat no-op)
+        // SEALED BY DEFAULT — absent / null / empty ⇒ DenyInbound.
         let call = AuthAction(kind: "call", target: "t", verb: "v")
         for value in [JSON?.none, .some(.null), .some(.string(""))] {
-            if case .deny = try IngressRules.resolve(value).authorize(call) {
-                Issue.record("absent/null/empty ⇒ AllowAll")
+            guard case .deny = try IngressRules.resolve(value).authorize(call) else {
+                Issue.record("absent/null/empty must SEAL (deny) by default")
+                return
             }
+        }
+        // explicit allow_all ⇒ admit.
+        if case .deny = try IngressRules.resolve("allow_all").authorize(call) {
+            Issue.record("allow_all must admit")
         }
         // string + object form (both `type` and legacy `policy`) resolve DenyInbound
         for value: JSON in ["deny_inbound", ["type": "deny_inbound"], ["policy": "deny_inbound"]] {
