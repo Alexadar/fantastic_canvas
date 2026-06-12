@@ -12,13 +12,23 @@ import Foundation
 import OrderedCollections
 
 extension Kernel {
+    /// Canonicalize a filesystem path for comparison: resolve symlinks, then
+    /// normalize the macOS `/private/var` ≡ `/var` alias. Temp dirs resolve to
+    /// one form and constructed agent rootPaths to the other, so a raw prefix
+    /// check fails and records land doubly-nested under the absolute path. No-op
+    /// for ordinary paths (`/Users/…`, Linux).
+    static func canonPath(_ path: String) -> String {
+        let resolved = (path as NSString).resolvingSymlinksInPath
+        return resolved.hasPrefix("/private/") ? String(resolved.dropFirst(8)) : resolved
+    }
+
     /// DISCOVER the persistence provider — the first `file_bridge.tools` CHILD of
     /// root whose `root` resolves to the root loader's own store dir (its
     /// `.fantastic`). Bound by MATCH, operator-wired, not composed. Returns its
     /// id, or `nil` when none is wired (⇒ RAM). No fallback.
     public func findStore() -> AgentId? {
         guard let rootAgent = root else { return nil }
-        let want = rootAgent.rootPath.standardizedFileURL.path
+        let want = Self.canonPath(rootAgent.rootPath.path)
         // The kernel's running dir = the dir holding `.fantastic` (= cwd in
         // production). Resolve a relative provider root against it.
         let workdir = rootAgent.rootPath.deletingLastPathComponent()
@@ -27,11 +37,9 @@ extension Kernel {
                 child.handlerModule == "file_bridge.tools"
             else { continue }
             let r = child.metaValue(forKey: "root")?.asString ?? ""
-            let candidate =
-                r.hasPrefix("/")
-                ? URL(fileURLWithPath: r).standardizedFileURL
-                : workdir.appendingPathComponent(r).standardizedFileURL
-            if candidate.path == want { return cid }
+            let candidateURL =
+                r.hasPrefix("/") ? URL(fileURLWithPath: r) : workdir.appendingPathComponent(r)
+            if Self.canonPath(candidateURL.path) == want { return cid }
         }
         return nil
     }
@@ -39,8 +47,11 @@ extension Kernel {
     /// An agent's dir RELATIVE to the loader's store root (`.fantastic`). The
     /// root loader itself → `""`; a child → `agents/<id>` (recursively).
     func storeReldir(storeRoot: URL, agentRoot: URL) -> String {
-        let s = storeRoot.standardizedFileURL.path
-        let a = agentRoot.standardizedFileURL.path
+        // resolveSymlinks on BOTH so the prefix check holds across the macOS
+        // `/var`→`/private/var` symlink (else this falls through to the absolute
+        // path and records land doubly-nested under the store root).
+        let s = Self.canonPath(storeRoot.path)
+        let a = Self.canonPath(agentRoot.path)
         if a == s { return "" }
         if a.hasPrefix(s + "/") { return String(a.dropFirst(s.count + 1)) }
         return a
@@ -69,7 +80,7 @@ extension Kernel {
         if let content = await readViaStore(storeId, af),
             let data = content.data(using: .utf8),
             let parsed = try? JSON.parse(data),
-            case let .object(d) = parsed
+            case .object(let d) = parsed
         {
             existing = d
         }
