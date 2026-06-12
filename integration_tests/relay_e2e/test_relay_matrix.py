@@ -34,13 +34,13 @@ from helpers.seeding import seed_web, seed_web_ws  # noqa: E402
 # Runtimes that ship a cloud_bridge transport today.
 CLOUD_BRIDGE_RUNTIMES = {"python", "rust", "swift"}
 
-# `handler_module` for the cloud_bridge agent per runtime: python + rust both
-# ship it as the standalone `cloud_bridge` derivation; swift still folds it into
-# the combined `kernel_bridge` as a transport kind (its port is deferred).
+# `handler_module` for the cloud_bridge agent per runtime: all three host
+# runtimes now ship it as the standalone `cloud_bridge` derivation (split out
+# of the combined kernel_bridge).
 _HANDLER_MODULE = {
     "python": "cloud_bridge.tools",
     "rust": "cloud_bridge.tools",
-    "swift": "kernel_bridge.tools",
+    "swift": "cloud_bridge.tools",
 }
 
 # 3 host canvases × 2 → all unordered pairs (any-to-any) PLUS same-kind.

@@ -1,9 +1,9 @@
 # Fantastic integration tests
 
 Cross-runtime tests that spawn real `fantastic` kernels as subprocesses,
-pair them via the WS bridge bundle (`ws_bridge` on python + rust; `kernel_bridge`
-on swift, where the cross-runtime split is deferred), and exercise the
-canonical verb surface (send / reflect / streams) across the wire.
+pair them via the WS bridge bundle (`ws_bridge` on python · rust · swift — all
+three split the combined `kernel_bridge` into `ws_bridge` + `cloud_bridge`), and
+exercise the canonical verb surface (send / reflect / streams) across the wire.
 
 These are **integration** tests — heavyweight, slow, real network I/O.
 They live outside the per-runtime unit-test trees on purpose. Each

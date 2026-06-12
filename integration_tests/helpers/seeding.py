@@ -278,15 +278,15 @@ def seed_web_rest(binary: Path, workdir: Path, agent_id: str = "rest") -> str:
     return reply.get("id", agent_id)
 
 
-# Per-runtime `handler_module` for the WS bridge agent. Python + Rust both ship
-# the WS derivation as `ws_bridge.tools` (Rust split the combined kernel_bridge
-# into ws_bridge + cloud_bridge); Swift still ships the combined `kernel_bridge`
-# (its port is deferred). Keyed by the RUNTIME enum from the root reflect (the
-# bridge is seeded on the DIALING kernel, so it matches THAT runtime).
+# Per-runtime `handler_module` for the WS bridge agent. All three host runtimes
+# now ship the WS derivation as `ws_bridge.tools` (they split the combined
+# kernel_bridge into ws_bridge + cloud_bridge). Keyed by the RUNTIME enum from
+# the root reflect (the bridge is seeded on the DIALING kernel, so it matches
+# THAT runtime).
 _WS_BRIDGE_HANDLER_MODULE = {
     "python": "ws_bridge.tools",
     "rust": "ws_bridge.tools",
-    "swift": "kernel_bridge.tools",  # port deferred
+    "swift": "ws_bridge.tools",
 }
 
 

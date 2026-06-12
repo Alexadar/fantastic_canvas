@@ -24,7 +24,7 @@ func makeKernelWithAll() -> Kernel {
     registry.register("proxy_agent.tools", ProxyAgentBundle())
     registry.register("tools.tools", ToolsBundle())
     registry.register("scheduler.tools", SchedulerBundle())
-    registry.register("kernel_bridge.tools", KernelBridgeBundle())
+    registry.register("ws_bridge.tools", KernelBridgeBundle())
     registry.register("web_ws.tools", WebWSBundle())
     registry.register("web_rest.tools", WebRestBundle())
     let kernel = Kernel(storage: .inMemory, bundles: registry)
@@ -197,10 +197,10 @@ struct BundleSmokeTests {
         let kernel2 = makeKernelWithAll()
         // Wire bridge from kernel1 → kernel2.
         let bridge = KernelBridgeBundle()
-        kernel1.bundles.register("kernel_bridge.tools", bridge)
+        kernel1.bundles.register("ws_bridge.tools", bridge)
         _ = await kernel1.send(
             "core",
-            ["type": "create_agent", "handler_module": "kernel_bridge.tools", "id": "br"])
+            ["type": "create_agent", "handler_module": "ws_bridge.tools", "id": "br"])
         bridge.attachInMemory(agentId: "br", remote: kernel2, localKernel: kernel1)
         let reply = await kernel1.send(
             "br",
@@ -222,10 +222,10 @@ struct BundleSmokeTests {
         let kernelA = makeKernelWithAll()
         let kernelB = makeKernelWithAll()
         let bridge = KernelBridgeBundle()
-        kernelA.bundles.register("kernel_bridge.tools", bridge)
+        kernelA.bundles.register("ws_bridge.tools", bridge)
         _ = await kernelA.send(
             "core",
-            ["type": "create_agent", "handler_module": "kernel_bridge.tools", "id": "br"])
+            ["type": "create_agent", "handler_module": "ws_bridge.tools", "id": "br"])
         bridge.attachInMemory(agentId: "br", remote: kernelB, localKernel: kernelA)
 
         // Give attachInMemory's async setLocalSink Task a tick to land.

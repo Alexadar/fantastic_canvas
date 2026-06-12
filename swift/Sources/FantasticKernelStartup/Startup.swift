@@ -46,7 +46,10 @@ public func defaultBundleRegistry() -> BundleRegistry {
     r.register("proxy_agent.tools", ProxyAgentBundle())
     r.register("tools.tools", ToolsBundle())
     r.register("scheduler.tools", SchedulerBundle())
-    r.register("kernel_bridge.tools", KernelBridgeBundle())
+    // TWO io_bridge derivations sharing one engine (mirrors py's separate
+    // ws_bridge + cloud_bridge bundles): ws/memory transports vs the relay.
+    r.register("ws_bridge.tools", KernelBridgeBundle(family: .ws))
+    r.register("cloud_bridge.tools", KernelBridgeBundle(family: .cloud))
     r.register("web.tools", WebBundle())
     r.register("web_ws.tools", WebWSBundle())
     r.register("web_rest.tools", WebRestBundle())
