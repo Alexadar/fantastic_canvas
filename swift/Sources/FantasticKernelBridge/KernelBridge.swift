@@ -74,15 +74,16 @@ enum BridgeTransport {
         switch self {
         case .memory(let bridge):
             return await bridge.binaryForward(target: target, header: header, blob: blob)
-        case .ws, .cloud:
-            // Over-the-wire binary forward carries the codec frame (+ a 1-byte
-            // TLS tag for cloud) — the remaining over-the-wire piece (mirrors
-            // rust's 4b); the WS/cloud legs ship text frames today.
-            return (
-                .object([
-                    "error": .string("binary forward over this transport not yet wired")
-                ]), Data()
-            )
+        case .ws(let transport):
+            // Over-the-wire binary forward: a codec frame `[4B len|header|body]`
+            // shipped as a binary WS message (mirrors rust's 4b). The remote
+            // `web_ws.handleBinaryFrame` decodes it, gates, and replies with a
+            // codec binary frame (read_stream) or a text reply (write_stream).
+            return await transport.binaryForward(target: target, header: header, blob: blob)
+        case .cloud(let transport):
+            // Cloud tunnels the codec frame as a tag-1 binary record `[4B len|
+            // tag(1B)|wire]` over the mTLS relay (mirrors rust's cloud wire).
+            return await transport.binaryForward(target: target, header: header, blob: blob)
         }
     }
 

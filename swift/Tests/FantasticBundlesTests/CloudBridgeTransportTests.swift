@@ -10,6 +10,7 @@
 // with the concurrency runtime. `pinRejectsUnapprovedPeerCert` covers the
 // negative path (a peer cert not in `approved_peer_certs` aborts the handshake).
 
+import FantasticFile
 import FantasticJSON
 import FantasticKernel
 import FantasticKernelBridge
@@ -113,6 +114,69 @@ struct CloudBridgeTransportTests {
             let r3 = await transportB.forward(target: "core", payload: ["type": "list_agents"])
             let names = (r3["agents"].asArray ?? []).compactMap { $0["id"].asString }
             #expect(names.contains("core"))
+
+            await transportA.close()
+            await transportB.close()
+        }
+    }
+
+    @Test func binaryForwardStreamsRawBytesOverCloud() async throws {
+        try await withDeadline(20) {
+            // The CLOUD wire half of cross-kernel streaming — a tag-1 binary
+            // record `[4B len|tag|wire]` tunnelled over the mTLS relay to a
+            // remote file_bridge. Raw bytes both ways, never base64. (WS variant:
+            // `wsBinaryForwardStreamsRawBytesOverWire`.)
+            let kernelA = await makeKernel(withEcho: false)
+            // kernelB hosts an OPEN file_bridge in a cwd-relative dir.
+            let registry = BundleRegistry()
+            registry.register("file_bridge.tools", FileBundle())
+            let kernelB = Kernel(storage: .inMemory, bundles: registry)
+            let rootB = Agent(id: "core", handlerModule: nil, parentId: nil)
+            kernelB.register(rootB)
+            kernelB.setRoot(rootB)
+            let fm = FileManager.default
+            let rel = "fantastic-cloudbrstream-\(UUID().uuidString)"
+            let dir = URL(fileURLWithPath: fm.currentDirectoryPath)
+                .appendingPathComponent(rel)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: dir) }
+            _ = await kernelB.send(
+                "core",
+                [
+                    "type": "create_agent", "handler_module": "file_bridge.tools",
+                    "id": "fs", "root": .string(rel), "ingress_rule": "allow_all",
+                ])
+
+            let id1 = [UInt8](repeating: 7, count: 32)
+            let id2 = [UInt8](repeating: 9, count: 32)
+            let (cert1, key1) = try CloudCert.selfSigned(idKey: id1)
+            let (cert2, key2) = try CloudCert.selfSigned(idKey: id2)
+            let pem1 = derToPEM(cert1)
+            let pem2 = derToPEM(cert2)
+            let (chA, chB) = await MemoryByteChannel.pair()
+            async let ta = CloudBridgeTransport.connect(
+                channel: chA, server: false, certDER: cert1, keyPKCS8: key1,
+                approvedPeerPEMs: [pem2], localAgentId: "brA", localKernel: kernelA)
+            async let tb = CloudBridgeTransport.connect(
+                channel: chB, server: true, certDER: cert2, keyPKCS8: key2,
+                approvedPeerPEMs: [pem1], localAgentId: "brB", localKernel: kernelB)
+            let (transportA, transportB) = try await (ta, tb)
+
+            let payload = Data([0x00, 0xFF, 0xCA, 0xFE, 0xBA, 0xBE, 0x10, 0x80])
+            // write_stream (binary) over the relay tunnel → kernelB.fs
+            let (w, _) = await transportA.binaryForward(
+                target: "fs",
+                header: [
+                    "type": "write_stream", "path": "blob.bin", "truncate": .bool(true),
+                ],
+                blob: payload)
+            #expect(w["written"].asInt == Int64(payload.count), "\(w)")
+            // read_stream (binary) over the relay tunnel → raw bytes back
+            let (_, body) = await transportA.binaryForward(
+                target: "fs",
+                header: ["type": "read_stream", "path": "blob.bin"],
+                blob: Data())
+            #expect(body == payload, "raw bytes must round-trip over the cloud relay tunnel")
 
             await transportA.close()
             await transportB.close()
