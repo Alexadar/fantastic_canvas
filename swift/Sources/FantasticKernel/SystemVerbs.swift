@@ -101,18 +101,17 @@ extension Kernel {
             rootPath: rootPath
         )
 
-        // Disk-mode persist; in-memory no-op.
-        do {
-            try Persistence.persist(agent: newAgent, storage: storage)
-        } catch {
-            return .object(["error": .string("persist: \(error)")])
-        }
-        if let bundle = bundles.get(hm), let readme = bundle.readme {
-            try? Persistence.seedReadme(agent: newAgent, content: readme, storage: storage)
-        }
-
+        // Wire into the kernel + parent FIRST, then persist. Order matters now
+        // that persistence routes THROUGH a discovered file_bridge provider (a
+        // child of root): a freshly-created store must already be a registered
+        // child so it can persist its OWN record through itself (findStore sees
+        // it). No-op in InMemory mode or when no provider is wired (RAM).
         register(newAgent)
         parent.insertChild(newAgent)
+        await persistRecord(newAgent)
+        if let bundle = bundles.get(hm), let readme = bundle.readme {
+            await seedReadmeViaStore(newAgent, content: readme)
+        }
 
         let event: JSON = .object([
             "type": .string("created"),
@@ -206,9 +205,10 @@ extension Kernel {
         if let parentId = target.parentId, let parent = agent(parentId) {
             parent.removeChild(target.id)
         }
-        // Unregister from kernel + disk.
+        // Unregister from kernel + disk cleanup THROUGH the discovered provider
+        // (its recursive `delete`) — the substrate owns no `fs` surface here.
         unregister(target.id)
-        try? Persistence.remove(agent: target, storage: storage)
+        await forgetRecord(target)
 
         let event: JSON = .object([
             "type": .string("removed"),
@@ -237,7 +237,7 @@ extension Kernel {
             }
         }
         let rec = target.updateMeta(patch)
-        try? Persistence.persist(agent: target, storage: storage)
+        await persistRecord(target)
         let recJson = recordToJSON(rec)
 
         let event: JSON = .object([

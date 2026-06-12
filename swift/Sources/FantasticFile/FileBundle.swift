@@ -299,10 +299,12 @@ public struct FileBundle: AgentBundle {
         let rawStr = agent.metaValue(forKey: "root")?.asString
         let candidate: URL
         if let rawStr, !rawStr.isEmpty {
-            let raw = URL(fileURLWithPath: rawStr)
+            // Test the raw STRING for absoluteness — `URL(fileURLWithPath:)` on a
+            // relative path resolves it against the process cwd, which would
+            // wrongly read a workdir-relative root (".fantastic") as outside.
             candidate =
-                raw.path.hasPrefix("/")
-                ? raw.standardizedFileURL
+                rawStr.hasPrefix("/")
+                ? URL(fileURLWithPath: rawStr).standardizedFileURL
                 : base.appendingPathComponent(rawStr).standardizedFileURL
         } else {
             // No root meta ⇒ the agent's own dir (already inside the workdir).

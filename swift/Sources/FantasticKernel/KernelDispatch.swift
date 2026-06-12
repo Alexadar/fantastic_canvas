@@ -116,6 +116,13 @@ extension Kernel {
             obj["version"] =
                 ProcessInfo.processInfo.environment["FANTASTIC_VERSION"].map { JSON.string($0) }
                 ?? .null
+            // WHICH file_bridge the loader auto-persists records THROUGH (the
+            // discovered store), or null = nothing wired (state in RAM). With the
+            // provider's posture inline in the tree, a client sees whether
+            // persistence is wired AND whether the wired leg is open.
+            obj["persistence"] = .object([
+                "provider": findStore().map { JSON.string($0.value) } ?? .null
+            ])
         }
         switch payload["tree"].asString ?? "all" {
         case "all": obj["tree"] = treeNode(target)

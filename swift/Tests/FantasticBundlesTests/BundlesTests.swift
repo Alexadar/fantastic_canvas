@@ -34,8 +34,72 @@ func makeKernelWithAll() -> Kernel {
     return kernel
 }
 
+/// A disk-mode kernel rooted at `workdir/.fantastic`, with the full registry —
+/// for the persistence-inversion test (records persist THROUGH a file_bridge).
+func makeDiskKernel(workdir: URL) -> Kernel {
+    let registry = BundleRegistry()
+    registry.register("file_bridge.tools", FileBundle())
+    registry.register("tools.tools", ToolsBundle())
+    let kernel = Kernel(storage: .disk(workdir), bundles: registry)
+    let root = Agent(
+        id: "core", handlerModule: nil, parentId: nil,
+        rootPath: workdir.appendingPathComponent(".fantastic"))
+    kernel.register(root)
+    kernel.setRoot(root)
+    return kernel
+}
+
 @Suite("Phase 3 bundle smoke tests")
 struct BundleSmokeTests {
+    @Test func persistInversionThroughDiscoveredStore() async throws {
+        // The keystone: records persist THROUGH a discovered file_bridge
+        // provider (py/rust parity), NOT a direct substrate write. No provider ⇒
+        // RAM (no fallback); a wired store self-persists + carries the rest.
+        let fm = FileManager.default
+        let workdir = fm.temporaryDirectory.appendingPathComponent(
+            "fantastic-inv-\(UUID().uuidString)")
+        try fm.createDirectory(
+            at: workdir.appendingPathComponent(".fantastic"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: workdir) }
+        let kernel = makeDiskKernel(workdir: workdir)
+        func file(_ rel: String) -> String {
+            workdir.appendingPathComponent(".fantastic/\(rel)").path
+        }
+
+        // No store wired ⇒ the create stays in RAM (NO direct-fs fallback).
+        _ = await kernel.send(
+            "core",
+            ["type": "create_agent", "handler_module": "tools.tools", "id": "ram_only"])
+        #expect(!fm.fileExists(atPath: file("agents/ram_only/agent.json")))
+        #expect(kernel.agent("ram_only") != nil)  // live in RAM
+
+        // Wire the store (file_bridge @ .fantastic, open) — it self-persists.
+        _ = await kernel.send(
+            "core",
+            [
+                "type": "create_agent", "handler_module": "file_bridge.tools", "id": "store",
+                "root": ".fantastic", "ingress_rule": "allow_all",
+            ])
+        #expect(
+            fm.fileExists(atPath: file("agents/store/agent.json")),
+            "the store must persist itself through itself")
+
+        // Now a created agent persists THROUGH the provider.
+        _ = await kernel.send(
+            "core",
+            [
+                "type": "create_agent", "handler_module": "tools.tools", "id": "foo",
+                "display_name": "Foo",
+            ])
+        #expect(fm.fileExists(atPath: file("agents/foo/agent.json")))
+        let content = try String(contentsOf: URL(fileURLWithPath: file("agents/foo/agent.json")))
+        #expect(content.contains("\"foo\"") && content.contains("Foo"))
+
+        // Delete removes the record THROUGH the provider's recursive delete.
+        _ = await kernel.send("core", ["type": "delete_agent", "id": "foo"])
+        #expect(!fm.fileExists(atPath: file("agents/foo")))
+    }
+
     @Test func fileBundleReflect() async throws {
         let kernel = makeKernelWithAll()
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(
