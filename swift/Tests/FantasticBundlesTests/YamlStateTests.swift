@@ -135,7 +135,8 @@ struct YamlStateTests {
                 == "yaml_state.set: file_bridge_id required — wire (and open) a file_bridge to persist"
         )
         let d = await kernel.send(cid, ["type": "delete", "key": "k"])
-        #expect(d["error"].asString?.hasPrefix("yaml_state.delete: file_bridge_id required") == true)
+        #expect(
+            d["error"].asString?.hasPrefix("yaml_state.delete: file_bridge_id required") == true)
         let rp = await kernel.send(cid, ["type": "replace", "doc": [:]])
         #expect(
             rp["error"].asString?.hasPrefix("yaml_state.replace: file_bridge_id required") == true)

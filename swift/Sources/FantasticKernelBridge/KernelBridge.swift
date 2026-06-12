@@ -499,7 +499,8 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
             // cloud_bridge can't open a ws socket and vice-versa (the split).
             guard family.admits(kind) else {
                 return .object([
-                    "error": .string("\(family.label): transport \"\(kind)\" not in this derivation")
+                    "error": .string(
+                        "\(family.label): transport \"\(kind)\" not in this derivation")
                 ])
             }
             // NOTE: the `auth` policy (deny_inbound) is enforced only on the

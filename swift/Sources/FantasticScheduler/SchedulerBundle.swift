@@ -119,7 +119,8 @@ public final class SchedulerBundle: AgentBundle, @unchecked Sendable {
     }
 
     @discardableResult
-    private func saveSchedules(_ id: AgentId, _ kernel: Kernel, _ schedules: [JSON]) async -> String?
+    private func saveSchedules(_ id: AgentId, _ kernel: Kernel, _ schedules: [JSON]) async
+        -> String?
     {
         await fileWrite(
             id, kernel, schedulesPath(id), JSON.array(schedules).serializePretty(indent: 2))
@@ -129,7 +130,8 @@ public final class SchedulerBundle: AgentBundle, @unchecked Sendable {
         let prev = await fileRead(id, kernel, historyPath(id)) ?? ""
         var combined = prev + event.serialize() + "\n"
         // Ring-trim past 2× MAX.
-        let lines = combined.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let lines = combined.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
         // `split` on a trailing "\n" yields a final "" element — drop it for counting.
         let real = lines.last == "" ? Array(lines.dropLast()) : lines
         if real.count > 2 * HISTORY_MAX {
@@ -151,7 +153,8 @@ public final class SchedulerBundle: AgentBundle, @unchecked Sendable {
 
     private func tickLoop(_ agentId: AgentId, _ kernel: Kernel) async {
         while !Task.isCancelled {
-            let tickSec = max(0.1, kernel.agent(agentId)?.metaValue(forKey: "tick_sec")?.asDouble ?? 1.0)
+            let tickSec = max(
+                0.1, kernel.agent(agentId)?.metaValue(forKey: "tick_sec")?.asDouble ?? 1.0)
             try? await Task.sleep(nanoseconds: UInt64(tickSec * 1_000_000_000))
             if Task.isCancelled { return }
             guard let agent = kernel.agent(agentId) else { return }  // deleted → exit

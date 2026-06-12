@@ -51,7 +51,9 @@ public struct YamlStateBundle: AgentBundle {
             if let key = payload["key"].asString {
                 return .object(["key": .string(key), "value": doc[key] ?? .null])
             }
-            return .object(["doc": .object(OrderedDictionary(uniqueKeysWithValues: doc.map { ($0, $1) }))])
+            return .object([
+                "doc": .object(OrderedDictionary(uniqueKeysWithValues: doc.map { ($0, $1) }))
+            ])
         case "keys":
             let doc = await load(agent, kernel: kernel)
             let items: [JSON] = doc.keys.sorted().map { k in

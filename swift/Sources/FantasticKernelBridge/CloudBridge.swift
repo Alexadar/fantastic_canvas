@@ -474,7 +474,8 @@ public actor CloudBridgeTransport {
     /// codec frame. Returns nil when no complete record is buffered yet.
     private func popFrame() -> CloudRecord? {
         while rbuf.readableBytes >= HDR {
-            let n = Int(rbuf.getInteger(at: rbuf.readerIndex, endianness: .big, as: UInt32.self) ?? 0)
+            let n = Int(
+                rbuf.getInteger(at: rbuf.readerIndex, endianness: .big, as: UInt32.self) ?? 0)
             if n > MAX_FRAME {
                 Task { await self.close() }
                 return nil
@@ -489,7 +490,9 @@ public actor CloudBridgeTransport {
                 guard let (header, body) = Codec.decodeBinaryFrame(Data(wire)) else { continue }
                 return .binary(header, body)
             }
-            guard let frame = try? JSON.parse(String(decoding: wire, as: UTF8.self)) else { continue }
+            guard let frame = try? JSON.parse(String(decoding: wire, as: UTF8.self)) else {
+                continue
+            }
             if frame["type"].asString == KEEPALIVE_TYPE { continue }
             return .text(frame)
         }

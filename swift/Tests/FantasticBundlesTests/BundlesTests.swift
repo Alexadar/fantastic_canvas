@@ -241,7 +241,8 @@ struct BundleSmokeTests {
         let sid = r["schedule_id"].asString
         #expect(sid != nil, "\(r)")
         // store-relative sidecar landed under the store root.
-        #expect(fm.fileExists(atPath: dir.appendingPathComponent("agents/sched/schedules.json").path))
+        #expect(
+            fm.fileExists(atPath: dir.appendingPathComponent("agents/sched/schedules.json").path))
         let list = await kernel.send("sched", ["type": "list"])
         #expect((list["schedules"].asArray ?? []).count == 1)
         // FAILFAST: scheduling without a provider refuses (aligned error string).
@@ -252,7 +253,8 @@ struct BundleSmokeTests {
             "bare", ["type": "schedule", "target": "core", "payload": ["type": "boot"] as JSON])
         #expect(bare["error"].asString == "scheduler: file_bridge_id required")
         // unschedule removes it.
-        let u = await kernel.send("sched", ["type": "unschedule", "schedule_id": .string(sid ?? "")])
+        let u = await kernel.send(
+            "sched", ["type": "unschedule", "schedule_id": .string(sid ?? "")])
         #expect(u["removed"].asBool == true)
         let after = await kernel.send("sched", ["type": "list"])
         #expect((after["schedules"].asArray ?? []).isEmpty)

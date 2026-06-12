@@ -344,8 +344,7 @@ extension KernelBridgeBundle {
     /// established eagerly. The transport's event sink is wired so
     /// inbound `{type:"event"}` frames re-emit on the bridge's local
     /// inbox via `kernel.emit(agentId, payload)`.
-    public func attachWebSocket(agentId: AgentId, endpoint: URL, kernel: Kernel) async
-    {
+    public func attachWebSocket(agentId: AgentId, endpoint: URL, kernel: Kernel) async {
         let ws = WebSocketTransport(endpoint: endpoint)
         await ws.setEventSink(agentId: agentId, kernel: kernel)
         await ws.connect()
