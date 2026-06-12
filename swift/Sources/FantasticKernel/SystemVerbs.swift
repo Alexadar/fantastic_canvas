@@ -287,6 +287,13 @@ extension Kernel {
     /// substrate appends tree/bundles/readme to BOTH via
     /// `applyReflectFlags`, so the root is not special-cased. Mirrors
     /// Rust's `reflect::reflect_identity` / Python's `_reflect_identity`.
+    /// The wiring/posture meta keys surfaced on every reflect tree node — a
+    /// leg's lock (`ingress_rule`/`egress_rule`/`auth`: allow_all = open,
+    /// password = gated, deny_inbound/absent on an io leg = sealed), a
+    /// file_bridge's served `root`, and what a consumer persists THROUGH
+    /// (`file_bridge_id`). Mirrors py/rust `_POSTURE_KEYS`.
+    static let POSTURE_KEYS = ["ingress_rule", "egress_rule", "auth", "root", "file_bridge_id"]
+
     func reflectIdentity(_ agent: Agent) -> JSON {
         var obj: OrderedDictionary<String, JSON> = [:]
         obj["id"] = .string(agent.id.value)
@@ -321,6 +328,14 @@ extension Kernel {
         obj["display_name"] = .string(agent.displayName ?? agent.id.value)
         if let d = agent.descriptionMeta {
             obj["description"] = .string(d)
+        }
+        // Per-node POSTURE — surface the wiring/lock meta a node carries so the
+        // whole IO landscape (which legs are open vs sealed, what's wired to
+        // what) reads from ONE root reflect. Mirrors py/rust `_POSTURE_KEYS`.
+        for key in Self.POSTURE_KEYS {
+            if let v = agent.metaValue(forKey: key) {
+                obj[key] = v
+            }
         }
         let kids = agent.childIds()
             .compactMap { self.agent($0) }
