@@ -31,11 +31,12 @@ self-contained — it boots binaries from the sibling repo):
 cargo build --release --manifest-path ../fantastic_relay/rust/Cargo.toml
 
 # 2. run (from integration_tests/)
-FANTASTIC_RELAY_E2E=1 uv run pytest relay_e2e/ -v
+uv run pytest relay_e2e/ -v
 ```
 
-It skips cleanly if the relay binaries aren't built, or if `FANTASTIC_RELAY_E2E`
-isn't set.
+No opt-in flag — it self-skips cleanly when the relay binaries (router / issuer)
+or the canvas venv aren't built, so a default `pytest` run picks it up wherever
+the relay is present and skips everywhere else.
 
 ## How it works (no mocks)
 

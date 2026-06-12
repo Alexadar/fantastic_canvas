@@ -220,8 +220,9 @@ two-tree federation, the plain WS bridge matrix, and the Swift `ParityHarness`):
 - **Relay / TLS** (external frozen interface `../fantastic_relay` CONTRACT v1):
   subprotocol, claims, pairing, Ed25519-pubkey pinning, `>I` framing, `__cloud-cert`
   — untouched.
-- **Env-var names**: `FANTASTIC_GROUP_TOKEN`, `FANTASTIC_RELAY_E2E`,
-  `FANTASTIC_TARGET`/`FANTASTIC_IMAGE` — preserved.
+- **Env-var names**: `FANTASTIC_GROUP_TOKEN`, `FANTASTIC_TARGET`/`FANTASTIC_IMAGE`
+  — preserved. (`relay_e2e` no longer uses an opt-in `FANTASTIC_RELAY_E2E` flag; it
+  self-skips on absent relay binaries.)
 
 ---
 
