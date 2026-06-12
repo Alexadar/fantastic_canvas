@@ -121,7 +121,9 @@ fn drop_cached_client(self_id: &AgentId) {
 // ── NIM-local: api_key sidecar ──────────────────────────────────────
 
 fn key_path(self_id: &AgentId) -> String {
-    format!(".fantastic/agents/{}/api_key", self_id)
+    // Store-relative (`agents/<id>/…`) — wire `file_bridge_id` to the `.fantastic`
+    // store; lands next to the agent's agent.json. Matches Python.
+    format!("agents/{}/api_key", self_id)
 }
 
 async fn read_api_key(self_id: &AgentId, kernel: &Arc<Kernel>) -> Option<String> {

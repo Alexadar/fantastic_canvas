@@ -1,8 +1,8 @@
 //! Recurring-task scheduler as an agent.
 //!
-//! State (sidecars under `<file_agent.root>/.fantastic/agents/{id}/`, routed
-//! through the file agent whose id sits in the scheduler's `file_bridge_id`
-//! meta field — unset is a hard error at first I/O):
+//! State (store-relative sidecars `agents/{id}/…` — wire `file_bridge_id` to the
+//! `.fantastic` store, so they land next to the agent's own agent.json; routed
+//! through that file agent — unset is a hard error at first I/O):
 //!
 //! - `schedules.json` — `[{id, target, payload, interval_seconds, next_run, paused, run_count, created_at}, …]`
 //! - `history.jsonl`  — append-only, one event per fire, ring-trimmed to `HISTORY_MAX`.
@@ -112,7 +112,7 @@ impl Bundle for SchedulerBundle {
             "resume" => resume_reply(agent_id, payload, kernel).await,
             "tick_now" => tick_now_reply(agent_id, payload, kernel).await,
             "history" => history_reply(agent_id, payload, kernel).await,
-            other => json!({"error": format!("unknown verb {other:?}")}),
+            other => json!({"error": format!("scheduler: unknown type '{other}'")}),
         };
         Ok(Some(reply))
     }
@@ -165,12 +165,15 @@ async fn update_meta(agent_id: &AgentId, kernel: &Arc<Kernel>, key: &str, value:
 
 // ── file-agent-routed persistence ───────────────────────────────────
 
+// STORE-RELATIVE paths (`agents/<id>/…`): wire `file_bridge_id` to the
+// `.fantastic` store and the sidecars land next to the agent's own agent.json —
+// one store, no `.fantastic/.fantastic/…` double-nest. Matches Python.
 fn schedules_path(agent_id: &AgentId) -> String {
-    format!(".fantastic/agents/{}/schedules.json", agent_id)
+    format!("agents/{}/schedules.json", agent_id)
 }
 
 fn history_path(agent_id: &AgentId) -> String {
-    format!(".fantastic/agents/{}/history.jsonl", agent_id)
+    format!("agents/{}/history.jsonl", agent_id)
 }
 
 async fn file_read(agent_id: &AgentId, kernel: &Arc<Kernel>, path: &str) -> Option<String> {
@@ -584,7 +587,7 @@ async fn tick_now_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel
             return json!({"fired": true, "schedule_id": sid});
         }
     }
-    json!({"error": format!("schedule {sid:?} not found")})
+    json!({"error": format!("schedule '{sid}' not found")})
 }
 
 async fn history_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>) -> Value {

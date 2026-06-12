@@ -55,11 +55,10 @@ pub fn safe_client(client_id: &str) -> String {
 
 /// Per-client chat thread path under the agent's dir.
 pub fn chat_path(self_id: &AgentId, client_id: &str) -> String {
-    format!(
-        ".fantastic/agents/{}/chat_{}.json",
-        self_id,
-        safe_client(client_id)
-    )
+    // STORE-RELATIVE (`agents/<id>/…`): wire `file_bridge_id` to the `.fantastic`
+    // store so the sidecar lands next to the agent's own agent.json (one store,
+    // no `.fantastic/.fantastic/…` double-nest). Matches Python.
+    format!("agents/{}/chat_{}.json", self_id, safe_client(client_id))
 }
 
 /// Read a file via the bound file agent. `None` if no file agent or the

@@ -37,18 +37,36 @@ impl Bundle for FakeStore {
         _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
-        if verb == "delete" {
-            let path = payload.get("path").and_then(Value::as_str).unwrap_or("");
-            let target = self.root.join(path);
-            let _ = if target.is_dir() {
-                std::fs::remove_dir_all(&target)
-            } else {
-                std::fs::remove_file(&target)
-            };
-            return Ok(Some(json!({"deleted": true})));
+        let path = payload.get("path").and_then(Value::as_str).unwrap_or("");
+        let target = self.root.join(path);
+        match verb {
+            "delete" => {
+                let _ = if target.is_dir() {
+                    std::fs::remove_dir_all(&target)
+                } else {
+                    std::fs::remove_file(&target)
+                };
+                Ok(Some(json!({"deleted": true})))
+            }
+            // Text read/write — the verbs `yaml_state` (and ai_core) route
+            // through. Mirror the real `file_bridge`'s `{content}`/`{written}`.
+            "read" => match std::fs::read_to_string(&target) {
+                Ok(content) => Ok(Some(json!({"path": path, "content": content}))),
+                Err(_) => Ok(Some(json!({"error": format!("path {path:?} not found")}))),
+            },
+            "write" => {
+                let content = payload.get("content").and_then(Value::as_str).unwrap_or("");
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                match std::fs::write(&target, content) {
+                    Ok(_) => Ok(Some(json!({"path": path, "written": true}))),
+                    Err(e) => Ok(Some(json!({"error": format!("write: {e}")}))),
+                }
+            }
+            // boot/shutdown/reflect etc. — harmless no-op acks.
+            _ => Ok(Some(Value::Null)),
         }
-        // boot/shutdown/reflect etc. — harmless no-op acks.
-        Ok(Some(Value::Null))
     }
     async fn handle_binary(
         &self,
@@ -97,7 +115,13 @@ pub fn register_fake_store(reg: &mut BundleRegistry, store_root: &Path) {
 pub async fn wire_fake_store(kernel: &Arc<Kernel>, store_root: &Path) {
     kernel
         .send(
-            &AgentId::from(kernel.root().map(|r| r.id.0.clone()).unwrap_or_default().as_str()),
+            &AgentId::from(
+                kernel
+                    .root()
+                    .map(|r| r.id.0.clone())
+                    .unwrap_or_default()
+                    .as_str(),
+            ),
             json!({
                 "type": "create_agent",
                 "handler_module": "file_bridge.tools",

@@ -10,9 +10,11 @@ import FantasticFile
 import FantasticJSON
 import FantasticKernel
 import FantasticKernelBridge
+import FantasticKernelStartup
 import FantasticProxyAgent
 import FantasticScheduler
 import FantasticTools
+import FantasticWeb
 import FantasticWebRest
 import FantasticWebWS
 import Foundation
@@ -207,23 +209,53 @@ struct BundleSmokeTests {
         #expect(r["reason"].asString == "tool_not_found")
     }
 
-    @Test func schedulerCanScheduleAndCancel() async {
+    @Test func schedulerScheduleListUnschedule() async throws {
+        // py/rust contract: schedule {target, payload, interval_seconds} → mints a
+        // schedule_id, persisted THROUGH file_bridge_id (store-relative
+        // agents/<id>/schedules.json); schedule/boot FAILFAST until wired.
         let kernel = makeKernelWithAll()
+        let fm = FileManager.default
+        let rel = "fantastic-sched-\(UUID().uuidString)"
+        let dir = URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent(rel)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        // Open file_bridge store — the scheduler persists through it.
         _ = await kernel.send(
             "core",
-            ["type": "create_agent", "handler_module": "scheduler.tools", "id": "sched"])
+            [
+                "type": "create_agent", "handler_module": "file_bridge.tools", "id": "store",
+                "root": .string(rel), "ingress_rule": "allow_all",
+            ])
+        _ = await kernel.send(
+            "core",
+            [
+                "type": "create_agent", "handler_module": "scheduler.tools", "id": "sched",
+                "file_bridge_id": "store",
+            ])
         let r = await kernel.send(
             "sched",
             [
-                "type": "schedule",
-                "name": "tick",
-                "interval_ms": 60_000,
-                "target": "core",
-                "payload": ["type": "boot"] as JSON,
+                "type": "schedule", "target": "core", "interval_seconds": .integer(60),
+                "payload": ["type": "list_agents"] as JSON,
             ])
-        #expect(r["ok"].asBool == true)
-        let c = await kernel.send("sched", ["type": "cancel", "name": "tick"])
-        #expect(c["cancelled"].asBool == true)
+        let sid = r["schedule_id"].asString
+        #expect(sid != nil, "\(r)")
+        // store-relative sidecar landed under the store root.
+        #expect(fm.fileExists(atPath: dir.appendingPathComponent("agents/sched/schedules.json").path))
+        let list = await kernel.send("sched", ["type": "list"])
+        #expect((list["schedules"].asArray ?? []).count == 1)
+        // FAILFAST: scheduling without a provider refuses (aligned error string).
+        _ = await kernel.send(
+            "core",
+            ["type": "create_agent", "handler_module": "scheduler.tools", "id": "bare"])
+        let bare = await kernel.send(
+            "bare", ["type": "schedule", "target": "core", "payload": ["type": "boot"] as JSON])
+        #expect(bare["error"].asString == "scheduler: file_bridge_id required")
+        // unschedule removes it.
+        let u = await kernel.send("sched", ["type": "unschedule", "schedule_id": .string(sid ?? "")])
+        #expect(u["removed"].asBool == true)
+        let after = await kernel.send("sched", ["type": "list"])
+        #expect((after["schedules"].asArray ?? []).isEmpty)
     }
 
     @Test func kernelBridgeForwardInMemory() async {
@@ -292,6 +324,75 @@ struct BundleSmokeTests {
                 ]),
             ]), Data())
         #expect(body == payload, "raw bytes must round-trip cross-kernel over the bridge")
+    }
+
+    @Test func wsBinaryForwardStreamsRawBytesOverWire() async throws {
+        // The WIRE half of cross-kernel streaming — a bridge's
+        // `WebSocketTransport.binaryForward` ships a codec binary frame over a
+        // real loopback WS to a remote `web_ws`, which decodes it, gates, and
+        // dispatches `sendWithBinary` to a `file_bridge`. Raw bytes both ways,
+        // never base64. (The in-memory variant is
+        // `kernelBridgeBinaryForwardStreamsRawBytes`.)
+        let kernel = try await startKernelInMemory(portHint: 0)
+        _ = await kernel.send(AgentId("web"), .object(["type": .string("boot")]))
+        // web_ws SEALS by default — open it for the inbound binary call.
+        let rec = await kernel.send(
+            AgentId("web"),
+            .object([
+                "type": .string("create_agent"),
+                "handler_module": .string("web_ws.tools"),
+                "id": .string("web_ws"),
+                "ingress_rule": .string("allow_all"),
+            ]))
+        let wsId = rec["id"].asString ?? "web_ws"
+        _ = await kernel.send(
+            AgentId("web"),
+            .object(["type": .string("mount"), "child_id": .string(wsId)]))
+        defer {
+            Task {
+                _ = await kernel.send(
+                    AgentId("web"), .object(["type": .string("shutdown")]))
+            }
+        }
+        // An OPEN file_bridge in a cwd-relative dir on the SAME kernel.
+        let fm = FileManager.default
+        let rel = "fantastic-wsbrstream-\(UUID().uuidString)"
+        let dir = URL(fileURLWithPath: fm.currentDirectoryPath)
+            .appendingPathComponent(rel)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        _ = await kernel.send(
+            AgentId("core"),
+            .object([
+                "type": .string("create_agent"),
+                "handler_module": .string("file_bridge.tools"),
+                "id": .string("fs"), "root": .string(rel),
+                "ingress_rule": .string("allow_all"),
+            ]))
+
+        let port = kernel.httpPort()
+        let url = URL(string: "ws://127.0.0.1:\(port)/core/ws")!
+        let transport = WebSocketTransport(endpoint: url)
+        await transport.connect()
+
+        let payload = Data([0x00, 0xFF, 0xCA, 0xFE, 0xBA, 0xBE, 0x10, 0x80])
+        // write_stream (binary) over the wire → kernel.fs
+        let (w, _) = await transport.binaryForward(
+            target: AgentId("fs"),
+            header: .object([
+                "type": .string("write_stream"), "path": .string("blob.bin"),
+                "truncate": .bool(true),
+            ]),
+            blob: payload)
+        #expect(w["written"].asInt == Int64(payload.count), "\(w)")
+        // read_stream (binary) over the wire → raw bytes back
+        let (_, body) = await transport.binaryForward(
+            target: AgentId("fs"),
+            header: .object([
+                "type": .string("read_stream"), "path": .string("blob.bin"),
+            ]),
+            blob: Data())
+        #expect(body == payload, "raw bytes must round-trip over the WS wire")
     }
 
     @Test func kernelBridgeWatchRemoteReEmitsOnLocalInbox() async {

@@ -51,7 +51,7 @@ async fn mk_kernel(tmp: &TempDir) -> (Arc<Kernel>, AgentId) {
                 "type":"create_agent",
                 "handler_module":"file_bridge.tools",
                 "id": file_id,
-                "root": tmp.path().to_string_lossy(),
+                "root": tmp.path().join(".fantastic").to_string_lossy(),
                 "ingress_rule": "allow_all",
             }),
         )

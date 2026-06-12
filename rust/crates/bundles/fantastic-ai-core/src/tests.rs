@@ -181,7 +181,7 @@ async fn mk_kernel(tmp: &TempDir, tag: &str) -> (Arc<Kernel>, AgentId) {
                 "type": "create_agent",
                 "handler_module": "file_bridge.tools",
                 "id": file_id,
-                "root": tmp.path().to_string_lossy(),
+                "root": tmp.path().join(".fantastic").to_string_lossy(),
                 // the fs edge seals by default — open it so history persists through it
                 "ingress_rule": "allow_all",
             }),
