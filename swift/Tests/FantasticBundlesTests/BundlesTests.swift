@@ -248,6 +248,52 @@ struct BundleSmokeTests {
         #expect(names.contains("core"))
     }
 
+    @Test func kernelBridgeBinaryForwardStreamsRawBytes() async throws {
+        // Cross-kernel STREAMING — forward a write_stream/read_stream over the
+        // (in-memory) bridge to a remote file_bridge; raw bytes both ways.
+        let kernel1 = makeKernelWithAll()
+        let kernel2 = makeKernelWithAll()
+        let bridge = KernelBridgeBundle()
+        kernel1.bundles.register("ws_bridge.tools", bridge)
+        _ = await kernel1.send(
+            "core", ["type": "create_agent", "handler_module": "ws_bridge.tools", "id": "br"])
+        bridge.attachInMemory(agentId: "br", remote: kernel2, localKernel: kernel1)
+        // kernel2: an OPEN file_bridge in a cwd-relative dir.
+        let fm = FileManager.default
+        let rel = "fantastic-brstream-\(UUID().uuidString)"
+        let dir = URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent(rel)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        _ = await kernel2.send(
+            "core",
+            [
+                "type": "create_agent", "handler_module": "file_bridge.tools", "id": "fs",
+                "root": .string(rel), "ingress_rule": "allow_all",
+            ])
+        let payload = Data([0x00, 0xFF, 0xCA, 0xFE, 0xBA, 0xBE, 0x10, 0x80])
+        // forward write_stream (binary) → kernel2.fs
+        let (w, _) = await kernel1.sendWithBinary(
+            "br",
+            .object([
+                "type": .string("forward"), "target": .string("fs"),
+                "payload": .object([
+                    "type": .string("write_stream"), "path": .string("blob.bin"),
+                    "truncate": .bool(true),
+                ]),
+            ]), payload)
+        #expect(w["written"].asInt == Int64(payload.count), "\(w)")
+        // forward read_stream (binary) → bytes back over the bridge
+        let (_, body) = await kernel1.sendWithBinary(
+            "br",
+            .object([
+                "type": .string("forward"), "target": .string("fs"),
+                "payload": .object([
+                    "type": .string("read_stream"), "path": .string("blob.bin"),
+                ]),
+            ]), Data())
+        #expect(body == payload, "raw bytes must round-trip cross-kernel over the bridge")
+    }
+
     @Test func kernelBridgeWatchRemoteReEmitsOnLocalInbox() async {
         // Two kernels in process. A's bridge subscribes to B.core's
         // emits via watch_remote. We trigger an emit on B.core, then

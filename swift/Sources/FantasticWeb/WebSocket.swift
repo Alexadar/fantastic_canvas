@@ -230,8 +230,51 @@ private func handleFrame(
         break  // ignore
     case .close:
         sendFrame(connection: connection, opcode: .close, payload: Data())
-    case .binary, .continuation:
-        break  // not handled in 8C
+    case .binary:
+        // A binary WS message is the `[4B len|header|body]` codec frame — a
+        // read_stream/write_stream chunk carrying RAW BYTES (the JS client pipes
+        // the host's stream this way). Dispatch on the symmetric binary channel.
+        await handleBinaryFrame(
+            payload: frame.payload, connection: connection, agentId: agentId,
+            kernel: kernel, legId: state.legId)
+    case .continuation:
+        break  // not handled
+    }
+}
+
+private func handleBinaryFrame(
+    payload: Data, connection: NWConnection, agentId: AgentId, kernel: Kernel, legId: AgentId
+) async {
+    guard let (header, blob) = Codec.decodeBinaryFrame(payload) else { return }
+    let target = header["target"].asString ?? agentId.value
+    let id = header["id"].asString ?? ""
+    // GATE — same sealed-by-default web-leg choke point as a text call.
+    if let denied = gateWebLeg(
+        kernel: kernel, legId: legId, target: target,
+        verb: header["type"].asString ?? "", token: header["auth_token"].asString)
+    {
+        let frame: JSON = .object([
+            "type": .string("reply"), "id": .string(id), "data": denied,
+        ])
+        sendTextFrame(connection: connection, text: frame.serialize())
+        return
+    }
+    let (reply, body) = await kernel.sendWithBinary(AgentId(target), header, blob)
+    if body.isEmpty {
+        // No reply bytes (e.g. write_stream status) → plain text reply frame.
+        let frame: JSON = .object([
+            "type": .string("reply"), "id": .string(id), "data": reply,
+        ])
+        sendTextFrame(connection: connection, text: frame.serialize())
+    } else {
+        // read_stream reply → a binary frame, body raw at `data.bytes`.
+        var env: JSON = .object([
+            "type": .string("reply"), "id": .string(id), "data": reply,
+        ])
+        env["_binary_path"] = .string("data.bytes")
+        sendFrame(
+            connection: connection, opcode: .binary,
+            payload: Codec.encodeBinaryFrame(header: env, body: body))
     }
 }
 

@@ -69,6 +69,23 @@ enum BridgeTransport {
         }
     }
 
+    /// Binary forward — a `read_stream`/`write_stream` carried cross-kernel.
+    func binaryForward(target: AgentId, header: JSON, blob: Data) async -> (JSON, Data) {
+        switch self {
+        case .memory(let bridge):
+            return await bridge.binaryForward(target: target, header: header, blob: blob)
+        case .ws, .cloud:
+            // Over-the-wire binary forward carries the codec frame (+ a 1-byte
+            // TLS tag for cloud) — the remaining over-the-wire piece (mirrors
+            // rust's 4b); the WS/cloud legs ship text frames today.
+            return (
+                .object([
+                    "error": .string("binary forward over this transport not yet wired")
+                ]), Data()
+            )
+        }
+    }
+
     func watchRemote(target: AgentId) async -> JSON {
         switch self {
         case .memory(let bridge):
@@ -130,6 +147,15 @@ public actor InMemoryBridge {
             return .object(["error": .string("remote kernel gone")])
         }
         return await remote.send(target, payload)
+    }
+
+    /// Binary forward — ships a raw chunk to the remote on the symmetric binary
+    /// channel + returns `(reply, body)`. In-process, a direct `sendWithBinary`.
+    public func binaryForward(target: AgentId, header: JSON, blob: Data) async -> (JSON, Data) {
+        guard let remote = remoteKernel else {
+            return (.object(["error": .string("remote kernel gone")]), Data())
+        }
+        return await remote.sendWithBinary(target, header, blob)
     }
 
     /// Wire up a watch on the remote kernel: every emit on
@@ -571,5 +597,34 @@ public final class KernelBridgeBundle: AgentBundle, @unchecked Sendable {
         default:
             return .object(["error": .string("unknown verb \(verb)")])
         }
+    }
+
+    /// Binary forward — `forward` carrying a raw request chunk (write_stream over
+    /// the wire) / returning a raw reply chunk (read_stream). The local caller
+    /// does `sendWithBinary(<bridge>, {type:forward, target, payload}, blob)`;
+    /// in-process this streams cross-kernel directly. Non-`forward` binary verbs
+    /// route through the text `handle` (the blob is unused).
+    public func handleBinary(
+        agentId: AgentId, header: JSON, blob: Data, kernel: Kernel
+    ) async throws -> (JSON?, Data) {
+        let verb = header["type"].asString ?? ""
+        guard verb == "forward" else {
+            let reply = try await handle(agentId: agentId, payload: header, kernel: kernel)
+            return (reply, Data())
+        }
+        guard let target = header["target"].asString, case .object = header["payload"] else {
+            return (
+                .object(["error": .string("bridge.forward: target + payload (object) required")]),
+                Data()
+            )
+        }
+        guard let transport = bridgeFor(agentId) else {
+            return (
+                .object(["error": .string("bridge.forward: not connected (call boot first)")]),
+                Data()
+            )
+        }
+        return await transport.binaryForward(
+            target: AgentId(target), header: header["payload"], blob: blob)
     }
 }
