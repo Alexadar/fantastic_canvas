@@ -108,7 +108,11 @@ impl Bundle for FileBundle {
             _ => {
                 let root = match clamp_root(&raw_root, &workdir_base(kernel)) {
                     Ok(r) => r,
-                    Err(e) => return Ok(Some(json!({"error": e, "reason": "root_escapes_running_dir"}))),
+                    Err(e) => {
+                        return Ok(Some(
+                            json!({"error": e, "reason": "root_escapes_running_dir"}),
+                        ))
+                    }
                 };
                 match verb {
                     "list" => list_reply(&root, payload, &hidden),
@@ -149,7 +153,10 @@ impl Bundle for FileBundle {
         let agent = match kernel.agents.get(agent_id) {
             Some(e) => std::sync::Arc::clone(&e),
             None => {
-                return Ok((Some(json!({"error": format!("no agent {agent_id}")})), Vec::new()))
+                return Ok((
+                    Some(json!({"error": format!("no agent {agent_id}")})),
+                    Vec::new(),
+                ))
             }
         };
         let meta = agent.meta.read().expect("meta poisoned").clone();
@@ -239,11 +246,19 @@ fn read_stream_reply(root: &Path, header: &Value) -> (Value, Vec<u8>) {
         Err(e) => return (json!({"error": e}), Vec::new()),
     };
     if !target.is_file() {
-        return (json!({"error": format!("file {path_str:?} not found")}), Vec::new());
+        return (
+            json!({"error": format!("file {path_str:?} not found")}),
+            Vec::new(),
+        );
     }
     let size = match std::fs::metadata(&target) {
         Ok(m) => m.len(),
-        Err(e) => return (json!({"error": format!("stat {}: {e}", target.display())}), Vec::new()),
+        Err(e) => {
+            return (
+                json!({"error": format!("stat {}: {e}", target.display())}),
+                Vec::new(),
+            )
+        }
     };
     let chunk = match read_chunk(&target, offset, length) {
         Ok(b) => b,
@@ -264,7 +279,8 @@ fn read_stream_reply(root: &Path, header: &Value) -> (Value, Vec<u8>) {
 /// Read up to `length` bytes from `target` starting at `offset` (seek + read).
 fn read_chunk(target: &Path, offset: u64, length: u64) -> Result<Vec<u8>, String> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(target).map_err(|e| format!("open {}: {e}", target.display()))?;
+    let mut f =
+        std::fs::File::open(target).map_err(|e| format!("open {}: {e}", target.display()))?;
     f.seek(SeekFrom::Start(offset))
         .map_err(|e| format!("seek {}: {e}", target.display()))?;
     let mut buf = vec![0u8; length as usize];
@@ -280,7 +296,10 @@ fn read_chunk(target: &Path, offset: u64, length: u64) -> Result<Vec<u8>, String
 /// `{path, written, offset, size}`. Mirrors py `file_bridge._write_stream`.
 fn write_stream_reply(root: &Path, header: &Value, blob: &[u8]) -> Value {
     let path_str = header.get("path").and_then(Value::as_str).unwrap_or("");
-    let truncate = header.get("truncate").and_then(Value::as_bool).unwrap_or(false);
+    let truncate = header
+        .get("truncate")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let off_in = header.get("offset").and_then(Value::as_u64);
     let target = match resolve_safe(root, path_str) {
         Ok(p) => p,
@@ -348,7 +367,10 @@ async fn pump_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>) -
         .get("source")
         .and_then(Value::as_str)
         .unwrap_or(self_id);
-    let sink = payload.get("sink").and_then(Value::as_str).unwrap_or(self_id);
+    let sink = payload
+        .get("sink")
+        .and_then(Value::as_str)
+        .unwrap_or(self_id);
     let spath = payload
         .get("source_path")
         .or_else(|| payload.get("path"))
@@ -388,7 +410,10 @@ async fn pump_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>) -
         }
         first = false;
         chunks += 1;
-        offset = rmeta.get("next_offset").and_then(Value::as_u64).unwrap_or(offset);
+        offset = rmeta
+            .get("next_offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(offset);
         if rmeta.get("eof").and_then(Value::as_bool).unwrap_or(true) {
             break;
         }

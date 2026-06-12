@@ -430,8 +430,14 @@ async fn boot_reply(family: Family, agent_id: &AgentId, kernel: &Arc<Kernel>) ->
         return json!({"already": true, "transport": existing.transport_kind});
     }
 
-    let kind = meta_string(agent_id, kernel, "transport")
-        .unwrap_or_else(|| if family == Family::Cloud { "cloud_bridge" } else { "memory" }.to_string());
+    let kind = meta_string(agent_id, kernel, "transport").unwrap_or_else(|| {
+        if family == Family::Cloud {
+            "cloud_bridge"
+        } else {
+            "memory"
+        }
+        .to_string()
+    });
     // The derivation only opens transports in its own family — a `cloud_bridge`
     // can't open a ws socket and vice-versa (the two-bundle split).
     if !family.admits(&kind) {
@@ -651,9 +657,9 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
         .and_then(Value::as_f64)
         .unwrap_or(DEFAULT_FORWARD_TIMEOUT_SECS);
     let _ = kernel; // peer_id no longer wraps the frame (asymmetric raw call)
-    // TEXT forward — no request body; the reply body (if any) is dropped here
-    // because the text channel can't carry it (a binary forward uses
-    // `handle_binary`, which preserves the reply body).
+                    // TEXT forward — no request body; the reply body (if any) is dropped here
+                    // because the text channel can't carry it (a binary forward uses
+                    // `handle_binary`, which preserves the reply body).
     forward_core(agent_id, target, inner, Vec::new(), false, timeout_secs)
         .await
         .0
@@ -713,7 +719,11 @@ async fn forward_core(
         state.transport.send_frame(frame).await
     };
     if let Err(e) = send_res {
-        state.pending.lock().expect("pending poisoned").remove(&corr);
+        state
+            .pending
+            .lock()
+            .expect("pending poisoned")
+            .remove(&corr);
         return (
             json!({"error": format!("bridge.forward: send failed: {e}")}),
             Vec::new(),
@@ -729,7 +739,11 @@ async fn forward_core(
         Ok(Err(_canceled)) => "bridge.forward: pending dropped".to_string(),
         Err(_elapsed) => format!("bridge.forward: timeout after {timeout_secs}s"),
     };
-    state.pending.lock().expect("pending poisoned").remove(&corr);
+    state
+        .pending
+        .lock()
+        .expect("pending poisoned")
+        .remove(&corr);
     (json!({ "error": err }), Vec::new())
 }
 

@@ -92,7 +92,8 @@ mod tests {
 
     #[test]
     fn binary_frame_round_trips_raw_bytes() {
-        let header = json!({"type":"reply","id":"1","data":{"bytes":null},"_binary_path":"data.bytes"});
+        let header =
+            json!({"type":"reply","id":"1","data":{"bytes":null},"_binary_path":"data.bytes"});
         let body: Vec<u8> = (0u8..=255).collect();
         let wire = encode_binary_frame(&header, &body);
         // 4-byte BE length prefix

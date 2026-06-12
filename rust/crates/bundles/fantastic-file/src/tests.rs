@@ -97,7 +97,11 @@ fn read_stream_chunks_with_offset_and_eof() {
 fn write_stream_appends_when_offset_omitted() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
-    write_stream_reply(root, &serde_json::json!({"path": "a.bin", "truncate": true}), b"AAAA");
+    write_stream_reply(
+        root,
+        &serde_json::json!({"path": "a.bin", "truncate": true}),
+        b"AAAA",
+    );
     let w = write_stream_reply(root, &serde_json::json!({"path": "a.bin"}), b"BBBB");
     assert_eq!(w["offset"], 4); // appended at end
     assert_eq!(w["size"], 8);

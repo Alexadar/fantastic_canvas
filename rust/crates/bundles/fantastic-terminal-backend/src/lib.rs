@@ -225,7 +225,10 @@ impl Bundle for TerminalBackendBundle {
                 .and_then(Value::as_str)
                 .unwrap_or("image/png")
                 .to_string();
-            return Ok((Some(paste_image_impl(agent_id, blob, mime).await), Vec::new()));
+            return Ok((
+                Some(paste_image_impl(agent_id, blob, mime).await),
+                Vec::new(),
+            ));
         }
         // Anything else: fall back to base64+handle path (default).
         let mut payload = header;

@@ -979,10 +979,7 @@ async fn serve_file_proxy(
                 .get("next_offset")
                 .and_then(Value::as_u64)
                 .unwrap_or(offset + body.len() as u64);
-            Some((
-                Ok(body),
-                (None, kernel, target, path, next, eof),
-            ))
+            Some((Ok(body), (None, kernel, target, path, next, eof)))
         },
     );
 
@@ -1105,8 +1102,7 @@ async fn ws_loop(state: AppState, socket: WebSocket, host_agent_id: AgentId) {
     // can't ride the text channel; the sink writer drains both (text →
     // Message::Text, binary → Message::Binary, the `[4B len|header|body]` codec
     // frame). Mirrors py web_ws, which sends binary reply frames the same way.
-    let (bin_tx, mut bin_rx) =
-        tokio::sync::mpsc::channel::<Vec<u8>>(state.kernel.inbox_bound);
+    let (bin_tx, mut bin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(state.kernel.inbox_bound);
     // Hook the synthetic client inbox into the kernel.
     let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::channel::<Value>(state.kernel.inbox_bound);
     state.kernel.inboxes.insert(client_id.clone(), inbox_tx);
@@ -1184,8 +1180,15 @@ async fn ws_loop(state: AppState, socket: WebSocket, host_agent_id: AgentId) {
         let text = match msg {
             Ok(Message::Text(t)) => t,
             Ok(Message::Binary(bytes)) => {
-                handle_binary_frame(&state, &client_id, &out_tx, &bin_tx, &pending_uploads, bytes)
-                    .await;
+                handle_binary_frame(
+                    &state,
+                    &client_id,
+                    &out_tx,
+                    &bin_tx,
+                    &pending_uploads,
+                    bytes,
+                )
+                .await;
                 continue;
             }
             Ok(Message::Close(_)) | Err(_) => break,

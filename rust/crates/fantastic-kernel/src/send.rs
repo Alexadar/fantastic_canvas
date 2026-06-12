@@ -161,7 +161,10 @@ impl Kernel {
             self.agents.get(target_id).map(|e| Arc::clone(&e))
         };
         let Some(target) = resolved else {
-            return (json!({ "error": format!("no agent {target_id}") }), Vec::new());
+            return (
+                json!({ "error": format!("no agent {target_id}") }),
+                Vec::new(),
+            );
         };
 
         let sender = current_sender().unwrap_or_else(|| target.id.clone());

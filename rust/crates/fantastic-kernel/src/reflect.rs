@@ -200,7 +200,13 @@ pub fn tree_node(target: &Agent) -> Value {
     // a client reads the IO landscape — which legs are open vs sealed-by-default, what a
     // consumer persists through — from ONE root reflect. Same keys + order across runtimes.
     if let Ok(meta) = target.meta.read() {
-        for k in ["ingress_rule", "egress_rule", "auth", "root", "file_bridge_id"] {
+        for k in [
+            "ingress_rule",
+            "egress_rule",
+            "auth",
+            "root",
+            "file_bridge_id",
+        ] {
             if let Some(v) = meta.get(k) {
                 obj.insert(k.to_string(), v.clone());
             }

@@ -103,7 +103,9 @@ fn one_shot_create_agent_persists_record() {
     // survives this process and the NEXT one-shot loads it as the provider.
     create_store(tmp.path());
     assert!(
-        tmp.path().join(".fantastic/agents/store/agent.json").exists(),
+        tmp.path()
+            .join(".fantastic/agents/store/agent.json")
+            .exists(),
         "the store must persist itself through itself"
     );
     let output = Command::new(fantastic_bin())
@@ -124,7 +126,10 @@ fn one_shot_create_agent_persists_record() {
         String::from_utf8_lossy(&output.stderr),
     );
     let path = tmp.path().join(".fantastic/agents/ff/agent.json");
-    assert!(path.exists(), "agent.json not written (through the provider)");
+    assert!(
+        path.exists(),
+        "agent.json not written (through the provider)"
+    );
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("file_bridge.tools"));
     assert!(content.contains("/tmp"));

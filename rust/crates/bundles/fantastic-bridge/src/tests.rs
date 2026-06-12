@@ -679,11 +679,7 @@ async fn binary_call_round_trips_raw_bytes_over_the_bridge() {
     )
     .await
     .unwrap();
-    let w = peer
-        .recv_frame()
-        .await
-        .expect("write reply")
-        .into_value();
+    let w = peer.recv_frame().await.expect("write reply").into_value();
     assert_eq!(w["type"], "reply");
     assert_eq!(w["data"]["written"], payload.len(), "write reply: {w}");
 
@@ -822,7 +818,11 @@ async fn password_gate_checks_inbound_and_presents_on_forward() {
         )
         .await
     });
-    let out = peer.recv_frame().await.expect("an outbound call frame").into_value();
+    let out = peer
+        .recv_frame()
+        .await
+        .expect("an outbound call frame")
+        .into_value();
     assert_eq!(out["type"], "call");
     assert_eq!(
         out["auth_token"], "s3cret",
@@ -901,7 +901,11 @@ async fn asymmetric_ingress_egress_via_engine() {
         )
         .await
     });
-    let out = peer.recv_frame().await.expect("an outbound call frame").into_value();
+    let out = peer
+        .recv_frame()
+        .await
+        .expect("an outbound call frame")
+        .into_value();
     assert_eq!(out["auth_token"], "fleet", "egress should present: {out}");
     peer.send_frame(json!({"type": "reply", "id": out["id"], "data": {"ok": true}}))
         .await

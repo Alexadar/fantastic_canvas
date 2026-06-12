@@ -65,7 +65,9 @@ impl Bundle for FakeStore {
             };
             return Ok(Some(json!({"deleted": true})));
         }
-        Ok(Some(json!({"error": format!("FakeStore: text verb {verb:?}")})))
+        Ok(Some(
+            json!({"error": format!("FakeStore: text verb {verb:?}")}),
+        ))
     }
     async fn handle_binary(
         &self,
@@ -89,7 +91,10 @@ impl Bundle for FakeStore {
                 std::fs::write(&target, &blob).ok();
                 Ok((Some(json!({"written": blob.len()})), Vec::new()))
             }
-            other => Ok((Some(json!({"error": format!("FakeStore: {other:?}")})), Vec::new())),
+            other => Ok((
+                Some(json!({"error": format!("FakeStore: {other:?}")})),
+                Vec::new(),
+            )),
         }
     }
 }

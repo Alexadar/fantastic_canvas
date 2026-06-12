@@ -161,12 +161,11 @@ pub async fn persist(kernel: &Arc<Kernel>, agent: &Agent) -> KernelResult<()> {
         format!("{reldir}/agent.json")
     };
     // Merge: read existing bytes through the provider, overlay kernel-managed keys.
-    let mut on_disk: Map<String, Value> = match serde_json::from_slice::<Value>(
-        &read_via_store(kernel, &store_id, &af).await,
-    ) {
-        Ok(Value::Object(m)) => m,
-        _ => Map::new(),
-    };
+    let mut on_disk: Map<String, Value> =
+        match serde_json::from_slice::<Value>(&read_via_store(kernel, &store_id, &af).await) {
+            Ok(Value::Object(m)) => m,
+            _ => Map::new(),
+        };
     let record_json =
         serde_json::to_value(agent.record()).expect("AgentRecord is always JSON-serializable");
     if let Value::Object(record_map) = record_json {

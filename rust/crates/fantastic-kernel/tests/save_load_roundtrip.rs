@@ -50,8 +50,11 @@ fn registry_with_store(store_root: &std::path::Path) -> BundleRegistry {
 async fn save_is_pure_in_ram_no_state_json_on_disk() {
     let tmp = TempDir::new().unwrap();
     let store_root = tmp.path().join(".fantastic");
-    let booted =
-        bootstrap(registry_with_store(&store_root), BootstrapOptions::daemon(tmp.path())).unwrap();
+    let booted = bootstrap(
+        registry_with_store(&store_root),
+        BootstrapOptions::daemon(tmp.path()),
+    )
+    .unwrap();
     let kernel = Arc::clone(&booted.kernel);
     fantastic_kernel::test_support::wire_fake_store(&kernel, &store_root).await;
     kernel
@@ -217,8 +220,11 @@ async fn persist_merge_preserves_extra_fields_on_disk() {
     use serde_json::Map;
     let tmp = TempDir::new().unwrap();
     let store_root = tmp.path().join(".fantastic");
-    let booted =
-        bootstrap(registry_with_store(&store_root), BootstrapOptions::daemon(tmp.path())).unwrap();
+    let booted = bootstrap(
+        registry_with_store(&store_root),
+        BootstrapOptions::daemon(tmp.path()),
+    )
+    .unwrap();
     let kernel = Arc::clone(&booted.kernel);
     fantastic_kernel::test_support::wire_fake_store(&kernel, &store_root).await;
 
