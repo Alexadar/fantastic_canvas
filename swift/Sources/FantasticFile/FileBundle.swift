@@ -82,10 +82,63 @@ public struct FileBundle: AgentBundle {
                 return renameFile(root: root, agent: agent, payload: payload)
             case "mkdir":
                 return makeDir(root: root, agent: agent, payload: payload)
+            case "pump":
+                // The PUMP coordinates a SOURCE→SINK copy over the binary channel
+                // (it never touches bytes itself), so it rides the text channel.
+                return await pump(agent: agent, payload: payload, kernel: kernel)
+            case "read_stream", "write_stream":
+                // Stream verbs carry RAW BYTES — binary channel only.
+                return .object([
+                    "error": .string(
+                        "\(verb) carries raw bytes — call it on the binary channel "
+                            + "(sendWithBinary), not text send")
+                ])
             default:
                 return .object(["error": .string("unknown verb \(verb)")])
             }
         }
+    }
+
+    /// Binary channel: `read_stream` (empty request → reply BODY = one raw chunk)
+    /// and `write_stream` (request BODY = one raw chunk → status reply, no body).
+    /// Symmetric with py/rust's `bytes`-in-the-dict; never base64. Same
+    /// sealed-by-default gate + running-dir clamp as the text channel. Any other
+    /// verb routes through the text `handle` (its blob is unused).
+    public func handleBinary(
+        agentId: AgentId, header: JSON, blob: Data, kernel: Kernel
+    ) async throws -> (JSON?, Data) {
+        let verb = header["type"].asString ?? ""
+        guard verb == "read_stream" || verb == "write_stream" else {
+            let reply = try await handle(agentId: agentId, payload: header, kernel: kernel)
+            return (reply, Data())
+        }
+        guard let agent = kernel.agent(agentId) else {
+            return (.object(["error": .string("no agent \(agentId)")]), Data())
+        }
+        // GATE — same sealed-by-default choke point as the text channel.
+        if let denied = gateVerb(
+            ingressRule: agent.metaValue(forKey: "ingress_rule"),
+            auth: agent.metaValue(forKey: "auth"),
+            authToken: agent.metaValue(forKey: "auth_token")?.asString,
+            agentId: agent.id.value, verb: verb)
+        {
+            return (denied, Data())
+        }
+        guard let root = clampedRoot(agent: agent, kernel: kernel) else {
+            return (
+                .object([
+                    "error": .string("root escapes the running dir"),
+                    "reason": .string("root_escapes_running_dir"),
+                ]), Data()
+            )
+        }
+        if verb == "read_stream" {
+            return readStream(root: root, header: header)
+        }
+        if agent.metaValue(forKey: "readonly")?.asBool == true {
+            return (.object(["error": .string("agent is readonly")]), Data())
+        }
+        return (writeStream(root: root, header: header, blob: blob), Data())
     }
 
     // MARK: - Verbs
@@ -331,5 +384,126 @@ public struct FileBundle: AgentBundle {
             return .object(["error": .string("agent is readonly")])
         }
         return nil
+    }
+
+    // MARK: - Streams (binary channel)
+
+    /// SOURCE — read ONE raw chunk at `offset`. Reply `{path, offset,
+    /// next_offset, eof, size}` + body = the raw bytes (binary channel; never
+    /// base64). Stateless cursor: pull the next with `offset=next_offset` to eof.
+    private func readStream(root: URL, header: JSON) -> (JSON, Data) {
+        let path = header["path"].asString ?? ""
+        let offset = UInt64(header["offset"].asInt ?? 0)
+        let length = header["length"].asInt.map { $0 > 0 ? $0 : 65536 } ?? 65536
+        guard let target = resolve(root: root, path: path) else {
+            return (.object(["error": .string("path escapes root")]), Data())
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDir),
+            !isDir.boolValue
+        else {
+            return (.object(["error": .string("file \(path) not found")]), Data())
+        }
+        guard let handle = try? FileHandle(forReadingFrom: target) else {
+            return (.object(["error": .string("cannot open \(path)")]), Data())
+        }
+        defer { try? handle.close() }
+        let size =
+            (try? FileManager.default.attributesOfItem(atPath: target.path)[.size] as? Int)
+            .flatMap { $0 } ?? 0
+        try? handle.seek(toOffset: offset)
+        let chunk = (try? handle.read(upToCount: Int(length))) ?? Data()
+        let nextOffset = offset + UInt64(chunk.count)
+        let meta: JSON = .object([
+            "path": .string(path),
+            "offset": .integer(Int64(offset)),
+            "next_offset": .integer(Int64(nextOffset)),
+            "eof": .bool(nextOffset >= UInt64(size)),
+            "size": .integer(Int64(size)),
+            "bytes_len": .integer(Int64(chunk.count)),
+        ])
+        return (meta, chunk)
+    }
+
+    /// SINK — write ONE raw chunk (`blob`) at `offset` (default: append at end).
+    /// `truncate:true` on the first chunk starts fresh. Returns
+    /// `{path, written, offset, size}`.
+    private func writeStream(root: URL, header: JSON, blob: Data) -> JSON {
+        let path = header["path"].asString ?? ""
+        let truncate = header["truncate"].asBool ?? false
+        guard let target = resolve(root: root, path: path) else {
+            return .object(["error": .string("path escapes root")])
+        }
+        try? FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: target.path) {
+            FileManager.default.createFile(atPath: target.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: target) else {
+            return .object(["error": .string("cannot open \(path) for writing")])
+        }
+        defer { try? handle.close() }
+        if truncate { try? handle.truncate(atOffset: 0) }
+        let off: UInt64
+        if let o = header["offset"].asInt {
+            off = UInt64(o)
+            try? handle.seek(toOffset: off)
+        } else {
+            off = (try? handle.seekToEnd()) ?? 0
+        }
+        do { try handle.write(contentsOf: blob) } catch {
+            return .object(["error": .string("write \(path): \(error)")])
+        }
+        let size = (try? handle.offset()) ?? (off + UInt64(blob.count))
+        return .object([
+            "path": .string(path),
+            "written": .integer(Int64(blob.count)),
+            "offset": .integer(Int64(off)),
+            "size": .integer(Int64(size)),
+        ])
+    }
+
+    /// The PUMP — a server-side SOURCE→SINK copy, chunk by chunk, in ONE call.
+    /// Storage-agnostic: both ends are bound BY ID + the duck-typed stream verbs
+    /// over the binary channel, so a `network_bridge` SOURCE pumps to a
+    /// `file_bridge` SINK the same as fs→fs. Each end SELF-gates + SELF-clamps.
+    private func pump(agent: Agent, payload: JSON, kernel: Kernel) async -> JSON {
+        let selfId = agent.id.value
+        let src = payload["source"].asString ?? selfId
+        let sink = payload["sink"].asString ?? selfId
+        let spath = payload["source_path"].asString ?? payload["path"].asString ?? ""
+        let dpath = payload["sink_path"].asString ?? spath
+        let chunk = payload["chunk"].asInt.map { $0 > 0 ? $0 : 65536 } ?? 65536
+        var offset = 0
+        var first = true
+        var chunks = 0
+        while true {
+            let (rmeta, body) = await kernel.sendWithBinary(
+                AgentId(src),
+                .object([
+                    "type": .string("read_stream"), "path": .string(spath),
+                    "offset": .integer(Int64(offset)), "length": .integer(Int64(chunk)),
+                ]), Data())
+            if rmeta["error"].asString != nil {
+                return .object(["error": .string("pump: read from \(src) failed: \(rmeta)")])
+            }
+            let (wmeta, _) = await kernel.sendWithBinary(
+                AgentId(sink),
+                .object([
+                    "type": .string("write_stream"), "path": .string(dpath),
+                    "offset": .integer(Int64(offset)), "truncate": .bool(first),
+                ]), body)
+            if wmeta["error"].asString != nil {
+                return .object(["error": .string("pump: write to \(sink) failed: \(wmeta)")])
+            }
+            first = false
+            chunks += 1
+            offset = Int(rmeta["next_offset"].asInt ?? Int64(offset))
+            if rmeta["eof"].asBool ?? true { break }
+        }
+        return .object([
+            "source": .string(spath), "sink": .string(dpath),
+            "bytes": .integer(Int64(offset)), "chunks": .integer(Int64(chunks)),
+        ])
     }
 }

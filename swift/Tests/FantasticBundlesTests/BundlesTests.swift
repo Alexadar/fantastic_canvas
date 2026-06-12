@@ -100,6 +100,40 @@ struct BundleSmokeTests {
         #expect(!fm.fileExists(atPath: file("agents/foo")))
     }
 
+    @Test func fileBridgeStreamsRoundTripRawBytes() async throws {
+        // The "send+stream handle" — read_stream/write_stream carry RAW BYTES
+        // over the symmetric binary channel (never base64), same as py/rust.
+        let kernel = makeKernelWithAll()
+        let fm = FileManager.default
+        let rel = "fantastic-stream-\(UUID().uuidString)"
+        let dir = URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent(rel)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        _ = await kernel.send(
+            "core",
+            [
+                "type": "create_agent", "handler_module": "file_bridge.tools", "id": "fs",
+                "root": .string(rel), "ingress_rule": "allow_all",
+            ])
+        // Non-UTF-8 bytes — proves the channel is raw, not text/base64.
+        let payload = Data([0x00, 0xFF, 0xCA, 0xFE, 0xBA, 0xBE, 0x10, 0x80])
+        // SINK.
+        let (w, _) = await kernel.sendWithBinary(
+            "fs",
+            .object([
+                "type": .string("write_stream"), "path": .string("blob.bin"),
+                "truncate": .bool(true),
+            ]), payload)
+        #expect(w["written"].asInt == Int64(payload.count), "\(w)")
+        // SOURCE.
+        let (m, body) = await kernel.sendWithBinary(
+            "fs",
+            .object(["type": .string("read_stream"), "path": .string("blob.bin")]), Data())
+        #expect(body == payload, "bytes must round-trip verbatim")
+        #expect(m["eof"].asBool == true)
+        #expect(m["size"].asInt == Int64(payload.count))
+    }
+
     @Test func fileBundleReflect() async throws {
         let kernel = makeKernelWithAll()
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(
