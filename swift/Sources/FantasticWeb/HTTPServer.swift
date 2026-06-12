@@ -337,7 +337,8 @@ public final class WebServer: @unchecked Sendable {
                 let hostId = params["host_id"]
             {
                 runWebSocketProxy(
-                    hostId: hostId, connection: connection, request: request, kernel: kernel)
+                    hostId: hostId, legId: spec.ownerId, connection: connection,
+                    request: request, kernel: kernel)
                 return
             }
             await write(

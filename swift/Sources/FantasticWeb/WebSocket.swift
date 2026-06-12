@@ -22,6 +22,7 @@
 // `watch_remote` relies on the explicit-watch path.
 
 import CryptoKit
+import FantasticIoBridge
 import FantasticJSON
 import FantasticKernel
 import Foundation
@@ -51,6 +52,7 @@ public func computeWebSocketAccept(key: String) -> String {
 /// in the host module, the `web_ws` bundle only declares the route.
 public func runWebSocketProxy(
     hostId: String,
+    legId: AgentId,
     connection: NWConnection,
     request: HTTPRequest,
     kernel: Kernel
@@ -58,6 +60,7 @@ public func runWebSocketProxy(
     Task {
         await handleUpgrade(
             agentSegment: hostId,
+            legId: legId,
             connection: connection,
             request: request,
             kernel: kernel
@@ -67,6 +70,7 @@ public func runWebSocketProxy(
 
 private func handleUpgrade(
     agentSegment: String,
+    legId: AgentId,
     connection: NWConnection,
     request: HTTPRequest,
     kernel: Kernel
@@ -96,7 +100,7 @@ private func handleUpgrade(
     // as `{type:"event", payload}` frames. Mirrors Python's
     // `_proxy.run`: `client_id` + `watching` set + `drain_outbound`.
     let clientId = AgentId("ws_client_\(UUID().uuidString.prefix(8))")
-    let state = WSClientState(clientId: clientId)
+    let state = WSClientState(clientId: clientId, legId: legId)
     let inbox = kernel.ensureInbox(clientId)
     if kernel.agent(agentId) != nil {
         kernel.watch(src: agentId, watcher: clientId)
@@ -124,8 +128,14 @@ private func handleUpgrade(
 /// `clientId`.
 final class WSClientState: @unchecked Sendable {
     let clientId: AgentId
+    /// The web_ws LEG that contributed this `/ws` route — its `ingress_rule`
+    /// gates every inbound call (sealed-by-default).
+    let legId: AgentId
     var watching: Set<AgentId> = []
-    init(clientId: AgentId) { self.clientId = clientId }
+    init(clientId: AgentId, legId: AgentId) {
+        self.clientId = clientId
+        self.legId = legId
+    }
 }
 
 private func readLoop(
@@ -184,7 +194,8 @@ private func handleFrame(
         switch parsed["type"].asString {
         case "call":
             await handleCall(
-                parsed: parsed, connection: connection, agentId: agentId, kernel: kernel)
+                parsed: parsed, connection: connection, agentId: agentId, kernel: kernel,
+                legId: state.legId)
         case "emit":
             // Mirror of Python's `_on_emit`: fire-and-forget into a
             // target's inbox, no reply.
@@ -228,11 +239,25 @@ private func handleCall(
     parsed: JSON,
     connection: NWConnection,
     agentId: AgentId,
-    kernel: Kernel
+    kernel: Kernel,
+    legId: AgentId
 ) async {
     let target = parsed["target"].asString ?? agentId.value
     let payload = parsed["payload"]
     let id = parsed["id"].asString ?? ""
+    // GATE — web_ws is an io_bridge inbound (ws) derivation: SEALED by default.
+    // Gate the inbound frame at the shared choke point with THIS leg's
+    // ingress_rule (credential rides the frame envelope `auth_token`).
+    if let denied = gateWebLeg(
+        kernel: kernel, legId: legId, target: target,
+        verb: payload["type"].asString ?? "", token: parsed["auth_token"].asString)
+    {
+        let frame: JSON = .object([
+            "type": .string("reply"), "id": .string(id), "data": denied,
+        ])
+        sendTextFrame(connection: connection, text: frame.serialize())
+        return
+    }
     let reply = await kernel.send(AgentId(target), payload)
     // Field name MUST be `data` — transport.js's reply handler reads
     // `msg.data` (see fantastic-web/Resources/transport.js:193). Rust

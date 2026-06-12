@@ -156,6 +156,8 @@ struct HTTPServerTests {
                 "type": .string("create_agent"),
                 "handler_module": .string("web_rest.tools"),
                 "id": .string("rest"),
+                // The web_rest leg SEALS by default — open it for the POST.
+                "ingress_rule": .string("allow_all"),
             ]))
         let restId = rec["id"].asString ?? "rest"
         _ = await kernel.send(

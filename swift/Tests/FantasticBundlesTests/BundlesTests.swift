@@ -341,9 +341,13 @@ struct BundleSmokeTests {
 
     @Test func webRestHandleRoutePostDispatchesBodyVerb() async {
         let kernel = makeKernelWithAll()
+        // The web_rest leg SEALS by default — open it for the inbound POST.
         _ = await kernel.send(
             "core",
-            ["type": "create_agent", "handler_module": "web_rest.tools", "id": "rest"])
+            [
+                "type": "create_agent", "handler_module": "web_rest.tools", "id": "rest",
+                "ingress_rule": "allow_all",
+            ])
         // Simulate the host calling handle_route for
         // POST /rest/core  body={type:list_agents}.
         let reply = await kernel.send(

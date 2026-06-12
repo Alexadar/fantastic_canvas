@@ -150,7 +150,7 @@ let package = Package(
         ),
         .target(
             name: "FantasticWeb",
-            dependencies: ["FantasticKernel", "FantasticJSON"],
+            dependencies: ["FantasticKernel", "FantasticJSON", "FantasticIoBridge"],
             resources: [
                 .copy("Resources/three.module.js"),
                 .copy("Resources/xterm.min.js"),

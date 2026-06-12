@@ -142,6 +142,20 @@ public func startKernel(
     // Mirrors Rust's `seed_root_readme` / Python's `Core._seed_root_readme`.
     RootReadme.seed(workdir: url)
 
+    // COLD primitive: seed the root record `.fantastic/agent.json` on a virgin
+    // dir. This is the chicken-egg bring-up — it runs BEFORE any agent (and thus
+    // any file_bridge store provider) exists, so it cannot route through a
+    // provider. Ongoing persistence (after boot) flows through the discovered
+    // provider (see PersistenceProvider). Mirrors py write_record / rust
+    // write_record_at, so a swift workdir handed to py/rust carries the root.
+    let rootRecordFile = dotFantastic.appendingPathComponent("agent.json")
+    if !fm.fileExists(atPath: rootRecordFile.path) {
+        let rec: JSON = .object([
+            "id": .string("core"), "handler_module": .null, "parent_id": .null,
+        ])
+        try? rec.serializePretty(indent: 2).data(using: .utf8)?.write(to: rootRecordFile)
+    }
+
     // Register a bare `core` root agent. If the workdir has a
     // persisted `core` record, `kernel.load()` below will replace
     // this one with the disk-backed shape (carrying meta etc.).
