@@ -20,7 +20,7 @@ import Testing
 
 func makeKernelWithAll() -> Kernel {
     let registry = BundleRegistry()
-    registry.register("file.tools", FileBundle())
+    registry.register("file_bridge.tools", FileBundle())
     registry.register("proxy_agent.tools", ProxyAgentBundle())
     registry.register("tools.tools", ToolsBundle())
     registry.register("scheduler.tools", SchedulerBundle())
@@ -46,7 +46,7 @@ struct BundleSmokeTests {
             "core",
             [
                 "type": "create_agent",
-                "handler_module": "file.tools",
+                "handler_module": "file_bridge.tools",
                 "id": "fs1",
                 "root": .string(tmp.path),
             ])

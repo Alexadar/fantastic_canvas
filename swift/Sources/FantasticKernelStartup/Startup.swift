@@ -41,7 +41,7 @@ import Foundation
 /// `register_default_bundles` exactly.
 public func defaultBundleRegistry() -> BundleRegistry {
     let r = BundleRegistry()
-    r.register("file.tools", FileBundle())
+    r.register("file_bridge.tools", FileBundle())
     r.register("yaml_state.tools", YamlStateBundle())
     r.register("proxy_agent.tools", ProxyAgentBundle())
     r.register("tools.tools", ToolsBundle())

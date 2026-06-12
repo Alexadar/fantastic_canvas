@@ -12,7 +12,7 @@ import FantasticKernel
 import Foundation
 import OrderedCollections
 
-public let HANDLER_MODULE = "file.tools"
+public let HANDLER_MODULE = "file_bridge.tools"
 
 /// Default hidden-file names hidden from `list`.
 let DEFAULT_HIDDEN: Set<String> = [
@@ -24,12 +24,13 @@ let IMAGE_EXTENSIONS: Set<String> = [
 ]
 
 public struct FileBundle: AgentBundle {
-    public let name = "file"
+    public let name = "file_bridge"
 
     public init() {}
 
     public var readme: String? {
-        "file — filesystem as agent. Each agent owns `root`; verbs are path-safe."
+        "file_bridge — the gated filesystem edge of the io family. Each agent owns `root` (clamped"
+            + " INSIDE the running dir — the running-dir law); verbs are path-safe."
     }
 
     public func handle(
@@ -43,23 +44,35 @@ public struct FileBundle: AgentBundle {
         }
         switch verb {
         case "reflect":
+            // Discovery shows the configured root verbatim (no clamp — py parity).
             return reflect(agent: agent)
         case "boot":
             return .object(["ok": .bool(true)])
-        case "list":
-            return listFiles(agent: agent, payload: payload)
-        case "read":
-            return readFile(agent: agent, payload: payload)
-        case "write":
-            return writeFile(agent: agent, payload: payload)
-        case "delete":
-            return deleteFile(agent: agent, payload: payload)
-        case "rename":
-            return renameFile(agent: agent, payload: payload)
-        case "mkdir":
-            return makeDir(agent: agent, payload: payload)
         default:
-            return .object(["error": .string("unknown verb \(verb)")])
+            // Every DATA verb clamps the root to the running dir FIRST — the
+            // running-dir law: a root that escapes the kernel's workdir refuses.
+            guard let root = clampedRoot(agent: agent, kernel: kernel) else {
+                return .object([
+                    "error": .string("root escapes the running dir"),
+                    "reason": .string("root_escapes_running_dir"),
+                ])
+            }
+            switch verb {
+            case "list":
+                return listFiles(root: root, payload: payload)
+            case "read":
+                return readFile(root: root, payload: payload)
+            case "write":
+                return writeFile(root: root, agent: agent, payload: payload)
+            case "delete":
+                return deleteFile(root: root, agent: agent, payload: payload)
+            case "rename":
+                return renameFile(root: root, agent: agent, payload: payload)
+            case "mkdir":
+                return makeDir(root: root, agent: agent, payload: payload)
+            default:
+                return .object(["error": .string("unknown verb \(verb)")])
+            }
         }
     }
 
@@ -84,8 +97,7 @@ public struct FileBundle: AgentBundle {
         ] as JSON
     }
 
-    private func listFiles(agent: Agent, payload: JSON) -> JSON {
-        let root = rootPath(agent: agent)
+    private func listFiles(root: URL, payload: JSON) -> JSON {
         let relative = payload["path"].asString ?? ""
         guard let target = resolve(root: root, path: relative) else {
             return .object(["error": .string("path escapes root")])
@@ -127,8 +139,7 @@ public struct FileBundle: AgentBundle {
         ])
     }
 
-    private func readFile(agent: Agent, payload: JSON) -> JSON {
-        let root = rootPath(agent: agent)
+    private func readFile(root: URL, payload: JSON) -> JSON {
         guard let relative = payload["path"].asString else {
             return .object(["error": .string("read requires path")])
         }
@@ -161,9 +172,8 @@ public struct FileBundle: AgentBundle {
         ])
     }
 
-    private func writeFile(agent: Agent, payload: JSON) -> JSON {
+    private func writeFile(root: URL, agent: Agent, payload: JSON) -> JSON {
         if let ro = readonlyError(agent: agent) { return ro }
-        let root = rootPath(agent: agent)
         guard let relative = payload["path"].asString,
             let content = payload["content"].asString
         else {
@@ -186,9 +196,8 @@ public struct FileBundle: AgentBundle {
         }
     }
 
-    private func deleteFile(agent: Agent, payload: JSON) -> JSON {
+    private func deleteFile(root: URL, agent: Agent, payload: JSON) -> JSON {
         if let ro = readonlyError(agent: agent) { return ro }
-        let root = rootPath(agent: agent)
         guard let relative = payload["path"].asString else {
             return .object(["error": .string("delete requires path")])
         }
@@ -206,9 +215,8 @@ public struct FileBundle: AgentBundle {
         }
     }
 
-    private func renameFile(agent: Agent, payload: JSON) -> JSON {
+    private func renameFile(root: URL, agent: Agent, payload: JSON) -> JSON {
         if let ro = readonlyError(agent: agent) { return ro }
-        let root = rootPath(agent: agent)
         guard let oldRel = payload["old_path"].asString,
             let newRel = payload["new_path"].asString
         else {
@@ -230,9 +238,8 @@ public struct FileBundle: AgentBundle {
         }
     }
 
-    private func makeDir(agent: Agent, payload: JSON) -> JSON {
+    private func makeDir(root: URL, agent: Agent, payload: JSON) -> JSON {
         if let ro = readonlyError(agent: agent) { return ro }
-        let root = rootPath(agent: agent)
         guard let relative = payload["path"].asString else {
             return .object(["error": .string("mkdir requires path")])
         }
@@ -253,11 +260,47 @@ public struct FileBundle: AgentBundle {
 
     // MARK: - Helpers
 
+    /// The configured root verbatim (reflect shows this; data verbs clamp it).
     private func rootPath(agent: Agent) -> URL {
         if let rootStr = agent.metaValue(forKey: "root")?.asString {
             return URL(fileURLWithPath: rootStr)
         }
         return agent.rootPath
+    }
+
+    /// The kernel's RUNNING DIRECTORY — its disk workdir (the dir that holds
+    /// `.fantastic`). In production this is the process cwd, matching py
+    /// `Path.cwd()`; for an in-memory kernel that still touches disk we fall
+    /// back to the process cwd.
+    private func workdirBase(kernel: Kernel) -> URL {
+        if let wd = kernel.storage.workdir { return wd }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    }
+
+    /// THE RUNNING-DIR LAW — clamp the configured root to the running dir
+    /// (`base`). A relative root resolves under it; an absolute root is allowed
+    /// ONLY if it lies inside it; outside escapes refuse. Mirrors py
+    /// `fs.resolve_root` (whose base is `Path.cwd()`). Returns the clamped root,
+    /// or nil on escape.
+    private func clampedRoot(agent: Agent, kernel: Kernel) -> URL? {
+        let base = workdirBase(kernel: kernel).standardizedFileURL
+        let rawStr = agent.metaValue(forKey: "root")?.asString
+        let candidate: URL
+        if let rawStr, !rawStr.isEmpty {
+            let raw = URL(fileURLWithPath: rawStr)
+            candidate =
+                raw.path.hasPrefix("/")
+                ? raw.standardizedFileURL
+                : base.appendingPathComponent(rawStr).standardizedFileURL
+        } else {
+            // No root meta ⇒ the agent's own dir (already inside the workdir).
+            candidate = agent.rootPath.standardizedFileURL
+        }
+        // Must lie inside the running dir.
+        if candidate.path == base.path || candidate.path.hasPrefix(base.path + "/") {
+            return candidate
+        }
+        return nil
     }
 
     private func resolve(root: URL, path: String) -> URL? {
