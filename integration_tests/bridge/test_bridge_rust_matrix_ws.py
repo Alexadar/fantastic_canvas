@@ -1,6 +1,6 @@
 """Bridge integration — Rust in the cross-runtime matrix (WS-only).
 
-Proves that the rust `kernel_bridge` agent interoperates correctly across all
+Proves that the rust `ws_bridge` agent interoperates correctly across all
 runtime pairs. Five forward/reflect test cases cover every directed edge where
 rust is involved:
 

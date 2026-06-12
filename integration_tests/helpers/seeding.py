@@ -25,6 +25,7 @@ from typing import Any
 from .launcher import as_launcher
 
 _ROOT_ID_CACHE: dict[str, str] = {}
+_RUNTIME_CACHE: dict[str, str | None] = {}
 
 # Repo root: integration_tests/helpers -> integration_tests -> repo.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -97,15 +98,27 @@ def root_id(binary: Path, workdir: Path, *, timeout: float = 15.0) -> str:
     if key not in _ROOT_ID_CACHE:
         proc = as_launcher(binary).cli(workdir, ["reflect"], timeout=timeout)
         out = proc.stdout
-        rid = "core"
+        rid, rt = "core", None
         brace = out.find("{")
         if brace != -1:
             try:
-                rid = json.loads(out[brace:]).get("id") or "core"
+                obj = json.loads(out[brace:])
+                rid = obj.get("id") or "core"
+                rt = obj.get("runtime")
             except (json.JSONDecodeError, ValueError):
                 pass
         _ROOT_ID_CACHE[key] = rid
+        _RUNTIME_CACHE[key] = rt
     return _ROOT_ID_CACHE[key]
+
+
+def runtime(binary: Path, workdir: Path, *, timeout: float = 15.0) -> str | None:
+    """Discover the runtime enum (`python`/`rust`/`swift`/`ts`) from the root
+    reflect. Cached alongside `root_id` (one reflect feeds both)."""
+    key = f"{binary}|{workdir}"
+    if key not in _RUNTIME_CACHE:
+        root_id(binary, workdir, timeout=timeout)
+    return _RUNTIME_CACHE.get(key)
 
 
 def seed_create(
@@ -266,15 +279,15 @@ def seed_web_rest(binary: Path, workdir: Path, agent_id: str = "rest") -> str:
     return reply.get("id", agent_id)
 
 
-# Per-runtime `handler_module` for the WS bridge agent. Python renamed
-# `kernel_bridge` → `ws_bridge`; rust/swift still ship the bundle as
-# `kernel_bridge` (cross-runtime port deferred). Keyed by ROOT id, the only
-# runtime discriminator the harness already discovers (python=`kernel_state`,
-# rust/swift=`core`). The bridge is seeded on the DIALING kernel, so the
-# handler_module must match THAT kernel's runtime, not the peer's.
+# Per-runtime `handler_module` for the WS bridge agent. Python + Rust both ship
+# the WS derivation as `ws_bridge.tools` (Rust split the combined kernel_bridge
+# into ws_bridge + cloud_bridge); Swift still ships the combined `kernel_bridge`
+# (its port is deferred). Keyed by the RUNTIME enum from the root reflect (the
+# bridge is seeded on the DIALING kernel, so it matches THAT runtime).
 _WS_BRIDGE_HANDLER_MODULE = {
-    "kernel_state": "ws_bridge.tools",  # python
-    "core": "kernel_bridge.tools",  # rust / swift
+    "python": "ws_bridge.tools",
+    "rust": "ws_bridge.tools",
+    "swift": "kernel_bridge.tools",  # port deferred
 }
 
 
@@ -309,11 +322,11 @@ def seed_bridge_ws(
     `peer_port`.
 
     The `handler_module` is resolved per the dialing runtime
-    (`_WS_BRIDGE_HANDLER_MODULE`): `ws_bridge.tools` on Python,
-    `kernel_bridge.tools` on rust/swift (their port is deferred).
+    (`_WS_BRIDGE_HANDLER_MODULE`): `ws_bridge.tools` on Python + Rust,
+    `kernel_bridge.tools` on Swift (its port is deferred).
     """
     handler_module = _WS_BRIDGE_HANDLER_MODULE.get(
-        root_id(binary, workdir), "kernel_bridge.tools"
+        runtime(binary, workdir) or "", "kernel_bridge.tools"
     )
     reply = seed_create(
         binary,

@@ -1,6 +1,6 @@
 [package]
 publish = false
-name = "fantastic-kernel-bridge"
+name = "fantastic-bridge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

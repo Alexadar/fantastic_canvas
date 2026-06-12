@@ -36,7 +36,7 @@ PORT_B=18190
 ### Test 1: reflect on an unbooted ws bridge
 
 ```bash
-BR=$($FANTASTIC core create_agent handler_module=kernel_bridge.tools \
+BR=$($FANTASTIC core create_agent handler_module=ws_bridge.tools \
   transport=ws host=127.0.0.1 local_port=$PORT_B peer_id=wws | jq -r .id)
 $FANTASTIC $BR reflect | jq -e '.transport == "ws" and .connected == false and .pending_count == 0 and .auth == "allow_all"'
 ```

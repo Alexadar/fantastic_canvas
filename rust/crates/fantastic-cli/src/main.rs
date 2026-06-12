@@ -36,10 +36,10 @@ fn register_default_bundles() -> BundleRegistry {
         "ollama_backend.tools",
         fantastic_ollama_backend::OllamaBackendBundle,
     );
-    reg.register(
-        "kernel_bridge.tools",
-        fantastic_kernel_bridge::KernelBridgeBundle,
-    );
+    // The bridge ships TWO derivations of io_bridge (mirrors py's separate
+    // ws_bridge + cloud_bridge bundles): ws/ssh transports vs the relay.
+    reg.register("ws_bridge.tools", fantastic_bridge::WsBridgeBundle);
+    reg.register("cloud_bridge.tools", fantastic_bridge::CloudBridgeBundle);
     reg.register(
         "nvidia_nim_backend.tools",
         fantastic_nvidia_nim_backend::NvidiaNimBundle,
@@ -107,7 +107,7 @@ async fn dispatch(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         let idk = args
             .get(1)
             .ok_or("__cloud-cert: id_key (b64url) required")?;
-        print!("{}", fantastic_kernel_bridge::cloud_cert_pem_b64url(idk)?);
+        print!("{}", fantastic_bridge::cloud_cert_pem_b64url(idk)?);
         return Ok(());
     }
 

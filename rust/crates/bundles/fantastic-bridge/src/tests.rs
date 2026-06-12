@@ -1,4 +1,4 @@
-//! Unit tests for kernel_bridge.
+//! Unit tests for the ws_bridge / cloud_bridge derivations.
 //!
 //! Most tests drive the memory transport — deterministic, no I/O,
 //! and exercises every code path the bridge cares about. WS gets
@@ -16,7 +16,7 @@ use tempfile::TempDir;
 /// `BRIDGES` map can carry concurrent test agents without id clashes.
 async fn mk_kernel(tmp: &TempDir) -> Arc<Kernel> {
     let mut kernel = Kernel::new();
-    kernel.bundles.register(HANDLER_MODULE, KernelBridgeBundle);
+    kernel.bundles.register(WS_HANDLER_MODULE, WsBridgeBundle);
     kernel
         .bundles
         .register("file_bridge.tools", fantastic_file::FileBundle);
@@ -54,7 +54,7 @@ async fn create_bridge(kernel: &Arc<Kernel>, id: &str, peer_id: &str, transport:
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": HANDLER_MODULE,
+                "handler_module": WS_HANDLER_MODULE,
                 "id": id,
                 "peer_id": peer_id,
                 "transport": transport,
@@ -67,7 +67,7 @@ async fn create_bridge(kernel: &Arc<Kernel>, id: &str, peer_id: &str, transport:
 #[test]
 fn readme_present_and_titled() {
     assert!(!README.is_empty());
-    assert!(README.contains("kernel_bridge"));
+    assert!(README.contains("ws_bridge"));
 }
 
 #[tokio::test]
@@ -335,7 +335,7 @@ async fn ssh_transport_unreachable_host_fails_cleanly() {
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": HANDLER_MODULE,
+                "handler_module": WS_HANDLER_MODULE,
                 "id": bid,
                 "peer_id": "peer_x",
                 "transport": "ssh+ws",
@@ -375,7 +375,7 @@ async fn ws_boot_fails_cleanly_on_unreachable_host() {
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": HANDLER_MODULE,
+                "handler_module": WS_HANDLER_MODULE,
                 "id": bid,
                 "peer_id": "peer_x",
                 "transport": "ws",
@@ -593,7 +593,7 @@ async fn create_bridge_with_auth(kernel: &Arc<Kernel>, id: &str, peer_id: &str, 
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": HANDLER_MODULE,
+                "handler_module": WS_HANDLER_MODULE,
                 "id": id,
                 "peer_id": peer_id,
                 "transport": "memory",
@@ -649,7 +649,7 @@ async fn deny_inbound_default_refuses_inbound_call() {
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": HANDLER_MODULE,
+                "handler_module": WS_HANDLER_MODULE,
                 "id": bid,
                 "peer_id": "stand_in",
                 "transport": "memory",
@@ -698,7 +698,7 @@ async fn password_gate_checks_inbound_and_presents_on_forward() {
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": HANDLER_MODULE,
+                "handler_module": WS_HANDLER_MODULE,
                 "id": bid,
                 "peer_id": "stand_in",
                 "transport": "memory",
@@ -786,7 +786,7 @@ async fn asymmetric_ingress_egress_via_engine() {
             &AgentId::from("core"),
             json!({
                 "type": "create_agent",
-                "handler_module": HANDLER_MODULE,
+                "handler_module": WS_HANDLER_MODULE,
                 "id": bid,
                 "peer_id": "stand_in",
                 "transport": "memory",

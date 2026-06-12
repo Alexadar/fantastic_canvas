@@ -1,4 +1,5 @@
-//! kernel_bridge — cross-kernel comms relay.
+//! fantastic-bridge — cross-kernel comms. TWO io_bridge derivations:
+//! `ws_bridge` (ws/ssh/memory) + `cloud_bridge` (relay), sharing one engine.
 //!
 //! Pairs of bridge agents forward `send` envelopes between kernels
 //! over a pluggable transport. Weak binding: remote agents are
@@ -31,7 +32,7 @@
 //!
 //! Ships **raw** call frames to the remote's `web_ws`, which dispatches
 //! `kernel.send` exactly like a browser frame. No peer bridge needed.
-//! Matches Python's `kernel_bridge` + `fantastic-web`'s WS server:
+//! Matches Python ws_bridge + fantastic-web WS server:
 //!
 //! ```text
 //! outbound  {type:"call",  id:corr, target, payload}
@@ -65,8 +66,36 @@ use transport::ssh::SshTransport;
 use transport::ws::WsTransport;
 use transport::{BridgeTransport, TransportError};
 
-/// `handler_module` key under which this bundle registers.
-pub const HANDLER_MODULE: &str = "kernel_bridge.tools";
+/// `handler_module` of the WS derivation (ws / ssh+ws / memory transports).
+pub const WS_HANDLER_MODULE: &str = "ws_bridge.tools";
+/// `handler_module` of the CLOUD derivation (the zero-trust relay transport).
+pub const CLOUD_HANDLER_MODULE: &str = "cloud_bridge.tools";
+
+/// Which transport family a bundle admits — the only behavioural difference
+/// between the two derivations (they share one engine, mirroring py's
+/// io_bridge engine + thin ws_bridge / cloud_bridge derivations).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    /// ws / ssh+ws / memory (the `ws_bridge` derivation).
+    Ws,
+    /// the relay (`cloud_bridge` derivation).
+    Cloud,
+}
+
+impl Family {
+    fn label(self) -> &'static str {
+        match self {
+            Family::Ws => "ws_bridge",
+            Family::Cloud => "cloud_bridge",
+        }
+    }
+    fn admits(self, transport_kind: &str) -> bool {
+        match self {
+            Family::Ws => matches!(transport_kind, "memory" | "ws" | "ssh+ws"),
+            Family::Cloud => transport_kind == "cloud_bridge",
+        }
+    }
+}
 
 /// Derive this runtime's deterministic self-signed device cert (PEM) for an
 /// Ed25519 identity key, given as b64url-nopad. Exposed for the relay e2e
@@ -135,39 +164,73 @@ impl BridgeState {
 
 // ── bundle impl ─────────────────────────────────────────────────────
 
-/// The cross-kernel bridge bundle.
-pub struct KernelBridgeBundle;
+/// The WS derivation of io_bridge — ws / ssh+ws / memory transports. Registered
+/// under `ws_bridge.tools`. (Was the combined `kernel_bridge`; cloud split out.)
+pub struct WsBridgeBundle;
+/// The CLOUD derivation of io_bridge — the zero-trust relay transport.
+/// Registered under `cloud_bridge.tools`. Shares the engine with `WsBridgeBundle`.
+pub struct CloudBridgeBundle;
+
+/// Shared dispatch — the one bridge engine both derivations run. `family` is the
+/// only difference: it bounds which transport a `boot` may open.
+async fn dispatch(
+    family: Family,
+    agent_id: &AgentId,
+    payload: &Value,
+    kernel: &Arc<Kernel>,
+) -> Result<Reply, BundleError> {
+    let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
+    let reply = match verb {
+        "reflect" => reflect_reply(agent_id, kernel),
+        "boot" => boot_reply(family, agent_id, kernel).await,
+        "shutdown" => shutdown_reply(agent_id, kernel).await,
+        "reconnect" => reconnect_reply(family, agent_id, kernel).await,
+        "forward" => forward_reply(agent_id, payload, kernel).await,
+        "watch_remote" => watch_remote_reply(agent_id, payload, "watch").await,
+        "unwatch_remote" => watch_remote_reply(agent_id, payload, "unwatch").await,
+        other => json!({"error": format!("{}: unknown verb {other:?}", family.label())}),
+    };
+    Ok(Some(reply))
+}
 
 #[async_trait]
-impl Bundle for KernelBridgeBundle {
+impl Bundle for WsBridgeBundle {
     fn name(&self) -> &str {
-        "kernel_bridge"
+        "ws_bridge"
     }
-
     fn readme(&self) -> Option<&'static str> {
         Some(README)
     }
-
     async fn handle(
         &self,
         agent_id: &AgentId,
         payload: &Value,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
-        let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
-        let reply = match verb {
-            "reflect" => reflect_reply(agent_id, kernel),
-            "boot" => boot_reply(agent_id, kernel).await,
-            "shutdown" => shutdown_reply(agent_id, kernel).await,
-            "reconnect" => reconnect_reply(agent_id, kernel).await,
-            "forward" => forward_reply(agent_id, payload, kernel).await,
-            "watch_remote" => watch_remote_reply(agent_id, payload, "watch").await,
-            "unwatch_remote" => watch_remote_reply(agent_id, payload, "unwatch").await,
-            other => json!({"error": format!("kernel_bridge: unknown verb {other:?}")}),
-        };
-        Ok(Some(reply))
+        dispatch(Family::Ws, agent_id, payload, kernel).await
     }
+    async fn on_delete(&self, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Result<(), BundleError> {
+        let _ = shutdown_reply(agent_id, kernel).await;
+        Ok(())
+    }
+}
 
+#[async_trait]
+impl Bundle for CloudBridgeBundle {
+    fn name(&self) -> &str {
+        "cloud_bridge"
+    }
+    fn readme(&self) -> Option<&'static str> {
+        Some(README)
+    }
+    async fn handle(
+        &self,
+        agent_id: &AgentId,
+        payload: &Value,
+        kernel: &Arc<Kernel>,
+    ) -> Result<Reply, BundleError> {
+        dispatch(Family::Cloud, agent_id, payload, kernel).await
+    }
     async fn on_delete(&self, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Result<(), BundleError> {
         let _ = shutdown_reply(agent_id, kernel).await;
         Ok(())
@@ -301,26 +364,34 @@ fn reflect_reply(agent_id: &AgentId, kernel: &Kernel) -> Value {
     })
 }
 
-async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
+async fn boot_reply(family: Family, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
     // Idempotent: re-booting a connected bridge is a no-op.
     if let Some(existing) = BRIDGES.lock().get(agent_id).cloned() {
         return json!({"already": true, "transport": existing.transport_kind});
     }
 
-    let kind = meta_string(agent_id, kernel, "transport").unwrap_or_else(|| "memory".to_string());
+    let kind = meta_string(agent_id, kernel, "transport")
+        .unwrap_or_else(|| if family == Family::Cloud { "cloud_bridge" } else { "memory" }.to_string());
+    // The derivation only opens transports in its own family — a `cloud_bridge`
+    // can't open a ws socket and vice-versa (the two-bundle split).
+    if !family.admits(&kind) {
+        return json!({
+            "error": format!("{}: transport {kind:?} not in this derivation", family.label())
+        });
+    }
     let transport: Arc<dyn BridgeTransport> = match kind.as_str() {
         "memory" => match take_injected(agent_id) {
             Some(t) => t,
             None => {
                 return json!({
-                    "error": "kernel_bridge: memory transport requires inject_pair (test seam)"
+                    "error": "bridge: memory transport requires inject_pair (test seam)"
                 })
             }
         },
         "ws" => {
             let peer_id = match meta_string(agent_id, kernel, "peer_id") {
                 Some(p) => p,
-                None => return json!({"error": "kernel_bridge: ws transport requires peer_id"}),
+                None => return json!({"error": "bridge: ws transport requires peer_id"}),
             };
             // Canonical field is `local_port` (Python parity);
             // accept `remote_port` as a fallback.
@@ -328,31 +399,31 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
                 .or_else(|| meta_u64(agent_id, kernel, "remote_port"))
             {
                 Some(p) => p as u16,
-                None => return json!({"error": "kernel_bridge: ws transport requires local_port"}),
+                None => return json!({"error": "bridge: ws transport requires local_port"}),
             };
             let host =
                 meta_string(agent_id, kernel, "host").unwrap_or_else(|| "localhost".to_string());
             let url = format!("ws://{host}:{port}/{peer_id}/ws");
             match WsTransport::connect(&url).await {
                 Ok(t) => t,
-                Err(e) => return json!({"error": format!("kernel_bridge: ws connect failed: {e}")}),
+                Err(e) => return json!({"error": format!("bridge: ws connect failed: {e}")}),
             }
         }
         #[cfg(feature = "full")]
         "ssh+ws" => {
             let peer_id = match meta_string(agent_id, kernel, "peer_id") {
                 Some(p) => p,
-                None => return json!({"error": "kernel_bridge: ssh+ws transport requires peer_id"}),
+                None => return json!({"error": "bridge: ssh+ws transport requires peer_id"}),
             };
             let host = match meta_string(agent_id, kernel, "host") {
                 Some(h) => h,
-                None => return json!({"error": "kernel_bridge: ssh+ws transport requires host"}),
+                None => return json!({"error": "bridge: ssh+ws transport requires host"}),
             };
             let remote_port = match meta_u64(agent_id, kernel, "remote_port") {
                 Some(p) if p > 0 && p <= u16::MAX as u64 => p as u16,
                 _ => {
                     return json!({
-                        "error": "kernel_bridge: ssh+ws transport requires remote_port"
+                        "error": "bridge: ssh+ws transport requires remote_port"
                     })
                 }
             };
@@ -364,13 +435,13 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
                 .unwrap_or(0);
             match SshTransport::open(&host, &peer_id, remote_port, local_port).await {
                 Ok(t) => t,
-                Err(e) => return json!({"error": format!("kernel_bridge: ssh+ws failed: {e}")}),
+                Err(e) => return json!({"error": format!("bridge: ssh+ws failed: {e}")}),
             }
         }
         #[cfg(not(feature = "full"))]
         "ssh+ws" => {
             return json!({
-                "error": "kernel_bridge: ssh+ws transport requires the `full` feature"
+                "error": "bridge: ssh+ws transport requires the `full` feature"
             })
         }
         "cloud_bridge" => {
@@ -429,7 +500,7 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
                 Err(e) => return json!({"error": format!("cloud_bridge: handshake: {e}")}),
             }
         }
-        other => return json!({"error": format!("kernel_bridge: unknown transport {other:?}")}),
+        other => return json!({"error": format!("bridge: unknown transport {other:?}")}),
     };
 
     // Resolve the per-leg ingress + egress rules from the record (`ingress_rule` /
@@ -440,7 +511,7 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
             Ok(r) => r,
             Err(e) => {
                 transport.close().await;
-                return json!({"error": format!("kernel_bridge: bad ingress rule: {e}")});
+                return json!({"error": format!("bridge: bad ingress rule: {e}")});
             }
         };
     let egress =
@@ -448,7 +519,7 @@ async fn boot_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
             Ok(r) => r,
             Err(e) => {
                 transport.close().await;
-                return json!({"error": format!("kernel_bridge: bad egress rule: {e}")});
+                return json!({"error": format!("bridge: bad egress rule: {e}")});
             }
         };
 
@@ -501,9 +572,9 @@ async fn shutdown_reply(agent_id: &AgentId, _kernel: &Arc<Kernel>) -> Value {
     json!({"stopped": true})
 }
 
-async fn reconnect_reply(agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
+async fn reconnect_reply(family: Family, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
     let _ = shutdown_reply(agent_id, kernel).await;
-    boot_reply(agent_id, kernel).await
+    boot_reply(family, agent_id, kernel).await
 }
 
 async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>) -> Value {
@@ -511,7 +582,7 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
     let inner = payload.get("payload");
     if target.is_empty() || !inner.map(Value::is_object).unwrap_or(false) {
         return json!({
-            "error": "kernel_bridge.forward: target (str) + payload (object) required"
+            "error": "bridge.forward: target (str) + payload (object) required"
         });
     }
     let inner = inner.cloned().unwrap_or(Value::Null);
@@ -524,7 +595,7 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
         Some(s) => s,
         None => {
             return json!({
-                "error": "kernel_bridge.forward: not connected (call boot first)"
+                "error": "bridge.forward: not connected (call boot first)"
             })
         }
     };
@@ -560,7 +631,7 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
             .lock()
             .expect("pending poisoned")
             .remove(&corr);
-        return json!({"error": format!("kernel_bridge.forward: send failed: {e}")});
+        return json!({"error": format!("bridge.forward: send failed: {e}")});
     }
 
     // Wait for the reply with a timeout. On EITHER timeout OR
@@ -574,7 +645,7 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
                 .lock()
                 .expect("pending poisoned")
                 .remove(&corr);
-            json!({"error": format!("kernel_bridge.forward: {e}")})
+            json!({"error": format!("bridge.forward: {e}")})
         }
         Ok(Err(_canceled)) => {
             state
@@ -582,7 +653,7 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
                 .lock()
                 .expect("pending poisoned")
                 .remove(&corr);
-            json!({"error": "kernel_bridge.forward: pending dropped"})
+            json!({"error": "bridge.forward: pending dropped"})
         }
         Err(_elapsed) => {
             state
@@ -590,7 +661,7 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
                 .lock()
                 .expect("pending poisoned")
                 .remove(&corr);
-            json!({"error": format!("kernel_bridge.forward: timeout after {timeout_secs}s")})
+            json!({"error": format!("bridge.forward: timeout after {timeout_secs}s")})
         }
     }
 }
@@ -601,19 +672,19 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
 async fn watch_remote_reply(agent_id: &AgentId, payload: &Value, kind: &str) -> Value {
     let target = payload.get("target").and_then(Value::as_str).unwrap_or("");
     if target.is_empty() {
-        return json!({"error": format!("kernel_bridge.{kind}_remote: target (str) required")});
+        return json!({"error": format!("bridge.{kind}_remote: target (str) required")});
     }
     let state = match BRIDGES.lock().get(agent_id).cloned() {
         Some(s) => s,
         None => {
             return json!({
-                "error": format!("kernel_bridge.{kind}_remote: not connected (call boot first)")
+                "error": format!("bridge.{kind}_remote: not connected (call boot first)")
             })
         }
     };
     let frame = json!({ "type": kind, "src": target });
     if let Err(e) = state.transport.send_frame(frame).await {
-        return json!({"error": format!("kernel_bridge.{kind}_remote: send failed: {e}")});
+        return json!({"error": format!("bridge.{kind}_remote: send failed: {e}")});
     }
     let key = if kind == "watch" {
         "watching"
@@ -660,7 +731,7 @@ async fn read_loop(agent_id: AgentId, state: Arc<BridgeState>, kernel: Arc<Kerne
                     token: frame.get("auth_token").and_then(Value::as_str),
                 });
                 let reply = if target.is_empty() {
-                    json!({"error": "kernel_bridge: empty call target"})
+                    json!({"error": "bridge: empty call target"})
                 } else if let Decision::Deny(reason) = decision {
                     json!({"error": reason, "reason": "unauthorized"})
                 } else {
