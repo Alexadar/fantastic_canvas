@@ -204,10 +204,12 @@ bundle scoreboard.
 | substrate                        | ✓ | ✓ | ✓ |
 | HTTP / WS / REST surfaces        | ✓ | ✓ | ✓ |
 | WS binary frames (incl. chunked) | ✓ | ✓ | ✓ |
-| io legs sealed-by-default (ingress rules) | ✓ | porting (#525) | porting (#524) |
-| all IO via gated `file_bridge` (`file_bridge_id`) | ✓ | porting (#525) | porting (#524) |
-| raw-bytes stream verbs (`read_stream`/`write_stream`) | ✓ | porting | porting |
-| reflect posture + `persistence.provider` | ✓ | porting | porting |
+| io legs sealed-by-default (ingress rules) | ✓ | ✓ | ✓ |
+| all IO via gated `file_bridge` (`file_bridge_id`) | ✓ | ✓ | ✓ |
+| raw-bytes stream verbs (`read_stream`/`write_stream`) | ✓ | ✓ | ✓ |
+| binary forward over the bridge wire (WS + cloud) | ✓ | ✓ | ✓ |
+| reflect posture + `persistence.provider` | ✓ | ✓ | ✓ |
+| consumers persist via `file_bridge_id` (yaml_state · scheduler · ai) | ✓ | ✓ | ✓ |
 | LLM backend bundles              | ollama / NIM / Anthropic | ollama / NIM / Apple FM | ollama / NIM |
 | terminal_backend (PTY)           | ✓ | ✓ (macOS only) | ✓ (full tier) |
 | serves the `ts/` frontend        | ✓ | ✓ | ✓ |

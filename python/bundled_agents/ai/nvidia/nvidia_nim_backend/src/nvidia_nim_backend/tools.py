@@ -5,7 +5,7 @@ pattern). Same surface as ollama_backend (send/history/interrupt/
 refresh_menu/reflect) PLUS the NIM-specific bits, all wired through
 `ai_core.build()`:
 
-- API key required, stored OUT-OF-BAND in `.fantastic/agents/<id>/api_key`
+- API key required, stored OUT-OF-BAND at the store-relative `agents/<id>/api_key`
   via `file_bridge_id` (never in agent.json). Verbs `set_api_key` /
   `clear_api_key` (passed as `extra_verbs`); `reflect` reports
   `has_api_key:bool` only (via `reflect_extra`). The key/sidecar logic
