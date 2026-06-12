@@ -12,8 +12,9 @@
 //! layer): [`WsByteChannel`] in production, [`MemoryByteChannel`] for the in-process
 //! loopback unit test.
 
-use super::{BridgeTransport, TransportError};
+use super::{BridgeTransport, Frame, TransportError};
 use async_trait::async_trait;
+use fantastic_io_bridge::codec::{decode_binary_frame, encode_binary_frame};
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
@@ -463,14 +464,17 @@ async fn drive_handshake(
     }
 }
 
-#[async_trait]
-impl BridgeTransport for CloudTransport {
-    async fn send_frame(&self, frame: Value) -> Result<(), TransportError> {
-        let json = serde_json::to_vec(&frame)
-            .map_err(|e| TransportError::Other(format!("cloud_bridge encode: {e}")))?;
-        let mut payload = Vec::with_capacity(HDR + json.len());
-        payload.extend_from_slice(&(json.len() as u32).to_be_bytes());
-        payload.extend_from_slice(&json);
+impl CloudTransport {
+    /// Frame a record into the TLS stream: `[4B len | tag(1B) | wire]` (the tag
+    /// = 0 text / 1 binary leads the length-delimited record so the byte stream
+    /// — no WS text/binary split inside the relay tunnel — can pick the decode
+    /// path). Mirrors py cloud_bridge's `_send_frame`. `tag` ∈ {0,1}.
+    async fn write_record(&self, tag: u8, wire: &[u8]) -> Result<(), TransportError> {
+        let rec_len = (1 + wire.len()) as u32;
+        let mut payload = Vec::with_capacity(HDR + 1 + wire.len());
+        payload.extend_from_slice(&rec_len.to_be_bytes());
+        payload.push(tag);
+        payload.extend_from_slice(wire);
         let out = {
             let mut conn = self.conn.lock().await;
             conn.writer().write_all(&payload).map_err(|e| {
@@ -486,8 +490,22 @@ impl BridgeTransport for CloudTransport {
         };
         self.channel.send_bytes(out).await
     }
+}
 
-    async fn recv_frame(&self) -> Result<Value, TransportError> {
+#[async_trait]
+impl BridgeTransport for CloudTransport {
+    async fn send_frame(&self, frame: Value) -> Result<(), TransportError> {
+        let json = serde_json::to_vec(&frame)
+            .map_err(|e| TransportError::Other(format!("cloud_bridge encode: {e}")))?;
+        self.write_record(0, &json).await
+    }
+
+    async fn send_binary(&self, header: Value, body: Vec<u8>) -> Result<(), TransportError> {
+        let wire = encode_binary_frame(&header, &body);
+        self.write_record(1, &wire).await
+    }
+
+    async fn recv_frame(&self) -> Result<Frame, TransportError> {
         loop {
             // Try to pop a complete length-delimited frame from the buffer.
             {
@@ -500,16 +518,31 @@ impl BridgeTransport for CloudTransport {
                         ));
                     }
                     if rbuf.len() >= HDR + n {
-                        let body = rbuf[HDR..HDR + n].to_vec();
+                        let rec = rbuf[HDR..HDR + n].to_vec();
                         rbuf.drain(..HDR + n);
                         drop(rbuf);
-                        let frame: Value = serde_json::from_slice(&body).map_err(|e| {
+                        // First byte is the text/binary tag; the rest is the wire.
+                        let (tag, wire) = match rec.split_first() {
+                            Some((t, w)) => (*t, w),
+                            None => {
+                                return Err(TransportError::Other(
+                                    "cloud_bridge: empty record".into(),
+                                ))
+                            }
+                        };
+                        if tag == 1 {
+                            let (header, body) = decode_binary_frame(wire).map_err(|e| {
+                                TransportError::Other(format!("cloud_bridge binary decode: {e}"))
+                            })?;
+                            return Ok(Frame::Binary(header, body));
+                        }
+                        let frame: Value = serde_json::from_slice(wire).map_err(|e| {
                             TransportError::Other(format!("cloud_bridge decode: {e}"))
                         })?;
                         if frame.get("type").and_then(Value::as_str) == Some(KEEPALIVE_TYPE) {
                             continue; // heartbeat — never surfaced
                         }
-                        return Ok(frame);
+                        return Ok(Frame::Text(frame));
                     }
                 }
             }

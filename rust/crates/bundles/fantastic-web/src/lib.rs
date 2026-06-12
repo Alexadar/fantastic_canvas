@@ -1101,6 +1101,12 @@ async fn ws_loop(state: AppState, socket: WebSocket, host_agent_id: AgentId) {
     // We need a separate channel because axum's split sink is single-
     // consumer; the inbox receiver lives in the kernel.
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<String>(state.kernel.inbox_bound);
+    // Parallel BINARY out-channel — a `read_stream` reply carries raw bytes that
+    // can't ride the text channel; the sink writer drains both (text →
+    // Message::Text, binary → Message::Binary, the `[4B len|header|body]` codec
+    // frame). Mirrors py web_ws, which sends binary reply frames the same way.
+    let (bin_tx, mut bin_rx) =
+        tokio::sync::mpsc::channel::<Vec<u8>>(state.kernel.inbox_bound);
     // Hook the synthetic client inbox into the kernel.
     let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::channel::<Value>(state.kernel.inbox_bound);
     state.kernel.inboxes.insert(client_id.clone(), inbox_tx);
@@ -1143,11 +1149,27 @@ async fn ws_loop(state: AppState, socket: WebSocket, host_agent_id: AgentId) {
         }
     });
 
-    // Outbound forwarder: anything written to out_tx hits the socket.
+    // Outbound forwarder: text frames (out_tx) AND binary frames (bin_tx) hit
+    // the one single-consumer sink. Select across both so neither starves.
     let send_task = tokio::spawn(async move {
-        while let Some(line) = out_rx.recv().await {
-            if sink.send(Message::Text(line)).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                line = out_rx.recv() => match line {
+                    Some(line) => {
+                        if sink.send(Message::Text(line)).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                },
+                blob = bin_rx.recv() => match blob {
+                    Some(blob) => {
+                        if sink.send(Message::Binary(blob)).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                },
             }
         }
     });
@@ -1162,7 +1184,8 @@ async fn ws_loop(state: AppState, socket: WebSocket, host_agent_id: AgentId) {
         let text = match msg {
             Ok(Message::Text(t)) => t,
             Ok(Message::Binary(bytes)) => {
-                handle_binary_frame(&state, &client_id, &out_tx, &pending_uploads, bytes).await;
+                handle_binary_frame(&state, &client_id, &out_tx, &bin_tx, &pending_uploads, bytes)
+                    .await;
                 continue;
             }
             Ok(Message::Close(_)) | Err(_) => break,
@@ -1400,33 +1423,34 @@ struct ChunkBuffer {
 /// On any decode error the frame is dropped silently (we log a debug
 /// trace) — the WS stays open. The shape is documented + a single
 /// malformed frame from a JS client shouldn't kill the channel.
-/// Build the WS reply frame for a binary dispatch. The reply HEADER is
-/// always a JSON `{type:reply, id, data}` text frame. A non-empty reply
-/// `body` (e.g. `file_bridge.read_stream` bytes) would need a binary
-/// reply frame — the current out channel is text-only, so wiring the
-/// outbound binary frame is step 4b (codec into the WS sink). Until then
-/// we refuse honestly rather than drop the bytes: a non-empty body yields
-/// an explicit `error` frame, never a silent truncation.
-fn binary_reply_frame(id: Option<Value>, reply: Value, body: Vec<u8>) -> String {
+/// Send a binary-dispatch reply on the correct WS channel. An empty `body` is a
+/// plain `{type:reply, id, data}` TEXT frame; a non-empty body (e.g.
+/// `file_bridge.read_stream` bytes) is a BINARY frame `[4B len|header|body]` (the
+/// codec) sent on `bin_tx` — raw bytes, never base64. Mirrors py web_ws.
+async fn send_binary_reply(
+    out_tx: &tokio::sync::mpsc::Sender<String>,
+    bin_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
+    id: Option<Value>,
+    reply: Value,
+    body: Vec<u8>,
+) {
     if body.is_empty() {
-        return json!({ "type": "reply", "id": id, "data": reply }).to_string();
+        let frame = json!({ "type": "reply", "id": id, "data": reply }).to_string();
+        let _ = out_tx.send(frame).await;
+        return;
     }
-    json!({
-        "type": "error",
-        "id": id,
-        "error": format!(
-            "binary reply ({} bytes) cannot ride the text WS channel yet \
-             (read_stream over WS pending codec wiring); use GET /<id>/file/<path>",
-            body.len()
-        ),
-    })
-    .to_string()
+    // Binary reply: the body rides raw at `data.bytes`.
+    let mut header = json!({ "type": "reply", "id": id, "data": reply });
+    header["_binary_path"] = json!("data.bytes");
+    let wire = fantastic_io_bridge::codec::encode_binary_frame(&header, &body);
+    let _ = bin_tx.send(wire).await;
 }
 
 async fn handle_binary_frame(
     state: &AppState,
     client_id: &AgentId,
     out_tx: &tokio::sync::mpsc::Sender<String>,
+    bin_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
     pending_uploads: &Arc<std::sync::Mutex<std::collections::HashMap<String, ChunkBuffer>>>,
     bytes: Vec<u8>,
 ) {
@@ -1494,6 +1518,7 @@ async fn handle_binary_frame(
             state,
             client_id,
             out_tx,
+            bin_tx,
             pending_uploads,
             upload_id,
             header,
@@ -1514,6 +1539,7 @@ async fn handle_binary_frame(
     let kernel = Arc::clone(&state.kernel);
     let sender_for_scope = client_id.clone();
     let out = out_tx.clone();
+    let bin = bin_tx.clone();
     let header_for_dispatch = header.clone();
     tokio::spawn(async move {
         let (reply, body) = fantastic_kernel::send::with_sender(sender_for_scope, async {
@@ -1522,7 +1548,7 @@ async fn handle_binary_frame(
                 .await
         })
         .await;
-        let _ = out.send(binary_reply_frame(id, reply, body)).await;
+        send_binary_reply(&out, &bin, id, reply, body).await;
     });
 }
 
@@ -1602,6 +1628,7 @@ async fn handle_chunked_frame(
     state: &AppState,
     client_id: &AgentId,
     out_tx: &tokio::sync::mpsc::Sender<String>,
+    bin_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
     pending_uploads: &Arc<std::sync::Mutex<std::collections::HashMap<String, ChunkBuffer>>>,
     upload_id: String,
     mut header: Value,
@@ -1721,6 +1748,7 @@ async fn handle_chunked_frame(
             let kernel = Arc::clone(&state.kernel);
             let sender_for_scope = client_id.clone();
             let out = out_tx.clone();
+            let bin = bin_tx.clone();
             tokio::spawn(async move {
                 let (reply, body) = fantastic_kernel::send::with_sender(sender_for_scope, async {
                     kernel
@@ -1728,7 +1756,7 @@ async fn handle_chunked_frame(
                         .await
                 })
                 .await;
-                let _ = out.send(binary_reply_frame(Some(id), reply, body)).await;
+                send_binary_reply(&out, &bin, Some(id), reply, body).await;
             });
         }
         None => {

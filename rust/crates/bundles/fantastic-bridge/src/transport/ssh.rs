@@ -209,7 +209,11 @@ impl BridgeTransport for SshTransport {
         self.ws_inner.send_frame(frame).await
     }
 
-    async fn recv_frame(&self) -> Result<Value, TransportError> {
+    async fn send_binary(&self, header: Value, body: Vec<u8>) -> Result<(), TransportError> {
+        self.ws_inner.send_binary(header, body).await
+    }
+
+    async fn recv_frame(&self) -> Result<super::Frame, TransportError> {
         self.ws_inner.recv_frame().await
     }
 

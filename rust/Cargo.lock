@@ -634,6 +634,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "fantastic-io-bridge",
  "fantastic-kernel",
  "fantastic-web-rest",
  "fantastic-web-ws",

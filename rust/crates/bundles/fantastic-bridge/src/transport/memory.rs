@@ -5,7 +5,7 @@
 //! signals the peer's `recv_frame` to resolve with
 //! `ConnectionClosed`, matching how a real socket would behave.
 
-use super::{BridgeTransport, TransportError};
+use super::{BridgeTransport, Frame, TransportError};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, Mutex, Notify};
 
 /// One half of an in-process bridge pair.
 pub struct MemoryTransport {
-    out: mpsc::Sender<Value>,
-    inbox: Mutex<mpsc::Receiver<Value>>,
+    out: mpsc::Sender<Frame>,
+    inbox: Mutex<mpsc::Receiver<Frame>>,
     /// Set when THIS half closes — used to short-circuit our own
     /// subsequent sends + to notify the peer's `recv_frame`.
     own_close: Arc<Notify>,
@@ -35,8 +35,8 @@ impl MemoryTransport {
     pub fn pair() -> (Arc<Self>, Arc<Self>) {
         // 64 is generous for tests — every frame is one JSON object
         // and the bridge round-trips never fan beyond a handful.
-        let (tx_ab, rx_ab) = mpsc::channel::<Value>(64);
-        let (tx_ba, rx_ba) = mpsc::channel::<Value>(64);
+        let (tx_ab, rx_ab) = mpsc::channel::<Frame>(64);
+        let (tx_ba, rx_ba) = mpsc::channel::<Frame>(64);
         let close_a = Arc::new(Notify::new());
         let close_b = Arc::new(Notify::new());
         let closed_a = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -59,11 +59,9 @@ impl MemoryTransport {
         });
         (a, b)
     }
-}
 
-#[async_trait]
-impl BridgeTransport for MemoryTransport {
-    async fn send_frame(&self, frame: Value) -> Result<(), TransportError> {
+    /// Shared send for both frame kinds — closed-state check + queue.
+    async fn send_any(&self, frame: Frame) -> Result<(), TransportError> {
         use std::sync::atomic::Ordering;
         if self.own_closed.load(Ordering::SeqCst) || self.peer_closed.load(Ordering::SeqCst) {
             return Err(TransportError::ConnectionClosed(
@@ -75,8 +73,19 @@ impl BridgeTransport for MemoryTransport {
             .await
             .map_err(|e| TransportError::ConnectionClosed(format!("send: {e}")))
     }
+}
 
-    async fn recv_frame(&self) -> Result<Value, TransportError> {
+#[async_trait]
+impl BridgeTransport for MemoryTransport {
+    async fn send_frame(&self, frame: Value) -> Result<(), TransportError> {
+        self.send_any(Frame::Text(frame)).await
+    }
+
+    async fn send_binary(&self, header: Value, body: Vec<u8>) -> Result<(), TransportError> {
+        self.send_any(Frame::Binary(header, body)).await
+    }
+
+    async fn recv_frame(&self) -> Result<Frame, TransportError> {
         use std::sync::atomic::Ordering;
         let mut inbox = self.inbox.lock().await;
         loop {

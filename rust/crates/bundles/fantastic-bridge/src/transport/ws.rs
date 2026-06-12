@@ -11,8 +11,9 @@
 //! state owns that, since it needs the inbound frames routed to its
 //! `kernel.send` dispatcher + pending oneshot map.
 
-use super::{BridgeTransport, TransportError};
+use super::{BridgeTransport, Frame, TransportError};
 use async_trait::async_trait;
+use fantastic_io_bridge::codec::{decode_binary_frame, encode_binary_frame};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// sink (guarded by a Mutex so concurrent sends serialize cleanly).
 pub struct WsTransport {
     sink: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
-    rx: Mutex<mpsc::Receiver<Result<Value, TransportError>>>,
+    rx: Mutex<mpsc::Receiver<Result<Frame, TransportError>>>,
     reader_task: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -62,14 +63,19 @@ impl WsTransport {
             }
         };
         let (sink, mut source) = stream.split();
-        let (tx, rx) = mpsc::channel::<Result<Value, TransportError>>(64);
+        let (tx, rx) = mpsc::channel::<Result<Frame, TransportError>>(64);
         let reader = tokio::spawn(async move {
             while let Some(msg) = source.next().await {
                 let frame_result = match msg {
+                    // Text WS message → a plain JSON envelope.
                     Ok(Message::Text(t)) => serde_json::from_str::<Value>(&t)
+                        .map(Frame::Text)
                         .map_err(|e| TransportError::Other(format!("ws decode: {e}"))),
-                    Ok(Message::Binary(b)) => serde_json::from_slice::<Value>(&b)
-                        .map_err(|e| TransportError::Other(format!("ws decode: {e}"))),
+                    // Binary WS message → the `[4B len|header|body]` codec frame
+                    // (a read_stream/write_stream chunk — raw bytes, no base64).
+                    Ok(Message::Binary(b)) => decode_binary_frame(&b)
+                        .map(|(h, body)| Frame::Binary(h, body))
+                        .map_err(|e| TransportError::Other(format!("ws binary decode: {e}"))),
                     Ok(Message::Close(_)) => {
                         let _ = tx
                             .send(Err(TransportError::ConnectionClosed(
@@ -109,7 +115,15 @@ impl BridgeTransport for WsTransport {
             .map_err(|e| TransportError::ConnectionClosed(format!("ws send: {e}")))
     }
 
-    async fn recv_frame(&self) -> Result<Value, TransportError> {
+    async fn send_binary(&self, header: Value, body: Vec<u8>) -> Result<(), TransportError> {
+        let wire = encode_binary_frame(&header, &body);
+        let mut sink = self.sink.lock().await;
+        sink.send(Message::Binary(wire))
+            .await
+            .map_err(|e| TransportError::ConnectionClosed(format!("ws send binary: {e}")))
+    }
+
+    async fn recv_frame(&self) -> Result<Frame, TransportError> {
         let mut rx = self.rx.lock().await;
         match rx.recv().await {
             Some(r) => r,

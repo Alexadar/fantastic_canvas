@@ -136,6 +136,10 @@ impl OnceLockBridgeMap {
     }
 }
 
+/// A pending forward's reply channel — carries `(reply, body)` (the body is the
+/// raw chunk for a `read_stream` forward, empty otherwise) or an error string.
+type PendingReply = oneshot::Sender<Result<(Value, Vec<u8>), String>>;
+
 /// Per-agent bridge runtime. Cloneable through an `Arc` so the read
 /// loop can hold one reference and the verb handlers can hold
 /// another without lifetime gymnastics.
@@ -146,7 +150,7 @@ pub(crate) struct BridgeState {
     pub(crate) transport: Arc<dyn BridgeTransport>,
     pub(crate) transport_kind: String,
     pub(crate) read_task: AsyncMutex<Option<JoinHandle<()>>>,
-    pub(crate) pending: Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>,
+    pub(crate) pending: Mutex<HashMap<String, PendingReply>>,
     pub(crate) corr_counter: AtomicU64,
     /// The per-leg INGRESS rule (default `AllowAll`); consulted by the read loop
     /// before dispatching an inbound `call` — the single auth choke point.
@@ -193,6 +197,44 @@ async fn dispatch(
     Ok(Some(reply))
 }
 
+/// Shared BINARY dispatch — `forward` carrying a raw request chunk
+/// (`write_stream` over the wire). The local caller does
+/// `send_with_binary(<bridge>, {type:forward, target, payload, timeout?}, blob)`;
+/// the bridge ships a binary `call` frame and returns `(reply, reply_body)` (the
+/// reply body is the raw chunk for a `read_stream` forward). Any non-`forward`
+/// binary verb routes through the text dispatch (its blob is unused).
+async fn dispatch_binary(
+    family: Family,
+    agent_id: &AgentId,
+    header: Value,
+    blob: Vec<u8>,
+    kernel: &Arc<Kernel>,
+) -> Result<(Reply, Vec<u8>), BundleError> {
+    let verb = header.get("type").and_then(Value::as_str).unwrap_or("");
+    if verb != "forward" {
+        let reply = dispatch(family, agent_id, &header, kernel).await?;
+        return Ok((reply, Vec::new()));
+    }
+    let target = header
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let inner = header.get("payload").cloned().unwrap_or(Value::Null);
+    if target.is_empty() || !inner.is_object() {
+        return Ok((
+            Some(json!({"error": "bridge.forward: target (str) + payload (object) required"})),
+            Vec::new(),
+        ));
+    }
+    let timeout_secs = header
+        .get("timeout")
+        .and_then(Value::as_f64)
+        .unwrap_or(DEFAULT_FORWARD_TIMEOUT_SECS);
+    let (v, body) = forward_core(agent_id, &target, inner, blob, true, timeout_secs).await;
+    Ok((Some(v), body))
+}
+
 #[async_trait]
 impl Bundle for WsBridgeBundle {
     fn name(&self) -> &str {
@@ -208,6 +250,15 @@ impl Bundle for WsBridgeBundle {
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         dispatch(Family::Ws, agent_id, payload, kernel).await
+    }
+    async fn handle_binary(
+        &self,
+        agent_id: &AgentId,
+        header: Value,
+        blob: Vec<u8>,
+        kernel: &Arc<Kernel>,
+    ) -> Result<(Reply, Vec<u8>), BundleError> {
+        dispatch_binary(Family::Ws, agent_id, header, blob, kernel).await
     }
     async fn on_delete(&self, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Result<(), BundleError> {
         let _ = shutdown_reply(agent_id, kernel).await;
@@ -230,6 +281,15 @@ impl Bundle for CloudBridgeBundle {
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         dispatch(Family::Cloud, agent_id, payload, kernel).await
+    }
+    async fn handle_binary(
+        &self,
+        agent_id: &AgentId,
+        header: Value,
+        blob: Vec<u8>,
+        kernel: &Arc<Kernel>,
+    ) -> Result<(Reply, Vec<u8>), BundleError> {
+        dispatch_binary(Family::Cloud, agent_id, header, blob, kernel).await
     }
     async fn on_delete(&self, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Result<(), BundleError> {
         let _ = shutdown_reply(agent_id, kernel).await;
@@ -562,7 +622,7 @@ async fn shutdown_reply(agent_id: &AgentId, _kernel: &Arc<Kernel>) -> Value {
     state.transport.close().await;
     // Reject every in-flight forward — same semantics as the
     // Python branch: callers see a ConnectionError flavour.
-    let pending: Vec<oneshot::Sender<Result<Value, String>>> = {
+    let pending: Vec<PendingReply> = {
         let mut p = state.pending.lock().expect("pending poisoned");
         p.drain().map(|(_k, v)| v).collect()
     };
@@ -590,21 +650,40 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
         .get("timeout")
         .and_then(Value::as_f64)
         .unwrap_or(DEFAULT_FORWARD_TIMEOUT_SECS);
+    let _ = kernel; // peer_id no longer wraps the frame (asymmetric raw call)
+    // TEXT forward — no request body; the reply body (if any) is dropped here
+    // because the text channel can't carry it (a binary forward uses
+    // `handle_binary`, which preserves the reply body).
+    forward_core(agent_id, target, inner, Vec::new(), false, timeout_secs)
+        .await
+        .0
+}
 
+/// The shared forward engine — ships a raw `call` frame (text or binary) to the
+/// remote's web_ws and awaits the correlated reply. Returns `(reply, body)`;
+/// `body` is empty for a text reply, the raw chunk for a binary one
+/// (`read_stream` over the wire). Errors surface as `{error}` in the reply.
+async fn forward_core(
+    agent_id: &AgentId,
+    target: &str,
+    inner: Value,
+    body: Vec<u8>,
+    is_binary: bool,
+    timeout_secs: f64,
+) -> (Value, Vec<u8>) {
     let state = match BRIDGES.lock().get(agent_id).cloned() {
         Some(s) => s,
         None => {
-            return json!({
-                "error": "bridge.forward: not connected (call boot first)"
-            })
+            return (
+                json!({"error": "bridge.forward: not connected (call boot first)"}),
+                Vec::new(),
+            )
         }
     };
-
-    let _ = kernel; // peer_id no longer wraps the frame (asymmetric raw call)
     let n = state.corr_counter.fetch_add(1, Ordering::SeqCst) + 1;
     let corr = format!("{}:{}", agent_id, n);
 
-    let (tx, rx) = oneshot::channel::<Result<Value, String>>();
+    let (tx, rx) = oneshot::channel::<Result<(Value, Vec<u8>), String>>();
     state
         .pending
         .lock()
@@ -625,45 +704,33 @@ async fn forward_reply(agent_id: &AgentId, payload: &Value, kernel: &Arc<Kernel>
     if let Some(token) = state.egress.credential() {
         frame["auth_token"] = json!(token);
     }
-    if let Err(e) = state.transport.send_frame(frame).await {
-        state
-            .pending
-            .lock()
-            .expect("pending poisoned")
-            .remove(&corr);
-        return json!({"error": format!("bridge.forward: send failed: {e}")});
+    let send_res = if is_binary {
+        // The request body rides raw at `payload.bytes` (a python peer reinserts
+        // it there; the inner payload's bytes field stays null on the wire).
+        frame["_binary_path"] = json!("payload.bytes");
+        state.transport.send_binary(frame, body).await
+    } else {
+        state.transport.send_frame(frame).await
+    };
+    if let Err(e) = send_res {
+        state.pending.lock().expect("pending poisoned").remove(&corr);
+        return (
+            json!({"error": format!("bridge.forward: send failed: {e}")}),
+            Vec::new(),
+        );
     }
 
     // Wait for the reply with a timeout. On EITHER timeout OR
     // close-rejection we clean the pending slot so it doesn't leak.
     let dur = std::time::Duration::from_secs_f64(timeout_secs.max(0.001));
-    match tokio::time::timeout(dur, rx).await {
-        Ok(Ok(Ok(v))) => v,
-        Ok(Ok(Err(e))) => {
-            state
-                .pending
-                .lock()
-                .expect("pending poisoned")
-                .remove(&corr);
-            json!({"error": format!("bridge.forward: {e}")})
-        }
-        Ok(Err(_canceled)) => {
-            state
-                .pending
-                .lock()
-                .expect("pending poisoned")
-                .remove(&corr);
-            json!({"error": "bridge.forward: pending dropped"})
-        }
-        Err(_elapsed) => {
-            state
-                .pending
-                .lock()
-                .expect("pending poisoned")
-                .remove(&corr);
-            json!({"error": format!("bridge.forward: timeout after {timeout_secs}s")})
-        }
-    }
+    let err = match tokio::time::timeout(dur, rx).await {
+        Ok(Ok(Ok((v, b)))) => return (v, b),
+        Ok(Ok(Err(e))) => format!("bridge.forward: {e}"),
+        Ok(Err(_canceled)) => "bridge.forward: pending dropped".to_string(),
+        Err(_elapsed) => format!("bridge.forward: timeout after {timeout_secs}s"),
+    };
+    state.pending.lock().expect("pending poisoned").remove(&corr);
+    (json!({ "error": err }), Vec::new())
 }
 
 /// `watch_remote` / `unwatch_remote`: send `{type:"watch"|"unwatch",
@@ -703,6 +770,12 @@ async fn read_loop(agent_id: AgentId, state: Arc<BridgeState>, kernel: Arc<Kerne
             Err(TransportError::ConnectionClosed(_)) => break,
             Err(_) => break,
         };
+        // Normalize text/binary into (envelope, body, is_binary). For a binary
+        // frame the envelope's bytes path is null + the raw body travels here.
+        let (frame, body, is_binary) = match frame {
+            transport::Frame::Text(v) => (v, Vec::new(), false),
+            transport::Frame::Binary(h, b) => (h, b, true),
+        };
         let ftype = frame.get("type").and_then(Value::as_str).unwrap_or("");
         match ftype {
             "call" => {
@@ -730,21 +803,42 @@ async fn read_loop(agent_id: AgentId, state: Arc<BridgeState>, kernel: Arc<Kerne
                     // the `auth_token` rides the frame envelope, not the payload
                     token: frame.get("auth_token").and_then(Value::as_str),
                 });
-                let reply = if target.is_empty() {
-                    json!({"error": "bridge: empty call target"})
+                if target.is_empty() {
+                    let _ = state
+                        .transport
+                        .send_frame(json!({"type":"reply","id":corr_id,
+                            "data":{"error":"bridge: empty call target"}}))
+                        .await;
                 } else if let Decision::Deny(reason) = decision {
-                    json!({"error": reason, "reason": "unauthorized"})
+                    let _ = state
+                        .transport
+                        .send_frame(json!({"type":"reply","id":corr_id,
+                            "data":{"error":reason,"reason":"unauthorized"}}))
+                        .await;
+                } else if is_binary {
+                    // Binary call — the body is the request chunk. Dispatch on the
+                    // binary channel; the reply may carry a body (read_stream).
+                    let (data, reply_body) = kernel
+                        .send_with_binary(&AgentId::from(target.as_str()), inner, body)
+                        .await;
+                    if reply_body.is_empty() {
+                        let _ = state
+                            .transport
+                            .send_frame(json!({"type":"reply","id":corr_id,"data":data}))
+                            .await;
+                    } else {
+                        // Binary reply frame — body rides raw at `data.bytes`.
+                        let mut env = json!({"type":"reply","id":corr_id,"data":data});
+                        env["_binary_path"] = json!("data.bytes");
+                        let _ = state.transport.send_binary(env, reply_body).await;
+                    }
                 } else {
-                    kernel.send(&AgentId::from(target.as_str()), inner).await
-                };
-                let _ = state
-                    .transport
-                    .send_frame(json!({
-                        "type": "reply",
-                        "id": corr_id,
-                        "data": reply,
-                    }))
-                    .await;
+                    let reply = kernel.send(&AgentId::from(target.as_str()), inner).await;
+                    let _ = state
+                        .transport
+                        .send_frame(json!({"type":"reply","id":corr_id,"data":reply}))
+                        .await;
+                }
             }
             "event" => {
                 // Remote `watch` delivery — re-emit on this bridge's
@@ -760,7 +854,8 @@ async fn read_loop(agent_id: AgentId, state: Arc<BridgeState>, kernel: Arc<Kerne
                 let data = frame.get("data").cloned().unwrap_or(Value::Null);
                 let tx = state.pending.lock().expect("pending poisoned").remove(id);
                 if let Some(tx) = tx {
-                    let _ = tx.send(Ok(data));
+                    // Carry the reply body alongside (empty for a text reply).
+                    let _ = tx.send(Ok((data, body)));
                 }
             }
             "error" => {
@@ -786,7 +881,7 @@ async fn read_loop(agent_id: AgentId, state: Arc<BridgeState>, kernel: Arc<Kerne
 
     // Read loop exit — emit bridge_down + fail every pending oneshot.
     kernel.emit(&agent_id, json!({"type": "bridge_down"})).await;
-    let drained: Vec<oneshot::Sender<Result<Value, String>>> = {
+    let drained: Vec<PendingReply> = {
         let mut p = state.pending.lock().expect("pending poisoned");
         p.drain().map(|(_k, v)| v).collect()
     };

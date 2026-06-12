@@ -269,7 +269,8 @@ async fn watch_remote_sends_watch_frame() {
     let frame = peer
         .recv_frame()
         .await
-        .expect("peer should receive a frame");
+        .expect("peer should receive a frame")
+        .into_value();
     assert_eq!(frame["type"], "watch");
     assert_eq!(frame["src"], "remote_core");
 
@@ -434,7 +435,7 @@ async fn cloud_bridge_tls_loopback_round_trip() {
         .await
         .unwrap();
     assert_eq!(
-        tb.recv_frame().await.unwrap(),
+        tb.recv_frame().await.unwrap().into_value(),
         json!({"type": "call", "id": "1", "target": "x"})
     );
     // keepalive is dropped; the real reply (and a >64KB frame) surface intact.
@@ -443,7 +444,7 @@ async fn cloud_bridge_tls_loopback_round_trip() {
     tb.send_frame(json!({"type": "reply", "id": "1", "data": {"blob": blob}}))
         .await
         .unwrap();
-    let got = ta.recv_frame().await.unwrap();
+    let got = ta.recv_frame().await.unwrap().into_value();
     assert_eq!(got["data"]["blob"], json!(blob));
 
     ta.close().await;
@@ -628,10 +629,80 @@ async fn deny_inbound_refuses_inbound_call() {
     }))
     .await
     .unwrap();
-    let reply = peer.recv_frame().await.expect("a reply frame");
+    let reply = peer.recv_frame().await.expect("a reply frame").into_value();
     assert_eq!(reply["type"], "reply");
     assert_eq!(reply["id"], "c1");
     assert_eq!(reply["data"]["reason"], "unauthorized", "reply: {reply}");
+
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "shutdown"}))
+        .await;
+}
+
+#[tokio::test]
+async fn binary_call_round_trips_raw_bytes_over_the_bridge() {
+    // 4b: a read_stream/write_stream forwarded over the bridge carries RAW BYTES
+    // (a binary frame), never base64. Drive the inbound side: the `peer` half
+    // pushes binary `call` frames at the bridge's read loop, which dispatches on
+    // the binary channel and replies — write_stream → text status, read_stream →
+    // a BINARY reply frame whose body is the chunk verbatim.
+    let tmp = TempDir::new().unwrap();
+    let kernel = mk_kernel(&tmp).await;
+    // An open file_bridge in the workdir to receive/serve the bytes.
+    kernel
+        .send(
+            &AgentId::from("core"),
+            json!({
+                "type": "create_agent",
+                "handler_module": "file_bridge.tools",
+                "id": "fb",
+                "root": tmp.path().to_string_lossy(),
+                "ingress_rule": "allow_all",
+            }),
+        )
+        .await;
+    let bid = id_for("brg_bin", &tmp);
+    create_bridge_with_auth(&kernel, &bid, "stand_in", "allow_all").await;
+    let peer = inject_one(&AgentId::from(bid.as_str()));
+    let _ = kernel
+        .send(&AgentId::from(bid.as_str()), json!({"type": "boot"}))
+        .await;
+
+    // Non-UTF-8 bytes — proves it's raw, not text/base64.
+    let payload: Vec<u8> = vec![0x00, 0xFF, 0xCA, 0xFE, 0xBA, 0xBE, 0x10, 0x80];
+
+    // write_stream via a binary inbound call.
+    peer.send_binary(
+        json!({"type":"call","id":"w1","target":"fb",
+               "payload":{"type":"write_stream","path":"blob.bin","truncate":true}}),
+        payload.clone(),
+    )
+    .await
+    .unwrap();
+    let w = peer
+        .recv_frame()
+        .await
+        .expect("write reply")
+        .into_value();
+    assert_eq!(w["type"], "reply");
+    assert_eq!(w["data"]["written"], payload.len(), "write reply: {w}");
+
+    // read_stream via a binary inbound call → reply is a BINARY frame.
+    peer.send_binary(
+        json!({"type":"call","id":"r1","target":"fb",
+               "payload":{"type":"read_stream","path":"blob.bin"}}),
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    match peer.recv_frame().await.expect("read reply") {
+        crate::transport::Frame::Binary(header, body) => {
+            assert_eq!(header["id"], "r1");
+            assert_eq!(header["data"]["eof"], true);
+            assert_eq!(body, payload, "bytes must round-trip raw over the bridge");
+        }
+        crate::transport::Frame::Text(v) => panic!("expected a binary reply, got text: {v}"),
+    }
 
     let _ = kernel
         .send(&AgentId::from(bid.as_str()), json!({"type": "shutdown"}))
@@ -673,7 +744,7 @@ async fn deny_inbound_default_refuses_inbound_call() {
     }))
     .await
     .unwrap();
-    let reply = peer.recv_frame().await.expect("a reply frame");
+    let reply = peer.recv_frame().await.expect("a reply frame").into_value();
     assert_eq!(reply["type"], "reply");
     assert_eq!(
         reply["data"]["reason"], "unauthorized",
@@ -723,7 +794,7 @@ async fn password_gate_checks_inbound_and_presents_on_forward() {
     }))
     .await
     .unwrap();
-    let good = peer.recv_frame().await.expect("a reply frame");
+    let good = peer.recv_frame().await.expect("a reply frame").into_value();
     assert_eq!(
         good["data"]["id"], "core",
         "valid token should dispatch: {good}"
@@ -736,7 +807,7 @@ async fn password_gate_checks_inbound_and_presents_on_forward() {
     }))
     .await
     .unwrap();
-    let bad = peer.recv_frame().await.expect("a reply frame");
+    let bad = peer.recv_frame().await.expect("a reply frame").into_value();
     assert_eq!(bad["data"]["reason"], "unauthorized", "wrong token: {bad}");
 
     // (3) the leg PRESENTS its group token on its own outbound forward (envelope,
@@ -751,7 +822,7 @@ async fn password_gate_checks_inbound_and_presents_on_forward() {
         )
         .await
     });
-    let out = peer.recv_frame().await.expect("an outbound call frame");
+    let out = peer.recv_frame().await.expect("an outbound call frame").into_value();
     assert_eq!(out["type"], "call");
     assert_eq!(
         out["auth_token"], "s3cret",
@@ -814,7 +885,7 @@ async fn asymmetric_ingress_egress_via_engine() {
     }))
     .await
     .unwrap();
-    let denied = peer.recv_frame().await.expect("a reply frame");
+    let denied = peer.recv_frame().await.expect("a reply frame").into_value();
     assert_eq!(
         denied["data"]["reason"], "unauthorized",
         "deny inbound: {denied}"
@@ -830,7 +901,7 @@ async fn asymmetric_ingress_egress_via_engine() {
         )
         .await
     });
-    let out = peer.recv_frame().await.expect("an outbound call frame");
+    let out = peer.recv_frame().await.expect("an outbound call frame").into_value();
     assert_eq!(out["auth_token"], "fleet", "egress should present: {out}");
     peer.send_frame(json!({"type": "reply", "id": out["id"], "data": {"ok": true}}))
         .await

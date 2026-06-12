@@ -57,6 +57,32 @@ impl fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+/// One frame on the wire. A **text** frame is plain JSON (the call/reply/event
+/// envelopes); a **binary** frame carries a JSON header PLUS a raw body (a
+/// `read_stream`/`write_stream` chunk) — raw bytes, never base64. The
+/// text/binary split is carried by the TRANSPORT (WS frame type; a 1-byte tag
+/// on the cloud_bridge TLS record), matching the shared `io_bridge` codec.
+#[derive(Debug)]
+pub enum Frame {
+    /// A JSON envelope with no raw bytes.
+    Text(Value),
+    /// A JSON header + a raw body. The header carries `_binary_path` naming
+    /// where the body belongs (so a python peer reinserts it); rust uses the
+    /// body alongside the header directly (its `Value` can't hold bytes).
+    Binary(Value, Vec<u8>),
+}
+
+impl Frame {
+    /// The JSON envelope (a text frame's value, or a binary frame's header).
+    /// Convenience for callers/tests that only need the envelope fields.
+    pub fn into_value(self) -> Value {
+        match self {
+            Frame::Text(v) => v,
+            Frame::Binary(h, _) => h,
+        }
+    }
+}
+
 /// Unified send/recv/close surface every transport implements.
 ///
 /// Implementations are object-safe (`Arc<dyn BridgeTransport>`) so
@@ -64,15 +90,23 @@ impl std::error::Error for TransportError {}
 /// dispatch path on transport kind.
 #[async_trait]
 pub trait BridgeTransport: Send + Sync {
-    /// Push a frame to the peer. Returns when the bytes are
+    /// Push a TEXT frame to the peer. Returns when the bytes are
     /// queued (memory) / sent over the socket (ws).
     async fn send_frame(&self, frame: Value) -> Result<(), TransportError>;
 
-    /// Pull the next inbound frame. Blocks until one arrives.
-    /// Returns [`TransportError::ConnectionClosed`] on peer
-    /// hang-up — the bridge's read-loop watches for this as the
-    /// signal to wind down.
-    async fn recv_frame(&self) -> Result<Value, TransportError>;
+    /// Push a BINARY frame (`[4B len|header|body]` over a WS binary message /
+    /// the TLS record with a binary tag). Default: refuse — only stream-capable
+    /// transports (memory/ws/ssh/cloud) override it.
+    async fn send_binary(&self, _header: Value, _body: Vec<u8>) -> Result<(), TransportError> {
+        Err(TransportError::Other(
+            "transport does not carry binary frames".into(),
+        ))
+    }
+
+    /// Pull the next inbound frame (text or binary). Blocks until one arrives.
+    /// Returns [`TransportError::ConnectionClosed`] on peer hang-up — the
+    /// bridge's read-loop watches for this as the signal to wind down.
+    async fn recv_frame(&self) -> Result<Frame, TransportError>;
 
     /// Idempotent close. Subsequent `recv_frame` resolves with
     /// `ConnectionClosed`; subsequent `send_frame` likewise.
