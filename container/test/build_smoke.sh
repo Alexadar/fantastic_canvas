@@ -37,16 +37,24 @@ freeport() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0))
 PYBIN=/opt/fantastic/venv/bin/fantastic
 RUSTBIN=/opt/fantastic/bin/fantastic-rust
 compose_web() {
+  # Wire the persistence PROVIDER first — a file_bridge@.fantastic (open). Python
+  # AND rust auto-persist records ONLY through a discovered store now (RAM if
+  # unwired), so without this the web/web_ws/rest one-shots would never reach disk
+  # and the daemon would boot empty. The store self-persists (survives to the next
+  # one-shot). Idempotent across the calls below.
+  $ENGINE run --rm -v "$1:/work" -w /work --entrypoint "$2" "$TAG" "$3" create_agent handler_module=file_bridge.tools id=store root=.fantastic ingress_rule=allow_all >/dev/null 2>&1
   $ENGINE run --rm -v "$1:/work" -w /work --entrypoint "$2" "$TAG" "$3" create_agent handler_module=web.tools id=web "port=$4" >/dev/null 2>&1
   $ENGINE run --rm -v "$1:/work" -w /work --entrypoint "$2" "$TAG" web create_agent handler_module=web_ws.tools id=web_ws ingress_rule=allow_all >/dev/null 2>&1
   $ENGINE run --rm -v "$1:/work" -w /work --entrypoint "$2" "$TAG" web create_agent handler_module=web_rest.tools id=rest ingress_rule=allow_all >/dev/null 2>&1
 }
 
-# Compose a read-only file_bridge over the baked head dir + open it. The head
-# page is then served the ONE gated way — `/head/file/index.html` via read_stream
-# — with no FANTASTIC_WEB_INDEX env back-channel. $1=workdir $2=bin $3=root
+# Serve the head page the ONE gated way — `/head/file/index.html` via read_stream,
+# no FANTASTIC_WEB_INDEX env. The file_bridge clamps every root INSIDE the running
+# dir (=/work), so the baked head is first COPIED into the workdir, then served by
+# a read-only file_bridge rooted at the relative `head`. $1=workdir $2=bin $3=root
 compose_head() {
-  $ENGINE run --rm -v "$1:/work" -w /work --entrypoint "$2" "$TAG" "$3" create_agent handler_module=file_bridge.tools id=head root=/opt/fantastic/head readonly=true ingress_rule=allow_all >/dev/null 2>&1
+  $ENGINE run --rm -v "$1:/work" --entrypoint sh "$TAG" -c 'mkdir -p /work/head && cp /opt/fantastic/head/index.html /work/head/index.html' >/dev/null 2>&1
+  $ENGINE run --rm -v "$1:/work" -w /work --entrypoint "$2" "$TAG" "$3" create_agent handler_module=file_bridge.tools id=head root=head readonly=true ingress_rule=allow_all >/dev/null 2>&1
 }
 
 # ── build ──────────────────────────────────────────────────────────────────

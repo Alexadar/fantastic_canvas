@@ -195,11 +195,14 @@ GitHub URL), baked at `/opt/fantastic/head/index.html`. On EVERY runtime the web
 `/` is the live **agent-tree index** — the kernel's own web owns no `fs` surface, so
 there is no `FANTASTIC_WEB_INDEX`/`FANTASTIC_HEAD` env that reads a landing file off
 disk (deleted to match Python; what Python deletes, rust + swift delete). To show
-the head, serve it the one gated way — a read-only `file_bridge` over the head dir:
+the head, serve it the one gated way — a read-only `file_bridge`. The fs edge clamps
+every root INSIDE the running dir, so copy the baked head into the workdir first,
+then root the bridge at the relative dir:
 
 ```sh
+cp /opt/fantastic/head/index.html "$FANTASTIC_WORKDIR/head/"     # into the workdir
 $BIN <web> create_agent handler_module=file_bridge.tools id=head \
-     root=/opt/fantastic/head readonly=true ingress_rule=allow_all
+     root=head readonly=true ingress_rule=allow_all
 # → http://<host>:8088/head/file/index.html  (piped via read_stream, chunked)
 ```
 
