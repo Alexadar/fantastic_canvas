@@ -56,6 +56,16 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from ai_core.context import (
+    ProjectionCtx,
+    budget,
+    estimate_one,
+    estimate_tokens,
+    output_reserve,
+    resolve_context_window,
+)
+from ai_core.strategies import DEFAULT_STRATEGY, get_strategy, strategy_names
+
 # ─── shared module-global state (keyed by agent id) ─────────────
 
 _providers: dict = {}
@@ -82,6 +92,10 @@ _menu_cache: dict[str, list[dict]] = {}
 #   UI can show a pulse indicator (claude-code style).
 _queue: dict[str, list[dict]] = {}
 _current: dict[str, dict] = {}
+
+# Last context-overflow projection per agent (for the `context_status` verb).
+# {fired:bool, strategy?, kept_turns?, dropped_turns?, summarized?}.
+_projection: dict[str, dict] = {}
 
 
 # ─── shared constants ───────────────────────────────────────────
@@ -523,6 +537,95 @@ async def _emit_status(
     )
 
 
+# ─── context-overflow projection (the per-agent strategy) ───────
+
+
+def _recent_n(rec: dict) -> int:
+    try:
+        n = int(rec.get("recent_n"))
+    except (TypeError, ValueError):
+        n = 6
+    return max(1, min(n, 50))
+
+
+def _make_summarizer(provider):
+    """Closure over the backend provider: summarize a span of turns to a string.
+    tools=[] (the summarizer can't tool-call); input is capped so summarizing can't
+    itself blow the window."""
+
+    async def _summarize(msgs: list[dict]) -> str:
+        rendered = "\n".join(
+            f"{m.get('role', '?')}: {str(m.get('content', ''))}" for m in msgs
+        )[:20000]
+        prompt = [
+            {
+                "role": "system",
+                "content": (
+                    "Summarize the conversation excerpt below concisely, PRESERVING "
+                    "names, decisions, facts, preferences, and unresolved tasks. "
+                    "Output ONLY the summary."
+                ),
+            },
+            {"role": "user", "content": rendered},
+        ]
+        parts: list[str] = []
+        async for chunk in provider.chat(prompt, tools=[]):
+            if isinstance(chunk, str):
+                parts.append(chunk)
+        return "".join(parts)
+
+    return _summarize
+
+
+async def _project_context(rec, cfg: Backend, provider, self_id, kernel, messages):
+    """Shape the assembled `messages` to fit the agent's token budget via its configured
+    `context_strategy` (default `compact`). Returns the (possibly trimmed) message list,
+    OR an `{error}` dict when even the system block + the live user turn won't fit (the
+    fixed-overhead failsafe — a failfast, NOT a fallback). Durable store untouched."""
+    b = budget(rec)
+    if estimate_tokens(messages) <= b:
+        _projection[self_id] = {"fired": False}
+        return messages
+    system_block = messages[:1]
+    body = messages[1:]
+    if not body:
+        _projection[self_id] = {"fired": False}
+        return messages
+    sys_tokens = estimate_tokens(system_block)
+    body_budget = b - sys_tokens
+    if body_budget < estimate_one(body[-1]):
+        return {
+            "error": (
+                f"{cfg.name}: context_insufficient — the system prompt ({sys_tokens} "
+                f"tok) leaves no room in the {resolve_context_window(rec)}-token window "
+                "for even one turn; reduce agents/menu or raise context_window"
+            )
+        }
+    strat_name = rec.get("context_strategy", DEFAULT_STRATEGY)
+    strat = get_strategy(strat_name)
+    if strat is None:
+        return {
+            "error": f"{cfg.name}: unknown context_strategy {strat_name!r} "
+            f"(valid: {strategy_names()})"
+        }
+    ctx = ProjectionCtx(
+        budget=body_budget,
+        recent_n=_recent_n(rec),
+        summarize=_make_summarizer(provider),
+        self_id=self_id,
+        kernel=kernel,
+    )
+    projected_body = await strat(body, system_block, rec, ctx)
+    _projection[self_id] = {
+        "fired": True,
+        "strategy": strat_name,
+        "kept_turns": len(projected_body),
+        "dropped_turns": max(0, len(body) - len(projected_body)),
+        "summarized": strat_name in ("compact", "memgpt"),
+    }
+    return system_block + projected_body
+
+
 async def _run(
     self_id: str,
     user_text: str,
@@ -544,6 +647,17 @@ async def _run(
     messages = await _assemble(
         self_id, user_text, kernel, client_id, system_prompt, messages_override
     )
+    # Context-overflow projection: shape what the MODEL sees this turn to fit the
+    # window via the agent's `context_strategy` (default compact). Skipped when the
+    # caller supplies its own `messages` (stateless — it owns the context). Done ONCE
+    # at turn entry, never mid-tool-loop (would orphan role:tool from its assistant).
+    if not stateless:
+        projected = await _project_context(
+            kernel.get(self_id) or {}, cfg, provider, self_id, kernel, messages
+        )
+        if isinstance(projected, dict):  # fixed-overhead failsafe / config error
+            return projected
+        messages = projected
     last_text = ""
 
     # Loop until the model stops emitting tool_calls. Bounded only by
@@ -705,6 +819,8 @@ def _make_reflect(cfg: Backend):
             "model": rec.get("model", cfg.default_model),
             "endpoint": rec.get("endpoint", cfg.default_endpoint),
             "file_bridge_id": rec.get("file_bridge_id"),
+            "context_window": resolve_context_window(rec),
+            "context_strategy": rec.get("context_strategy", DEFAULT_STRATEGY),
             "verbs": {
                 n: (f.__doc__ or "").strip().splitlines()[0]
                 for n, f in cfg._verbs.items()
@@ -891,6 +1007,20 @@ async def _status(id, payload, kernel):
     return _status_snapshot(id, cid)
 
 
+async def _context_status(id, payload, kernel):
+    """No args. The context-budget posture + the last overflow projection. Returns
+    {context_window, output_reserve, budget, strategy, last_projection:{fired, strategy?,
+    kept_turns?, dropped_turns?, summarized?}|null}."""
+    rec = kernel.get(id) or {}
+    return {
+        "context_window": resolve_context_window(rec),
+        "output_reserve": output_reserve(rec),
+        "budget": budget(rec),
+        "strategy": rec.get("context_strategy", DEFAULT_STRATEGY),
+        "last_projection": _projection.get(id),
+    }
+
+
 async def _boot(id, payload, kernel):
     """No-op. Returns None."""
     return None
@@ -973,6 +1103,7 @@ def build(
         "refresh_menu": _refresh_menu,
         **(extra_verbs or {}),
         "status": _status,
+        "context_status": _context_status,
         "boot": _boot,
     }
     cfg._verbs = verbs  # type: ignore[attr-defined]  # reflect lists these
