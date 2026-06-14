@@ -80,6 +80,14 @@ public final class FoundationModelsBackendBundle: AgentBundle, @unchecked Sendab
                         "reason": .string(Self.isAvailable() ? "ok" : Self.unavailableReason()),
                     ]
                 },
+                // Always-inject durable memory: the shared core appends
+                // this AFTER the substrate prompt (primer + menu + send
+                // how-to). Each mounted yaml_state agent's `state_yaml` +
+                // any custom `instructions` meta land in the FM session's
+                // instructions every turn — recall is structural.
+                systemPromptExtra: { agent, kernel in
+                    await Self.fullInstructions(agent: agent, kernel: kernel)
+                },
                 makeProvider: { agent, _, kernel in
                     guard Self.isAvailable() else {
                         return .refused(
@@ -88,11 +96,13 @@ public final class FoundationModelsBackendBundle: AgentBundle, @unchecked Sendab
                                 "reason": .string(Self.unavailableReason()),
                             ]))
                     }
-                    let inst = await Self.fullInstructions(agent: agent, kernel: kernel)
+                    // Instructions now flow through the assembled system
+                    // message (extracted by the provider from `messages`);
+                    // the provider needs only temperature + the kernel for
+                    // its native universal `send` tool.
                     let temp = Self.temperature(agent: agent)
                     return .provider(
-                        FoundationModelsProvider(
-                            instructions: inst, temperature: temp, kernel: kernel))
+                        FoundationModelsProvider(temperature: temp, kernel: kernel))
                 }
             ))
         coreBox.value = core

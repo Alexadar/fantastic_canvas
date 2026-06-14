@@ -41,6 +41,10 @@ public final class NvidiaNimBundle: AgentBundle, @unchecked Sendable {
                 // turn, and its `done` error path keeps `accumulated`.
                 persistToolCalls: true,
                 includeAccumulatedOnError: true,
+                // OpenAI shape: tool-call arguments are a JSON string;
+                // dispatch the batch serially (matches the Rust NIM port).
+                toolArgsAsJson: true,
+                parallelTools: false,
                 reflectExtra: { agent in
                     [
                         "host": .string(Self.host(agent: agent)),

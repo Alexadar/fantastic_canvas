@@ -59,6 +59,13 @@ public final class AIBackend: @unchecked Sendable {
     private let stateLock = NSLock()
     private var inFlight: Int = 0
 
+    /// Lazy per-agent "menu of capabilities" cache (id → reflected
+    /// peers). `nil`/absent means "rebuild on the next assemble". The
+    /// `refresh_menu` verb + each tool batch invalidate it. Mirrors the
+    /// Rust `BackendState.menu` / Python `_menu_cache`.
+    private let menuLock = NSLock()
+    private var menuCache: [String: [JSON]] = [:]
+
     init(config: AIBackendConfig) {
         self.config = config
     }
@@ -88,6 +95,9 @@ public final class AIBackend: @unchecked Sendable {
             return historyVerb(agent: agent, payload: payload)
         case "interrupt":
             return interruptVerb(payload: payload)
+        case "refresh_menu":
+            invalidateMenu(agentId)
+            return .object(["refreshed": .bool(true)])
         case "backend_state":
             return backendStateReply(agent: agent)
         default:
@@ -149,10 +159,11 @@ public final class AIBackend: @unchecked Sendable {
             key: historyKey(agent: agent.id, client: clientId),
             message: userTurn(id: userMessageId, text: text))
 
-        // Pre-fetch tools registry — identical across all backends.
-        let toolsReply = await kernel.send(
-            "tools", .object(["type": .string("list_for_llm")]))
-        let tools = toolsReply["tools"].asArray ?? []
+        // The single universal `send` tool — reaches every agent + verb
+        // (matches Python `[SEND_TOOL]` / Rust `vec![send_tool_def()]`).
+        // No `list_for_llm` registry: capability is discovered via the
+        // assembled menu + reflect, dispatched through this one tool.
+        let tools = [sendToolDef()]
 
         // Stateless backends do NOT feed prior history back as context.
         let historySnapshot =
@@ -167,7 +178,7 @@ public final class AIBackend: @unchecked Sendable {
                 provider: provider,
                 streamId: streamId,
                 messageId: messageId,
-                agentId: agent.id,
+                agent: agent,
                 clientId: clientId,
                 history: historySnapshot,
                 userText: text,
@@ -188,13 +199,14 @@ public final class AIBackend: @unchecked Sendable {
         provider: any AIProvider,
         streamId: String,
         messageId: String,
-        agentId: AgentId,
+        agent: Agent,
         clientId: String,
         history: [JSON],
         userText: String,
         tools: [JSON],
         kernel: Kernel
     ) async {
+        let agentId = agent.id
         defer {
             clearStreamCancel(streamId)
             bumpInFlight(-1)
@@ -204,73 +216,230 @@ public final class AIBackend: @unchecked Sendable {
         // that fire mid-stream are detected via `startedAt < epoch`.
         let startedAtEpoch = currentEpoch()
 
-        // Assemble messages: prior history (empty when stateless) + the
-        // new user turn (model shape — no `complete`/`id` bookkeeping).
-        var messages: [JSON] = history
+        // Rebuild the system block every turn from the live substrate
+        // (primer + self-reflect + agent menu + send how-to + per-backend
+        // extra). Prepended to prior history (empty when stateless) and
+        // the new user turn. The system block is NOT persisted — only the
+        // user/assistant/tool turns flow into history.
+        let systemContent = await assembleSystemPrompt(agent: agent, kernel: kernel)
+        var messages: [JSON] = [
+            .object(["role": .string("system"), "content": .string(systemContent)])
+        ]
+        messages.append(contentsOf: history)
         messages.append(
-            .object([
-                "role": .string("user"),
-                "content": .string(userText),
-            ]))
+            .object(["role": .string("user"), "content": .string(userText)]))
 
-        var accumulated = ""
-        var toolCalls: [JSON] = []
+        // The agentic loop: stream a pass, dispatch any tool-calls back
+        // through the kernel, feed the results in, repeat until the model
+        // stops emitting tools. FM yields no tool-calls (Apple runs them
+        // inside the session), so it runs exactly one pass. Mirrors Rust
+        // `run_generation` / Python `_run`.
+        var accumulated = ""  // generation-wide, for the UI token stream
+        var lastText = ""  // current pass text → the final assistant turn
+        var newTurns: [JSON] = []  // assistant/tool turns to persist at the end
+        var cancelled = false
 
-        do {
-            let stream = provider.chat(messages: messages, tools: tools)
-            for try await chunk in stream {
-                if isStreamCancelled(streamId: streamId, startedAt: startedAtEpoch) {
-                    await provider.stop()
-                    if config.emitInterruptedError {
-                        // FM shape: terminal `done{error:"interrupted"}`,
-                        // partial turn NOT persisted.
-                        await emitDone(
-                            kernel: kernel, agentId: agentId,
-                            streamId: streamId, messageId: messageId,
-                            clientId: clientId, accumulated: accumulated,
-                            error: "interrupted")
-                        return
+        loop: while true {
+            var passText = ""
+            var passToolCalls: [JSON] = []
+            do {
+                let stream = provider.chat(messages: messages, tools: tools)
+                for try await chunk in stream {
+                    if isStreamCancelled(streamId: streamId, startedAt: startedAtEpoch) {
+                        await provider.stop()
+                        if config.emitInterruptedError {
+                            // FM shape: terminal `done{error:"interrupted"}`,
+                            // partial turn NOT persisted.
+                            await emitDone(
+                                kernel: kernel, agentId: agentId,
+                                streamId: streamId, messageId: messageId,
+                                clientId: clientId, accumulated: accumulated,
+                                error: "interrupted")
+                            return
+                        }
+                        cancelled = true
+                        break
                     }
-                    break
-                }
-                switch chunk {
-                case .token(let delta):
-                    accumulated += delta
-                    await kernel.emit(
-                        agentId,
-                        .object([
-                            "type": .string("token"),
-                            "stream_id": .string(streamId),
-                            "message_id": .string(messageId),
-                            "delta": .string(delta),
-                            "accumulated": .string(accumulated),
-                            "client_id": .string(clientId),
-                        ]))
-                case .toolCall(let call):
-                    if config.persistToolCalls {
-                        toolCalls.append(call)
+                    switch chunk {
+                    case .token(let delta):
+                        accumulated += delta
+                        passText += delta
+                        await kernel.emit(
+                            agentId,
+                            .object([
+                                "type": .string("token"),
+                                "stream_id": .string(streamId),
+                                "message_id": .string(messageId),
+                                "delta": .string(delta),
+                                "accumulated": .string(accumulated),
+                                "client_id": .string(clientId),
+                            ]))
+                    case .toolCall(let call):
+                        passToolCalls.append(call)
                     }
                 }
+            } catch {
+                await emitDone(
+                    kernel: kernel, agentId: agentId,
+                    streamId: streamId, messageId: messageId,
+                    clientId: clientId, accumulated: accumulated,
+                    error: "\(error)")
+                return
             }
-        } catch {
-            await emitDone(
-                kernel: kernel, agentId: agentId,
-                streamId: streamId, messageId: messageId,
-                clientId: clientId, accumulated: accumulated,
-                error: "\(error)")
-            return
+            lastText = passText
+
+            // No tools (or interrupted) → this pass is the final answer.
+            if passToolCalls.isEmpty || cancelled { break loop }
+
+            // Record the assistant turn carrying its tool-calls (the
+            // provider's own OpenAI-shaped chunks, echoed verbatim so the
+            // next pass sees a well-formed conversation), then dispatch
+            // each call through the kernel and feed the replies back.
+            let assistantTurnWithTools: JSON = .object([
+                "role": .string("assistant"),
+                "content": .string(passText),
+                "tool_calls": .array(passToolCalls),
+            ])
+            messages.append(assistantTurnWithTools)
+            newTurns.append(assistantTurnWithTools)
+
+            let results = await dispatchToolCalls(
+                passToolCalls, parallel: config.parallelTools, kernel: kernel)
+            messages.append(contentsOf: results)
+            newTurns.append(contentsOf: results)
+
+            // The population may have changed (a tool created/deleted an
+            // agent) — rebuild the menu before the next pass.
+            invalidateMenu(agentId)
         }
 
-        // Append assistant turn to history.
+        // Append the intermediate tool turns + the final assistant turn
+        // to history (the UI bubble log + next-turn context).
+        for t in newTurns {
+            appendHistory(key: historyKey(agent: agentId, client: clientId), message: t)
+        }
         appendHistory(
             key: historyKey(agent: agentId, client: clientId),
-            message: assistantTurn(
-                id: messageId, content: accumulated, toolCalls: toolCalls))
+            message: assistantTurn(id: messageId, content: lastText, toolCalls: []))
 
         await emitDone(
             kernel: kernel, agentId: agentId,
             streamId: streamId, messageId: messageId,
             clientId: clientId, accumulated: accumulated, error: nil)
+    }
+
+    // MARK: - prompt assembly + tool dispatch
+
+    /// Rebuild the system prompt from the live substrate: lean primer
+    /// (id-index of the tree + bundle catalog), the agent's own
+    /// self-reflect, the lazy menu of peers, the universal `send` how-to,
+    /// and any per-backend extra (FM's always-inject memory). Mirrors
+    /// Rust `assemble_messages` / Python `_assemble`.
+    func assembleSystemPrompt(agent: Agent, kernel: Kernel) async -> String {
+        let selfId = agent.id
+        let primer = await kernel.send(
+            AgentId("core"),
+            .object([
+                "type": .string("reflect"),
+                "tree": .string("ids"),
+                "bundles": .string("ids"),
+            ]))
+        let me = await kernel.send(
+            selfId, .object(["type": .string("reflect"), "tree": .string("none")]))
+
+        // Lazy menu: rebuild only on a cache miss.
+        let menu: [JSON]
+        if let cached = cachedMenu(selfId.value) {
+            menu = cached
+        } else {
+            let built = await buildMenu(selfId: selfId, kernel: kernel)
+            storeMenu(selfId.value, built)
+            menu = built
+        }
+
+        var blocks: [String] = [
+            renderReflect(primer),
+            "You are `\(selfId.value)`. " + renderReflect(me),
+            renderMenu(menu),
+            SEND_HOWTO,
+        ]
+        let extra = await config.systemPromptExtra(agent, kernel)
+        if !extra.isEmpty { blocks.append(extra) }
+        return blocks.joined(separator: "\n\n")
+    }
+
+    /// Drop an agent's cached menu so the next assemble rebuilds it.
+    private func invalidateMenu(_ id: AgentId) {
+        menuLock.lock()
+        defer { menuLock.unlock() }
+        menuCache[id.value] = nil
+    }
+
+    /// Synchronous menu-cache accessors (NSLock can't span `await`).
+    private func cachedMenu(_ id: String) -> [JSON]? {
+        menuLock.lock()
+        defer { menuLock.unlock() }
+        return menuCache[id]
+    }
+
+    private func storeMenu(_ id: String, _ menu: [JSON]) {
+        menuLock.lock()
+        defer { menuLock.unlock() }
+        menuCache[id] = menu
+    }
+
+    /// Dispatch one provider tool-call (always the universal `send`)
+    /// through the kernel and shape the `role:tool` reply message. The
+    /// call's `function.arguments` may be a JSON string (OpenAI/NIM) or a
+    /// parsed object (ollama) — both resolve to `{target_id, payload}`.
+    private func dispatchToolCall(_ call: JSON, kernel: Kernel) async -> JSON {
+        let id = call["id"].asString ?? ""
+        let fn = call["function"]
+        let name = fn["name"].asString ?? "send"
+        let rawArgs = fn["arguments"]
+        var args: JSON = .object([:])
+        if let s = rawArgs.asString {
+            args = (try? JSON.parse(s)) ?? .object([:])
+        } else if rawArgs.asObject != nil {
+            args = rawArgs
+        }
+        let target = args["target_id"].asString ?? ""
+        let payload = args["payload"]
+        let reply: JSON
+        if target.isEmpty {
+            reply = .object(["error": .string("empty target_id")])
+        } else {
+            reply = await kernel.send(AgentId(target), payload)
+        }
+        return .object([
+            "role": .string("tool"),
+            "tool_call_id": .string(id),
+            "name": .string(name),
+            "content": .string(reply.serialize()),
+        ])
+    }
+
+    /// Dispatch a batch of tool-calls, preserving model-emitted order in
+    /// the returned `role:tool` messages. Concurrent when `parallel`
+    /// (ollama / FM), serial otherwise (NIM).
+    private func dispatchToolCalls(
+        _ calls: [JSON], parallel: Bool, kernel: Kernel
+    ) async -> [JSON] {
+        if !parallel {
+            var out: [JSON] = []
+            for c in calls {
+                out.append(await dispatchToolCall(c, kernel: kernel))
+            }
+            return out
+        }
+        return await withTaskGroup(of: (Int, JSON).self) { group in
+            for (i, c) in calls.enumerated() {
+                group.addTask { (i, await self.dispatchToolCall(c, kernel: kernel)) }
+            }
+            var indexed: [(Int, JSON)] = []
+            for await r in group { indexed.append(r) }
+            return indexed.sorted { $0.0 < $1.0 }.map { $0.1 }
+        }
     }
 
     /// Emit the terminal `done` event. On the error path, `accumulated`
