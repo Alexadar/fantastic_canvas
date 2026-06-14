@@ -92,6 +92,47 @@ private final class MockBundle: AgentBundle, @unchecked Sendable {
     }
 }
 
+/// In-memory file_bridge stand-in: dict-backed `read`/`write` so the AI
+/// backend's real `file_bridge_id` persistence path is exercised without
+/// touching disk (a real file_bridge is integration-tested elsewhere).
+private final class MockFileBridge: AgentBundle, @unchecked Sendable {
+    let name = "mock_file_bridge"
+    private let lock = NSLock()
+    private var files: [String: String] = [:]
+
+    private func get(_ path: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return files[path]
+    }
+    private func put(_ path: String, _ content: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        files[path] = content
+    }
+
+    func handle(agentId: AgentId, payload: JSON, kernel: Kernel) async throws -> JSON? {
+        switch payload["type"].asString ?? "" {
+        case "reflect":
+            return .object([
+                "id": .string(agentId.value), "sentence": .string("mock fs"),
+                "kind": .string("file_bridge"), "verbs": .object([:]),
+            ])
+        case "read":
+            let path = payload["path"].asString ?? ""
+            return get(path).map { .object(["content": .string($0)]) }
+                ?? .object(["error": .string("not found")])
+        case "write":
+            let path = payload["path"].asString ?? ""
+            let content = payload["content"].asString ?? ""
+            put(path, content)
+            return .object(["written": .integer(Int64(content.utf8.count))])
+        default:
+            return .object(["error": .string("unknown verb")])
+        }
+    }
+}
+
 private func baseConfig(
     stateless: Bool = false,
     persistToolCalls: Bool = false,
@@ -122,16 +163,26 @@ private func baseConfig(
 private func freshMockKernel(config: AIBackendConfig) async throws -> (Kernel, AgentId) {
     let registry = BundleRegistry()
     registry.register("mock_backend.tools", MockBundle(config: config))
+    registry.register("mock_file_bridge.tools", MockFileBridge())
     let kernel = Kernel(storage: .inMemory, bundles: registry)
     let root = Agent(id: AgentId("core"), handlerModule: nil, parentId: nil)
     kernel.register(root)
     kernel.setRoot(root)
+    // A file_bridge store so chat history persists through file_bridge_id.
+    _ = await kernel.send(
+        AgentId("core"),
+        .object([
+            "type": .string("create_agent"),
+            "handler_module": .string("mock_file_bridge.tools"),
+            "id": .string("store"),
+        ]))
     let r = await kernel.send(
         AgentId("core"),
         .object([
             "type": .string("create_agent"),
             "handler_module": .string("mock_backend.tools"),
             "id": .string("mock"),
+            "file_bridge_id": .string("store"),
         ]))
     return (kernel, AgentId(r["id"].asString ?? "mock"))
 }
@@ -353,6 +404,63 @@ struct AIBackendTests {
             id, .object(["type": .string("history"), "client_id": .string("c2")]))
         #expect((h2["messages"].asArray ?? []).isEmpty)
         #expect(h2["client_id"].asString == "c2")
+    }
+
+    @Test func historyPersistsAcrossTurnsThroughFileBridge() async throws {
+        // Two sends on one client: turn 2's persisted history must carry
+        // turn 1 (the load→save round-trip through file_bridge_id).
+        let (kernel, id) = try await freshMockKernel(
+            config: baseConfig { .provider(MockProvider(tokens: ["x"])) })
+        _ = await kernel.send(
+            id,
+            .object([
+                "type": .string("send"), "text": .string("one"),
+                "client_id": .string("c"),
+            ]))
+        try await waitForHistory(kernel: kernel, id: id, client: "c", count: 2)
+        _ = await kernel.send(
+            id,
+            .object([
+                "type": .string("send"), "text": .string("two"),
+                "client_id": .string("c"),
+            ]))
+        try await waitForHistory(kernel: kernel, id: id, client: "c", count: 4)
+        let msgs =
+            (await kernel.send(
+                id, .object(["type": .string("history"), "client_id": .string("c")])))[
+                "messages"
+            ].asArray ?? []
+        #expect(msgs.count == 4)
+        #expect(msgs[0]["content"].asString == "one")
+        #expect(msgs[1]["role"].asString == "assistant")
+        #expect(msgs[2]["content"].asString == "two")
+        #expect(msgs[3]["role"].asString == "assistant")
+    }
+
+    @Test func historyStaysEmptyWithoutFileBridge() async throws {
+        // No file_bridge_id wired ⇒ no persistence (RAM-empty), NOT a
+        // silent fallback. The send still streams; history just doesn't
+        // accumulate.
+        let registry = BundleRegistry()
+        registry.register(
+            "mock_backend.tools", MockBundle(config: baseConfig { .provider(MockProvider()) }))
+        let kernel = Kernel(storage: .inMemory, bundles: registry)
+        let root = Agent(id: AgentId("core"), handlerModule: nil, parentId: nil)
+        kernel.register(root)
+        kernel.setRoot(root)
+        let r = await kernel.send(
+            AgentId("core"),
+            .object([
+                "type": .string("create_agent"),
+                "handler_module": .string("mock_backend.tools"), "id": .string("naked"),
+            ]))
+        let id = AgentId(r["id"].asString ?? "naked")
+        _ = await kernel.send(
+            id, .object(["type": .string("send"), "text": .string("hi")]))
+        // Give the stream a beat, then confirm history is still empty.
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        let h = await kernel.send(id, .object(["type": .string("history")]))
+        #expect((h["messages"].asArray ?? []).isEmpty)
     }
 }
 

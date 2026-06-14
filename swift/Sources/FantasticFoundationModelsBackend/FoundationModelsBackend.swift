@@ -152,6 +152,22 @@ public final class FoundationModelsBackendBundle: AgentBundle, @unchecked Sendab
         // the mounted memory persists. No store wired ⇒ field omitted (the
         // memory is RAM-only and `set` failfasts — no silent fallback).
         let storeId = kernel.findStore()?.value
+
+        // Self-wire THIS backend's own `file_bridge_id` to the same store
+        // so the shared core persists chat history through it (FM is
+        // self-bootstrapping — it already self-mounts memory + discovers
+        // the store; ollama/NIM expect the operator to set this). Only when
+        // absent + a store exists; no store ⇒ history stays RAM-empty.
+        if let storeId, kernel.agent(agentId)?.metaValue(forKey: "file_bridge_id") == nil {
+            _ = await kernel.send(
+                agentId,
+                .object([
+                    "type": .string("update_agent"),
+                    "id": .string(agentId.value),
+                    "file_bridge_id": .string(storeId),
+                ]))
+        }
+
         for mode in ["mem", "data"] where !have.contains(mode) {
             var rec: JSON = .object([
                 "type": .string("create_agent"),

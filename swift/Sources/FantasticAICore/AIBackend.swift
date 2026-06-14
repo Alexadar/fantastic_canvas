@@ -39,9 +39,20 @@ public func buildAIBackend(_ config: AIBackendConfig) -> AIBackend {
 public final class AIBackend: @unchecked Sendable {
     public let config: AIBackendConfig
 
-    /// Per-(agent_id, client_id) chat history.
-    private let historyLock = NSLock()
-    private var history: [String: [JSON]] = [:]
+    /// Per-`send` wall-clock ceiling. A generation that streams past this
+    /// is force-stopped with a terminal `done{error:"send: timeout …"}`.
+    /// Bounds runaway tool loops / a stuck provider. Mirrors Python
+    /// `SEND_TIMEOUT` / Rust `SEND_TIMEOUT_SECS` (default 180s; the env
+    /// override `FANTASTIC_AI_SEND_TIMEOUT` is read once at init).
+    public static let defaultSendTimeoutSeconds: Double = 180
+    private let sendTimeoutSeconds: Double = {
+        if let raw = ProcessInfo.processInfo.environment["FANTASTIC_AI_SEND_TIMEOUT"],
+            let v = Double(raw), v > 0
+        {
+            return v
+        }
+        return AIBackend.defaultSendTimeoutSeconds
+    }()
 
     /// Cancellation state — epoch-bump pattern (lifted verbatim from
     /// the FM backend, which had the most robust version). `interrupt`
@@ -92,7 +103,7 @@ public final class AIBackend: @unchecked Sendable {
         case "send":
             return await sendVerb(agent: agent, payload: payload, kernel: kernel)
         case "history":
-            return historyVerb(agent: agent, payload: payload)
+            return await historyVerb(agent: agent, payload: payload, kernel: kernel)
         case "interrupt":
             return interruptVerb(payload: payload)
         case "refresh_menu":
@@ -153,11 +164,15 @@ public final class AIBackend: @unchecked Sendable {
         let messageId = "msg_\(UUID().uuidString.prefix(8))"
         let userMessageId = "msg_\(UUID().uuidString.prefix(8))"
 
-        // Append user turn to history. Stateless backends (FM) carry an
-        // `id` on each row (UI bubble identity); ollama/NIM don't.
-        appendHistory(
-            key: historyKey(agent: agent.id, client: clientId),
-            message: userTurn(id: userMessageId, text: text))
+        // Load the persisted chat through the bound file_bridge (empty if
+        // none wired / first turn), then persist it WITH the new user turn
+        // immediately so the turn survives even if the stream dies. The
+        // user row carries `id` only for stateless backends (FM bubble
+        // identity); ollama/NIM don't.
+        let prior = await loadHistory(agent: agent, client: clientId, kernel: kernel)
+        let userTurnRow = userTurn(id: userMessageId, text: text)
+        let persistBase = prior + [userTurnRow]
+        await saveHistory(agent: agent, client: clientId, kernel: kernel, rows: persistBase)
 
         // The single universal `send` tool — reaches every agent + verb
         // (matches Python `[SEND_TOOL]` / Rust `vec![send_tool_def()]`).
@@ -165,11 +180,9 @@ public final class AIBackend: @unchecked Sendable {
         // assembled menu + reflect, dispatched through this one tool.
         let tools = [sendToolDef()]
 
-        // Stateless backends do NOT feed prior history back as context.
-        let historySnapshot =
-            config.stateless
-            ? []
-            : readHistory(key: historyKey(agent: agent.id, client: clientId))
+        // Stateless backends (FM) do NOT feed prior history back as model
+        // context (it stays UI-only); the others do.
+        let modelHistory = config.stateless ? [] : prior
 
         bumpInFlight(+1)
         Task { [weak self, weak kernel] in
@@ -180,7 +193,8 @@ public final class AIBackend: @unchecked Sendable {
                 messageId: messageId,
                 agent: agent,
                 clientId: clientId,
-                history: historySnapshot,
+                modelHistory: modelHistory,
+                persistBase: persistBase,
                 userText: text,
                 tools: tools,
                 kernel: kernel
@@ -201,7 +215,8 @@ public final class AIBackend: @unchecked Sendable {
         messageId: String,
         agent: Agent,
         clientId: String,
-        history: [JSON],
+        modelHistory: [JSON],
+        persistBase: [JSON],
         userText: String,
         tools: [JSON],
         kernel: Kernel
@@ -215,6 +230,7 @@ public final class AIBackend: @unchecked Sendable {
         // Snapshot the cancel epoch before the first token so interrupts
         // that fire mid-stream are detected via `startedAt < epoch`.
         let startedAtEpoch = currentEpoch()
+        let deadline = Date().addingTimeInterval(sendTimeoutSeconds)
 
         // Rebuild the system block every turn from the live substrate
         // (primer + self-reflect + agent menu + send how-to + per-backend
@@ -225,7 +241,7 @@ public final class AIBackend: @unchecked Sendable {
         var messages: [JSON] = [
             .object(["role": .string("system"), "content": .string(systemContent)])
         ]
-        messages.append(contentsOf: history)
+        messages.append(contentsOf: modelHistory)
         messages.append(
             .object(["role": .string("user"), "content": .string(userText)]))
 
@@ -245,6 +261,15 @@ public final class AIBackend: @unchecked Sendable {
             do {
                 let stream = provider.chat(messages: messages, tools: tools)
                 for try await chunk in stream {
+                    if Date() > deadline {
+                        await provider.stop()
+                        await emitDone(
+                            kernel: kernel, agentId: agentId,
+                            streamId: streamId, messageId: messageId,
+                            clientId: clientId, accumulated: accumulated,
+                            error: "send: timeout after \(Int(sendTimeoutSeconds))s")
+                        return
+                    }
                     if isStreamCancelled(streamId: streamId, startedAt: startedAtEpoch) {
                         await provider.stop()
                         if config.emitInterruptedError {
@@ -313,14 +338,16 @@ public final class AIBackend: @unchecked Sendable {
             invalidateMenu(agentId)
         }
 
-        // Append the intermediate tool turns + the final assistant turn
-        // to history (the UI bubble log + next-turn context).
-        for t in newTurns {
-            appendHistory(key: historyKey(agent: agentId, client: clientId), message: t)
-        }
-        appendHistory(
-            key: historyKey(agent: agentId, client: clientId),
-            message: assistantTurn(id: messageId, content: lastText, toolCalls: []))
+        // Persist the full chat: base (prior + user turn, already saved at
+        // send time) + the intermediate tool turns + the final assistant
+        // turn. One write of the whole conversation (matches Rust/Python
+        // `save_history`). The error / FM-interrupt / timeout paths return
+        // earlier and leave the send-time base (with just the user turn)
+        // as the persisted record.
+        let finalRows =
+            persistBase + newTurns
+            + [assistantTurn(id: messageId, content: lastText, toolCalls: [])]
+        await saveHistory(agent: agent, client: clientId, kernel: kernel, rows: finalRows)
 
         await emitDone(
             kernel: kernel, agentId: agentId,
@@ -469,9 +496,9 @@ public final class AIBackend: @unchecked Sendable {
 
     // MARK: - history / interrupt
 
-    private func historyVerb(agent: Agent, payload: JSON) -> JSON {
+    private func historyVerb(agent: Agent, payload: JSON, kernel: Kernel) async -> JSON {
         let clientId = payload["client_id"].asString ?? "cli"
-        let messages = readHistory(key: historyKey(agent: agent.id, client: clientId))
+        let messages = await loadHistory(agent: agent, client: clientId, kernel: kernel)
         return .object([
             "messages": .array(messages),
             "client_id": .string(clientId),
@@ -513,24 +540,60 @@ public final class AIBackend: @unchecked Sendable {
         return .object(row)
     }
 
-    // MARK: - history helpers (NSLock-protected)
+    // MARK: - history persistence (routed through file_bridge_id)
 
-    private func historyKey(agent: AgentId, client: String) -> String {
-        "\(agent.value)|\(client)"
+    /// The bound file_bridge agent id, if the operator (ollama / NIM) or
+    /// the backend's own boot (FM) wired one. No id ⇒ no persistence
+    /// (history stays empty across turns) — the canonical "no provider ⇒
+    /// nothing persisted", NOT a fallback.
+    private func fileBridgeId(_ agent: Agent) -> String? {
+        agent.metaValue(forKey: "file_bridge_id")?.asString
     }
 
-    private func appendHistory(key: String, message: JSON) {
-        historyLock.lock()
-        defer { historyLock.unlock() }
-        var arr = history[key] ?? []
-        arr.append(message)
-        history[key] = arr
+    /// Trim + sanitise a client id so it's safe as a filename suffix.
+    /// Mirrors Rust `safe_client` / Python `_safe_client`.
+    private func safeClient(_ clientId: String) -> String {
+        let trimmed = clientId.trimmingCharacters(in: .whitespaces)
+        let raw = trimmed.isEmpty ? "cli" : trimmed
+        let mapped = raw.map { c -> Character in
+            (c.isLetter || c.isNumber || c == "." || c == "_" || c == "-") ? c : "_"
+        }
+        let out = String(mapped.prefix(64))
+        return out.isEmpty ? "cli" : out
     }
 
-    private func readHistory(key: String) -> [JSON] {
-        historyLock.lock()
-        defer { historyLock.unlock() }
-        return history[key] ?? []
+    /// Per-client chat thread, STORE-RELATIVE (`agents/<id>/…`) so wiring
+    /// `file_bridge_id` to the `.fantastic` store lands the sidecar next
+    /// to the agent's own record. Matches Rust/Python `chat_path`.
+    private func chatPath(_ id: AgentId, _ client: String) -> String {
+        "agents/\(id.value)/chat_\(safeClient(client)).json"
+    }
+
+    /// Load a client's persisted chat via the bound file_bridge. Empty on
+    /// no provider / missing file / unparseable.
+    private func loadHistory(agent: Agent, client: String, kernel: Kernel) async -> [JSON] {
+        guard let fid = fileBridgeId(agent) else { return [] }
+        let r = await kernel.send(
+            AgentId(fid),
+            .object(["type": .string("read"), "path": .string(chatPath(agent.id, client))]))
+        guard let content = r["content"].asString,
+            let parsed = try? JSON.parse(content),
+            let arr = parsed.asArray
+        else { return [] }
+        return arr
+    }
+
+    /// Persist a client's full chat via the bound file_bridge. No-op when
+    /// no provider is wired (matches Rust's ignore-on-unset).
+    private func saveHistory(agent: Agent, client: String, kernel: Kernel, rows: [JSON]) async {
+        guard let fid = fileBridgeId(agent) else { return }
+        _ = await kernel.send(
+            AgentId(fid),
+            .object([
+                "type": .string("write"),
+                "path": .string(chatPath(agent.id, client)),
+                "content": .string(JSON.array(rows).serialize()),
+            ]))
     }
 
     // MARK: - cancellation (epoch-bump) + in-flight
