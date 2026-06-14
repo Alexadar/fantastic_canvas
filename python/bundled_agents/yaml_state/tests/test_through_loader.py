@@ -14,11 +14,17 @@ async def test_memory_works_through_loader_end_to_end(seeded_kernel, store_agent
     mem = (
         await seeded_kernel.send(
             "kernel_state",
-            {"type": "create_agent", "handler_module": "yaml_state.tools", "mode": "mem"},
+            {
+                "type": "create_agent",
+                "handler_module": "yaml_state.tools",
+                "mode": "mem",
+            },
         )
     )["id"]
     # 2. remember a fact.
-    s = await seeded_kernel.send(mem, {"type": "set", "key": "user.name", "value": "Ada"})
+    s = await seeded_kernel.send(
+        mem, {"type": "set", "key": "user.name", "value": "Ada"}
+    )
     assert s.get("set") is True, s
     # 3. it landed on disk, THROUGH the loader, next to the agent's record.
     on_disk = Path(".fantastic") / "agents" / mem / "state.yaml"
@@ -33,7 +39,11 @@ async def test_no_store_is_a_loud_failure_not_silent_ram(seeded_kernel):
     mem = (
         await seeded_kernel.send(
             "kernel_state",
-            {"type": "create_agent", "handler_module": "yaml_state.tools", "mode": "mem"},
+            {
+                "type": "create_agent",
+                "handler_module": "yaml_state.tools",
+                "mode": "mem",
+            },
         )
     )["id"]
     r = await seeded_kernel.send(mem, {"type": "set", "key": "k", "value": "v"})
