@@ -6,15 +6,17 @@ from __future__ import annotations
 
 from ai_core.strategies.base import STRATEGY
 from ai_core.strategies.compact import compact
-from ai_core.strategies.memgpt import memgpt
 from ai_core.strategies.truncate import truncate
 
+# NOTE: `memgpt` was removed. Its only distinct behavior was injecting a memory-pressure
+# WARNING turn at compaction; that persist nudge is now UNIVERSAL — carried by the one
+# canonical context-notice the seam composes for EVERY strategy (`core._context_notice`).
+# A separate strategy for it would be a second mechanism (NO-FALLBACKS).
 DEFAULT_STRATEGY = "compact"
 
 _STRATEGIES: dict[str, STRATEGY] = {
     "compact": compact,
     "truncate": truncate,
-    "memgpt": memgpt,
 }
 
 

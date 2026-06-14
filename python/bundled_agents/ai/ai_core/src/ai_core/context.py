@@ -76,7 +76,7 @@ class ProjectionCtx:
     `budget` here is the budget for the conversation BODY (the window budget minus
     the already-measured system block) — strategies fit the body to it. `summarize`
     is a closure over the backend provider (None for backends that can't summarize);
-    only `compact`/`memgpt` use it.
+    only `compact` uses it.
     """
 
     budget: int
