@@ -25,23 +25,31 @@ private final class MockProvider: AIProvider, @unchecked Sendable {
     private let lock = NSLock()
     private var passes: [[AIChunk]]
     let throwsError: Bool
+    /// Per-chunk delay (ns) so a generation can be observed in-flight.
+    let chunkDelayNanos: UInt64
 
     /// Single-pass convenience: tokens only, no tool-calls.
-    init(model: String = "mock-1", tokens: [String] = ["Hel", "lo"], throwsError: Bool = false) {
+    init(
+        model: String = "mock-1", tokens: [String] = ["Hel", "lo"],
+        throwsError: Bool = false, chunkDelayNanos: UInt64 = 0
+    ) {
         self.model = model
         self.passes = [tokens.map { .token($0) }]
         self.throwsError = throwsError
+        self.chunkDelayNanos = chunkDelayNanos
     }
 
     /// Multi-pass: drive the agentic loop with scripted tool-calls.
-    init(model: String = "mock-1", passes: [[AIChunk]]) {
+    init(model: String = "mock-1", passes: [[AIChunk]], chunkDelayNanos: UInt64 = 0) {
         self.model = model
         self.passes = passes
         self.throwsError = false
+        self.chunkDelayNanos = chunkDelayNanos
     }
 
     func chat(messages: [JSON], tools: [JSON]) -> AsyncThrowingStream<AIChunk, Error> {
         let throwsError = throwsError
+        let chunkDelayNanos = chunkDelayNanos
         lock.lock()
         let pass = passes.isEmpty ? [] : passes.removeFirst()
         lock.unlock()
@@ -51,7 +59,10 @@ private final class MockProvider: AIProvider, @unchecked Sendable {
                     continuation.finish(throwing: MockError.boom)
                     return
                 }
-                for c in pass { continuation.yield(c) }
+                for c in pass {
+                    if chunkDelayNanos > 0 { try? await Task.sleep(nanoseconds: chunkDelayNanos) }
+                    continuation.yield(c)
+                }
                 continuation.finish()
             }
         }
@@ -461,6 +472,108 @@ struct AIBackendTests {
         try? await Task.sleep(nanoseconds: 60_000_000)
         let h = await kernel.send(id, .object(["type": .string("history")]))
         #expect((h["messages"].asArray ?? []).isEmpty)
+    }
+
+    @Test func statusIdleShapeWhenNothingInFlight() async throws {
+        let (kernel, id) = try await freshMockKernel(
+            config: baseConfig { .provider(MockProvider()) })
+        let s = await kernel.send(
+            id, .object(["type": .string("status"), "client_id": .string("c")]))
+        #expect(s["source"].asString == id.value)
+        #expect(s["generating"].asBool == false)
+        #expect(s["current"].isNull)
+        #expect((s["mine_pending"].asArray ?? []).isEmpty)
+        #expect(s["others_pending"].asInt == 0)
+    }
+
+    @Test func statusReflectsInFlightForOwner() async throws {
+        // A slow stream stays in-flight long enough to observe `status`.
+        let (kernel, id) = try await freshMockKernel(
+            config: baseConfig {
+                .provider(
+                    MockProvider(tokens: ["a", "b", "c"], chunkDelayNanos: 40_000_000))
+            })
+        _ = await kernel.send(
+            id,
+            .object([
+                "type": .string("send"), "text": .string("hi there"),
+                "client_id": .string("c"),
+            ]))
+        // Poll until the generation is in-flight.
+        var snap: JSON = .null
+        for _ in 0..<50 {
+            let s = await kernel.send(
+                id, .object(["type": .string("status"), "client_id": .string("c")]))
+            if s["generating"].asBool == true {
+                snap = s
+                break
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(snap["generating"].asBool == true)
+        let cur = snap["current"]
+        #expect(cur["is_mine"].asBool == true)
+        #expect(cur["text"].asString == "hi there")  // owner sees own text
+        #expect(["thinking", "streaming", "tool_calling"].contains(cur["phase"].asString ?? ""))
+    }
+
+    @Test func statusRedactsOtherClientsText() async throws {
+        let (kernel, id) = try await freshMockKernel(
+            config: baseConfig {
+                .provider(MockProvider(tokens: ["a", "b"], chunkDelayNanos: 40_000_000))
+            })
+        _ = await kernel.send(
+            id,
+            .object([
+                "type": .string("send"), "text": .string("secret"),
+                "client_id": .string("owner"),
+            ]))
+        // A DIFFERENT client polls — must not see the owner's text.
+        var cur: JSON = .null
+        for _ in 0..<50 {
+            let s = await kernel.send(
+                id, .object(["type": .string("status"), "client_id": .string("nosy")]))
+            if s["generating"].asBool == true {
+                cur = s["current"]
+                break
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(cur["is_mine"].asBool == false)
+        #expect(cur["text"].asString == nil)  // redacted
+        #expect(cur["phase"].asString != nil)  // phase still visible
+    }
+
+    @Test func fifoSerializesConcurrentSendsKeepingHistoryIntact() async throws {
+        // Two overlapping sends on one client. FIFO serialization keeps
+        // the load→save of chat history race-free: both turns survive.
+        let (kernel, id) = try await freshMockKernel(
+            config: baseConfig {
+                .provider(MockProvider(tokens: ["x"], chunkDelayNanos: 20_000_000))
+            })
+        async let a: JSON = kernel.send(
+            id,
+            .object([
+                "type": .string("send"), "text": .string("one"), "client_id": .string("c"),
+            ]))
+        async let b: JSON = kernel.send(
+            id,
+            .object([
+                "type": .string("send"), "text": .string("two"), "client_id": .string("c"),
+            ]))
+        _ = await (a, b)
+        // Both generations: 2 turns each (user + assistant) = 4 rows.
+        try await waitForHistory(kernel: kernel, id: id, client: "c", count: 4)
+        let msgs =
+            (await kernel.send(
+                id, .object(["type": .string("history"), "client_id": .string("c")])))[
+                "messages"
+            ].asArray ?? []
+        #expect(msgs.count == 4)
+        let texts = msgs.filter { $0["role"].asString == "user" }.compactMap {
+            $0["content"].asString
+        }
+        #expect(Set(texts) == ["one", "two"])  // neither turn was clobbered
     }
 }
 

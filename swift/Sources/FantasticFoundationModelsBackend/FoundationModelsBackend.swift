@@ -59,6 +59,8 @@ public final class FoundationModelsBackendBundle: AgentBundle, @unchecked Sendab
                     "history":
                         "args: client_id?. Returns UI bubble log (not fed back to the model).",
                     "interrupt": "args: client_id?. Cancels in-flight stream.",
+                    "status":
+                        "args: client_id?. In-flight phase + this client's pending queue (others' text redacted).",
                     "backend_state": "Reports availability + in-flight count.",
                 ] as JSON,
                 // FM: stateless context, error-shaped interrupt done.

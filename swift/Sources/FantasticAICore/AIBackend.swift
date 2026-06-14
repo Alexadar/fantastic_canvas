@@ -77,9 +77,30 @@ public final class AIBackend: @unchecked Sendable {
     private let menuLock = NSLock()
     private var menuCache: [String: [JSON]] = [:]
 
+    /// Per-agent send coordination (FIFO lock + queue + in-flight entry)
+    /// behind the `status` verb + phase events. Lazily created per id.
+    private let runStatesLock = NSLock()
+    private var runStates: [String: AIAgentRunState] = [:]
+
     init(config: AIBackendConfig) {
         self.config = config
     }
+
+    /// Get (or lazily create) the coordination state for an agent.
+    private func runState(_ id: String) -> AIAgentRunState {
+        runStatesLock.lock()
+        defer { runStatesLock.unlock() }
+        if let s = runStates[id] { return s }
+        let s = AIAgentRunState()
+        runStates[id] = s
+        return s
+    }
+
+    /// Fractional unix seconds — status timestamps + entry ages.
+    private func nowSecs() -> Double { Date().timeIntervalSince1970 }
+
+    /// Opaque id for one user submission (status correlation).
+    private func mintSendId() -> String { "snd_\(UUID().uuidString.prefix(8))" }
 
     // MARK: - Verb dispatch
 
@@ -104,6 +125,8 @@ public final class AIBackend: @unchecked Sendable {
             return await sendVerb(agent: agent, payload: payload, kernel: kernel)
         case "history":
             return await historyVerb(agent: agent, payload: payload, kernel: kernel)
+        case "status":
+            return statusVerb(agentId: agentId, payload: payload)
         case "interrupt":
             return interruptVerb(payload: payload)
         case "refresh_menu":
@@ -164,41 +187,61 @@ public final class AIBackend: @unchecked Sendable {
         let messageId = "msg_\(UUID().uuidString.prefix(8))"
         let userMessageId = "msg_\(UUID().uuidString.prefix(8))"
 
-        // Load the persisted chat through the bound file_bridge (empty if
-        // none wired / first turn), then persist it WITH the new user turn
-        // immediately so the turn survives even if the stream dies. The
-        // user row carries `id` only for stateless backends (FM bubble
-        // identity); ollama/NIM don't.
-        let prior = await loadHistory(agent: agent, client: clientId, kernel: kernel)
-        let userTurnRow = userTurn(id: userMessageId, text: text)
-        let persistBase = prior + [userTurnRow]
-        await saveHistory(agent: agent, client: clientId, kernel: kernel, rows: persistBase)
-
         // The single universal `send` tool — reaches every agent + verb
         // (matches Python `[SEND_TOOL]` / Rust `vec![send_tool_def()]`).
         // No `list_for_llm` registry: capability is discovered via the
         // assembled menu + reflect, dispatched through this one tool.
         let tools = [sendToolDef()]
 
-        // Stateless backends (FM) do NOT feed prior history back as model
-        // context (it stays UI-only); the others do.
-        let modelHistory = config.stateless ? [] : prior
+        // Enqueue this submission. Only ONE generation runs at a time per
+        // agent (FIFO) — concurrent callers queue in arrival order, which
+        // also keeps the file_bridge-persisted history race-free.
+        let sendId = mintSendId()
+        let st = runState(agent.id.value)
+        st.enqueue(
+            AIQueuedEntry(
+                clientId: clientId, text: text, sendId: sendId, queuedAt: nowSecs()))
+
+        // Contention probe (best-effort, like Rust's try_lock): if a
+        // generation already holds the lock, tell the caller it's queued.
+        if await st.fifo.busy() {
+            let ahead = max(0, st.queueDepth() - 1)
+            await kernel.emit(
+                agent.id,
+                .object([
+                    "type": .string("queued"),
+                    "source": .string(agent.id.value),
+                    "send_id": .string(sendId),
+                    "client_id": .string(clientId),
+                ]))
+            await emitStatus(
+                agentId: agent.id, clientId: clientId, phase: "queued", st: st,
+                extraDetail: ["send_id": .string(sendId), "ahead": .integer(Int64(ahead))],
+                kernel: kernel)
+        }
 
         bumpInFlight(+1)
         Task { [weak self, weak kernel] in
             guard let self = self, let kernel = kernel else { return }
+            await st.fifo.acquire()
+            st.popToCurrent(sendId: sendId, startedAt: self.nowSecs(), phase: "thinking")
+            await self.emitStatus(
+                agentId: agent.id, clientId: clientId, phase: "thinking", st: st,
+                kernel: kernel)
             await self.runStream(
                 provider: provider,
                 streamId: streamId,
                 messageId: messageId,
+                userMessageId: userMessageId,
                 agent: agent,
                 clientId: clientId,
-                modelHistory: modelHistory,
-                persistBase: persistBase,
+                st: st,
                 userText: text,
                 tools: tools,
                 kernel: kernel
             )
+            st.clearCurrent()
+            await st.fifo.release()
         }
 
         return .object([
@@ -213,10 +256,10 @@ public final class AIBackend: @unchecked Sendable {
         provider: any AIProvider,
         streamId: String,
         messageId: String,
+        userMessageId: String,
         agent: Agent,
         clientId: String,
-        modelHistory: [JSON],
-        persistBase: [JSON],
+        st: AIAgentRunState,
         userText: String,
         tools: [JSON],
         kernel: Kernel
@@ -232,11 +275,18 @@ public final class AIBackend: @unchecked Sendable {
         let startedAtEpoch = currentEpoch()
         let deadline = Date().addingTimeInterval(sendTimeoutSeconds)
 
+        // Load + persist the user turn UNDER the FIFO lock (we hold it
+        // here), so serialized sends on one client can't race load→save.
+        // The user row carries `id` only for stateless backends (FM bubble
+        // identity); ollama/NIM don't. Stateless keeps history UI-only.
+        let prior = await loadHistory(agent: agent, client: clientId, kernel: kernel)
+        let persistBase = prior + [userTurn(id: userMessageId, text: userText)]
+        await saveHistory(agent: agent, client: clientId, kernel: kernel, rows: persistBase)
+        let modelHistory = config.stateless ? [] : prior
+
         // Rebuild the system block every turn from the live substrate
         // (primer + self-reflect + agent menu + send how-to + per-backend
-        // extra). Prepended to prior history (empty when stateless) and
-        // the new user turn. The system block is NOT persisted — only the
-        // user/assistant/tool turns flow into history.
+        // extra). The system block is NOT persisted.
         let systemContent = await assembleSystemPrompt(agent: agent, kernel: kernel)
         var messages: [JSON] = [
             .object(["role": .string("system"), "content": .string(systemContent)])
@@ -254,15 +304,27 @@ public final class AIBackend: @unchecked Sendable {
         var lastText = ""  // current pass text → the final assistant turn
         var newTurns: [JSON] = []  // assistant/tool turns to persist at the end
         var cancelled = false
+        var iteration = 0
 
         loop: while true {
+            iteration += 1
+            if iteration > 1 {
+                // Re-entering after a tool batch — back to `thinking`.
+                await emitStatus(
+                    agentId: agentId, clientId: clientId, phase: "thinking", st: st,
+                    kernel: kernel)
+            }
             var passText = ""
             var passToolCalls: [JSON] = []
+            var firstToken = true
             do {
                 let stream = provider.chat(messages: messages, tools: tools)
                 for try await chunk in stream {
                     if Date() > deadline {
                         await provider.stop()
+                        await emitStatus(
+                            agentId: agentId, clientId: clientId, phase: "done", st: st,
+                            extraDetail: ["reason": .string("timeout")], kernel: kernel)
                         await emitDone(
                             kernel: kernel, agentId: agentId,
                             streamId: streamId, messageId: messageId,
@@ -275,6 +337,9 @@ public final class AIBackend: @unchecked Sendable {
                         if config.emitInterruptedError {
                             // FM shape: terminal `done{error:"interrupted"}`,
                             // partial turn NOT persisted.
+                            await emitStatus(
+                                agentId: agentId, clientId: clientId, phase: "done", st: st,
+                                extraDetail: ["reason": .string("interrupted")], kernel: kernel)
                             await emitDone(
                                 kernel: kernel, agentId: agentId,
                                 streamId: streamId, messageId: messageId,
@@ -287,8 +352,15 @@ public final class AIBackend: @unchecked Sendable {
                     }
                     switch chunk {
                     case .token(let delta):
+                        if firstToken {
+                            firstToken = false
+                            await emitStatus(
+                                agentId: agentId, clientId: clientId, phase: "streaming",
+                                st: st, kernel: kernel)
+                        }
                         accumulated += delta
                         passText += delta
+                        st.updateCurrent { $0.textSoFar += delta }
                         await kernel.emit(
                             agentId,
                             .object([
@@ -304,6 +376,9 @@ public final class AIBackend: @unchecked Sendable {
                     }
                 }
             } catch {
+                await emitStatus(
+                    agentId: agentId, clientId: clientId, phase: "done", st: st,
+                    extraDetail: ["reason": .string("error")], kernel: kernel)
                 await emitDone(
                     kernel: kernel, agentId: agentId,
                     streamId: streamId, messageId: messageId,
@@ -328,6 +403,13 @@ public final class AIBackend: @unchecked Sendable {
             messages.append(assistantTurnWithTools)
             newTurns.append(assistantTurnWithTools)
 
+            // Phase → tool_calling, noting the first call for `status`.
+            let toolDetail = toolEntry(passToolCalls.first)
+            st.updateCurrent { $0.lastTool = toolDetail }
+            await emitStatus(
+                agentId: agentId, clientId: clientId, phase: "tool_calling", st: st,
+                extraDetail: toolDetail.map { ["tool": $0] } ?? [:], kernel: kernel)
+
             let results = await dispatchToolCalls(
                 passToolCalls, parallel: config.parallelTools, kernel: kernel)
             messages.append(contentsOf: results)
@@ -338,21 +420,137 @@ public final class AIBackend: @unchecked Sendable {
             invalidateMenu(agentId)
         }
 
-        // Persist the full chat: base (prior + user turn, already saved at
-        // send time) + the intermediate tool turns + the final assistant
-        // turn. One write of the whole conversation (matches Rust/Python
-        // `save_history`). The error / FM-interrupt / timeout paths return
-        // earlier and leave the send-time base (with just the user turn)
-        // as the persisted record.
+        // Persist the full chat: base (prior + user turn) + the
+        // intermediate tool turns + the final assistant turn. One write of
+        // the whole conversation (matches Rust/Python `save_history`). The
+        // error / FM-interrupt / timeout paths return earlier and leave the
+        // base (with just the user turn) as the persisted record.
         let finalRows =
             persistBase + newTurns
             + [assistantTurn(id: messageId, content: lastText, toolCalls: [])]
         await saveHistory(agent: agent, client: clientId, kernel: kernel, rows: finalRows)
 
+        await emitStatus(
+            agentId: agentId, clientId: clientId, phase: "done", st: st,
+            extraDetail: ["reason": .string("ok")], kernel: kernel)
         await emitDone(
             kernel: kernel, agentId: agentId,
             streamId: streamId, messageId: messageId,
             clientId: clientId, accumulated: accumulated, error: nil)
+    }
+
+    /// Compact `{call_id, target, verb}` summary of a tool-call chunk for
+    /// the `status` event / snapshot. `nil` when no call.
+    private func toolEntry(_ call: JSON?) -> JSON? {
+        guard let call else { return nil }
+        let fn = call["function"]
+        var args: JSON = .object([:])
+        if let s = fn["arguments"].asString {
+            args = (try? JSON.parse(s)) ?? .object([:])
+        } else if fn["arguments"].asObject != nil {
+            args = fn["arguments"]
+        }
+        return .object([
+            "call_id": .string(call["id"].asString ?? ""),
+            "target": .string(args["target_id"].asString ?? ""),
+            "verb": .string(args["payload"]["type"].asString ?? ""),
+        ])
+    }
+
+    // MARK: - status (verb + phase events)
+
+    /// Broadcast a `status` event AND keep the in-flight entry's phase in
+    /// sync so the on-demand `status` verb agrees. Mirrors Rust
+    /// `emit_status`. Routed on the agent's own inbox (swift's uniform
+    /// token/done delivery), tagged with `client_id`.
+    private func emitStatus(
+        agentId: AgentId,
+        clientId: String,
+        phase: String,
+        st: AIAgentRunState,
+        extraDetail: [String: JSON] = [:],
+        kernel: Kernel
+    ) async {
+        var sendId: String?
+        var startedAt: Double?
+        st.updateCurrent {
+            $0.phase = phase
+            sendId = $0.sendId
+            startedAt = $0.startedAt
+        }
+        var detail: OrderedDictionary<String, JSON> = [:]
+        for (k, v) in extraDetail { detail[k] = v }
+        if let sendId, detail["send_id"] == nil { detail["send_id"] = .string(sendId) }
+        if let startedAt, detail["started_at"] == nil { detail["started_at"] = .double(startedAt) }
+        if detail["queue_depth"] == nil {
+            detail["queue_depth"] = .integer(Int64(st.queueDepth()))
+        }
+        await kernel.emit(
+            agentId,
+            .object([
+                "type": .string("status"),
+                "source": .string(agentId.value),
+                "phase": .string(phase),
+                "detail": .object(detail),
+                "ts": .double(nowSecs()),
+                "client_id": .string(clientId),
+            ]))
+    }
+
+    /// `status` verb — privacy-filtered snapshot of the in-flight entry +
+    /// this client's own pending queue. Other clients' text is redacted.
+    /// Mirrors Rust `status_snapshot`.
+    private func statusVerb(agentId: AgentId, payload: JSON) -> JSON {
+        let requesting = payload["client_id"].asString.map(safeClient)
+        let st = runState(agentId.value)
+        let cur = st.currentSnapshot()
+        let queue = st.queueSnapshot()
+
+        let currentOut: JSON = cur.map { redactEntry($0, requesting: requesting) } ?? .null
+
+        var minePending: [JSON] = []
+        var othersPending = 0
+        for q in queue {
+            if let req = requesting, q.clientId == req {
+                minePending.append(
+                    .object([
+                        "send_id": .string(q.sendId),
+                        "text": .string(q.text),
+                        "queued_at": .double(q.queuedAt),
+                    ]))
+            } else {
+                othersPending += 1
+            }
+        }
+
+        return .object([
+            "source": .string(agentId.value),
+            "client_id": requesting.map(JSON.string) ?? .null,
+            "generating": .bool(cur != nil),
+            "current": currentOut,
+            "mine_pending": .array(minePending),
+            "others_pending": .integer(Int64(othersPending)),
+        ])
+    }
+
+    /// Render the in-flight entry, exposing text fields only to its owner.
+    private func redactEntry(_ c: AICurrentEntry, requesting: String?) -> JSON {
+        let isMine = requesting.map { $0 == c.clientId } ?? false
+        let elapsed = max(0, nowSecs() - c.startedAt)
+        var out: OrderedDictionary<String, JSON> = [
+            "client_id": .string(c.clientId),
+            "send_id": .string(c.sendId),
+            "started_at": .double(c.startedAt),
+            "phase": .string(c.phase),
+            "elapsed": .double(elapsed),
+            "is_mine": .bool(isMine),
+        ]
+        if isMine {
+            out["text"] = .string(c.text)
+            out["text_so_far"] = .string(c.textSoFar)
+            if let t = c.lastTool { out["last_tool"] = t }
+        }
+        return .object(out)
     }
 
     // MARK: - prompt assembly + tool dispatch
