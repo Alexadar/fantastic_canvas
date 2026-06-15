@@ -20,13 +20,16 @@ codename recall).
 
 Backend-configurable — the SAME test runs on either backend by one env switch:
 
-    FANTASTIC_TEST_BACKEND = ollama (default, local/free) | nvidia (NVAPI, paid)
+    FANTASTIC_TEST_BACKEND = nvidia (DEFAULT, NVAPI, cloud — fast + the stricter
+                             OpenAI/tool-pairing wire) | ollama (local; gemma4:12b is
+                             ~60 s/turn so it is opt-in only, NEVER the default)
     FANTASTIC_TEST_MODEL    = backend-specific model id
-    FANTASTIC_CTX_WINDOW    = the forced small window (default 3000)
+    FANTASTIC_CTX_WINDOW    = the forced small window (default 3000 — must clear the
+                             system-block floor or the seam hits the too_small failsafe)
     FANTASTIC_CTX_TURNS     = how many chunky turns to drive (default 10)
 
-    cd integration_tests && uv run pytest context/test_ai_context_strategy.py -s
-    FANTASTIC_TEST_BACKEND=nvidia uv run pytest context/test_ai_context_strategy.py -s
+    cd integration_tests && uv run pytest context/test_ai_context_strategy.py -s   # nvidia
+    FANTASTIC_TEST_BACKEND=ollama … uv run pytest …                                # opt-in, slow
 
 Anthropic is intentionally NOT a backend here (out of scope for this validation).
 """
@@ -51,7 +54,7 @@ if str(_INTEG) not in sys.path:
 from helpers.seeding import seed_create, seed_web, seed_web_ws  # noqa: E402
 from helpers.ws import ws_call  # noqa: E402
 
-_BACKEND = os.environ.get("FANTASTIC_TEST_BACKEND", "ollama").lower()
+_BACKEND = os.environ.get("FANTASTIC_TEST_BACKEND", "nvidia").lower()
 _TURN_TIMEOUT = 240.0
 
 # A small window + a tiny output reserve → a budget that a handful of chunky turns
