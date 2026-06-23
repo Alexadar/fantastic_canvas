@@ -18,12 +18,21 @@ as chat.
 **Mechanics** (`Route::Kernel` / `Route::Reflect` → `dispatch_kernel`):
 - Push a `Tool { verb, target }` activity line `you → <id>` immediately (synchronous
   — always visible even if the send is slow).
+- **Live, like `@ai`** — before the send, `kernel.watch(id, CLIENT_ID)` mirrors the
+  target's own inbox into our client inbox, so any events it EMITS while handling the
+  verb (`token`/`say`/`status`/`done`, or any other activity event — scheduler ticks,
+  terminal output, …) render LIVE in the `@<id>` room through the SAME `on_event` path
+  the AI turn uses. The brain drives the AI turn lifecycle; a command target just
+  renders. Targets that only return a reply emit nothing — their reply still prints.
 - Spawn `kernel.send(id, payload)`; the reply is `to_string_pretty`'d and routed
   back via `cmd_tx` as a `<id>: …` message, tinted by `color_for(id)`.
 - **k=v coercion** (`parse_kv`): `bool → int → float → JSON literal → string`, so
   `@web reflect depth=2` sends `{type:"reflect", depth:2}` (number, not string).
 - Bare `@<id>` → `{type:"reflect"}` (the agent self-describes).
 - Aliases: `tree` / `reflect` (no id) reflect the whole kernel id-tree.
+- **One render path for all three routes**: `@ai` tokens, `@<id>` command activity,
+  and `@sh` PTY output all surface live in their room (the first two share the
+  `watch` → `on_event` mirror; `@sh` is the vt100 viewport). No byte/file streams.
 
 **Targets you can reach**: `kernel` (the root/manager), and any agent it has
 loaded/spawned (`core`, `web`, `file`, a brain, …) — discoverable via `@kernel
