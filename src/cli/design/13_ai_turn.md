@@ -1,11 +1,10 @@
-# 13 · AI turn (status + interrupt)
+# 13 · AI turn (streaming + interrupt)
 
 Status: implemented · live-gated (needs a provider)
 
-`@ai <text>` drives the brain. A live **status indicator** (`⟳ thinking…`) shows
-while it works; the answer arrives complete (atomic) at the bottom; `Ctrl+C`
-interrupts. One turn at a time; extra lines queue and concatenate. (Token-by-token
-streaming is deferred — see the §Atomic-answer note for why.)
+`@ai <text>` drives the brain. A `⟳ thinking…` status shows until the first token,
+then the answer **streams token-by-token** into the `@ai` room; `Ctrl+C` interrupts.
+One turn at a time; extra lines queue and concatenate.
 
 ## Design
 
@@ -20,20 +19,21 @@ streaming is deferred — see the §Atomic-answer note for why.)
 - Push your line, then `start_stream(brain, you)` opens an empty `Streaming`
   message. `Transcript::on_event` routes backend events: `token` appends text ·
   `say` → dim `Note` · `status` with a tool → dim `Tool` line · `done` seals.
-- **Live status via `watch`** — the ollama backend (cli-round-trip route) emits its
+- **Live stream via `watch`** — the ollama backend (cli-round-trip route) emits its
   token/status events to the **brain's own inbox**, NOT ours. `fire_ai_turn` calls
   `kernel.watch(brain, CLIENT_ID)` once to mirror that inbox into our `"fantastic"`
-  inbox. We consume ONLY the `status` events from it (the phase indicator).
+  inbox; `brain_rx` then renders every `token` live via `on_event`. (NIM uses the
+  per-client route → events arrive directly; same render path.)
+- **Sealed by the ordered `done`, not the send-completion** — ai-core SERIALIZES
+  turns (its own `send_id` queue) and emits each turn IN ORDER on the one channel:
+  `queued → token… → done`. So `done` always follows that turn's last token — we
+  seal on it (and drain the queue there), with no client-side race and no
+  cross-turn split. The send-completion (`ai_rx`) is used ONLY for the error path
+  (a failed turn yields no `done`). The inbox bound is roomy (8192) so a fast token
+  burst isn't dropped before the ~16fps loop drains it.
 - **Status indicator** — `status` events carry a `phase`; `App.ai_phase` tracks it
   (`sending → thinking → generating`) and shows `⟳ <phase>…` on the brain line until
-  the answer arrives. Cleared when the turn ends.
-- **Atomic answer = send completion** (`ai_rx`): the blocking reply's `response`
-  (or `✗ error`) is the authority — `close_stream` fills the empty brain line with
-  it and seals. Token events are deliberately NOT rendered live: appending tokens
-  races with the AI queue's cross-turn boundaries (the shared `brain` stream key)
-  and **splits answers** (observed: "How can I help you" … queued lines … "today?").
-  Correct token-by-token streaming needs per-turn stream ids in the kernel protocol
-  — a follow-up. Today: live phase indicator + the complete answer, correctly ordered.
+  the first token replaces it. Cleared when the turn ends.
 - **One in-flight turn + queue-concat (Claude-Code style, AI-only)**: `chat_busy`
   guards re-entry — extra `@ai` lines typed mid-turn show immediately and **queue**
   (`App.pending`). When the turn ends, the whole queue is **concatenated with `\n`**
