@@ -32,7 +32,9 @@ $ fantastic down                    # graceful shutdown of cwd's workspace kerne
 **Dispatch order** (`cli/src/main.rs::main`): gateway subcommands (`up`/`k`/`down`)
 → host subcommands (`demo`/`--smoke`/`ai`|`ask`) → else tty? TUI : headless reflect.
 `--runtime` parsed by `runtime_from_args` (default rust); `--container` spawns a
-podman/docker kernel (image/engine resolved like `fantastic_app`).
+podman/docker kernel. The image is **`FANTASTIC_IMAGE` (or `--image`), REQUIRED** —
+by default no defaults: an unset image fails loud (never a guessed tag); and a
+missing image is a hard error (never pulled, `gateway::image_present`).
 
 **Why it matters**: kernels run on their own; the manager (game or CLI) is
 *optional*. The headless CLI is how scripts, CI, and power users drive the exact
