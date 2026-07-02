@@ -35,9 +35,10 @@ One turn at a time; extra lines queue and concatenate.
   (`sending → thinking → generating`) and shows `⟳ <phase>…` on the brain line until
   the first token replaces it. Cleared when the turn ends.
 - **One in-flight turn + queue-concat (Claude-Code style, AI-only)**: `chat_busy`
-  guards re-entry — extra `@ai` lines typed mid-turn show immediately and **queue**
-  (`App.pending`). When the turn ends, the whole queue is **concatenated with `\n`**
-  and sent as ONE next turn (not N separate turns). Only `@ai` queues; other rooms
+  guards re-entry — extra `@ai` lines typed mid-turn show immediately as **queued**
+  (dim + `⏳`, `State::Queued`) and wait in `App.pending`. When the turn ends, the
+  whole queue is **concatenated with `\n`** and sent as ONE next turn (the `⏳`
+  flips to sent); an interrupt marks them `⊘`. Only `@ai` queues; other rooms
   dispatch immediately.
 - **Config (hermetic + hydrated)**: backend + model are REQUIRED and explicit —
   nothing is guessed. Precedence: env (`FANTASTIC_AI_BACKEND`/`FANTASTIC_AI_MODEL`)
@@ -51,12 +52,14 @@ One turn at a time; extra lines queue and concatenate.
   from inside the chat).
 - **Error path (no hang)**: a backend error (e.g. an uninstalled model →
   `ollama: HTTP 404`) comes back as the reply's `error`; `fire_ai_turn` sends `✗ …`
-  through `ai_rx` and `close_stream` writes it into the brain line. The turn always
-  resolves — it never hangs on an empty `brain:`.
+  through `ai_rx` and `close_stream_with` seals the brain line **red**
+  (`State::Error`; dry guidance seals normal). The turn always resolves — it never
+  hangs on an empty `brain:`.
 - **Interrupt**: `Ctrl+C` once → `interrupt_live` flips the live message to
-  `Interrupted`, clears busy, and sends `{type:interrupt}` to the brain. The
-  partial text stays (you keep what streamed). (A *second* Ctrl+C in the window
-  exits the app — see 17.)
+  `Interrupted` (` ⊘`), marks any queued lines `⊘` too, clears busy, and sends
+  `{type:interrupt}` to the brain; the note says what happened
+  (`⊘ interrupted @ai · Ctrl+C again to exit`). The partial text stays. (A
+  *second* Ctrl+C in the window exits the app — see 17.)
 - **Sender color**: `ai`/`brain` get a stable non-white rail via `color_for`.
 
 **Thin shell**: the agentic loop, tools, prompt assembly all live in the kernel

@@ -20,7 +20,7 @@ stars, the word `FANTASTIC` in a crisp block font, and a blinking invite. Idle 1
 │            █    █  █ █  █   █   █  █    █   █    █  █                            │    gradient, centered
 │            █    █  █ █  █   █   █  █ ████   █   ███ ████                         │
 │        ·          *              .          ·             *          .         │
-│                          P R E S S   A N Y   K E Y   T O   P L A Y             │  ← blinks ~1 Hz,
+│                          P R E S S   A N Y   K E Y   T O   C O N T I N U E             │  ← blinks ~1 Hz,
 │   *           .            ·               *          .            ·        *   │    dim, centered below
 │        ·            *               .             ·            *          .     │
 └────────────────────────────────────────────────────────────────────────────────┘

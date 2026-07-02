@@ -74,7 +74,8 @@ together. It is the canonical baseline this folder develops from.
 | 17 | Exit affordances | implemented | [17_exit.md](17_exit.md) |
 | 18 | Headless / manager CLI | implemented | [18_headless_cli.md](18_headless_cli.md) |
 | 20 | Connector onboarding (dry brain · /setup) | implemented | [20_provider_onboarding.md](20_provider_onboarding.md) |
-| 21 | Addressee switch (rooms + composer) | implemented | [21_addressee_switch.md](21_addressee_switch.md) |
+| 21 | Agent navigation (@-palette + Esc home) | implemented | [21_addressee_switch.md](21_addressee_switch.md) |
+| 22 | Help overlay · input history · safe paste | implemented | [22_help.md](22_help.md) |
 
 **Numbering**: `00` orientation · `10–18` implemented screens/flows (user-journey
 order) · `20+` proposed. Add a screen → new number here + in `00_map.md`.

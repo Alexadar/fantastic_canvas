@@ -25,7 +25,7 @@ SCENE 5/5  CREDITS     ◀ color-cycling marquee scroller ▶ + sine block basel
 ```
 
 **Per-scene chrome** (every frame): a dim `SCENE n/5` counter top-right, and a
-blinking `▶ SHIFT-TAB ▶` exit hint centered on the bottom row (~1.5 Hz). Each
+blinking `▶ PRESS ANY KEY ▶` exit hint centered on the bottom row (~1.5 Hz). Each
 scene gets local progress `t∈[0,1]` + a global `clock` for continuous effects
 (blink, 4-color CGA cycle, starfield drift). The whole area clears each frame
 (no ghosts); all "randomness" is a seeded xorshift, so the cutscene is **identical
@@ -35,9 +35,8 @@ Durations: Send 4.0s · Reflect 4.4s · Compose 5.0s · Brain 4.4s · Credits 6.
 (≈23.8s total, `Movie::total_secs()` — the attract loop uses it to know one pass
 finished).
 
-> Note: the on-screen hint still says `SHIFT-TAB` and the credits say "press
-> SHIFT-TAB" — a leftover from the old mode-switch era. Now **any** key exits the
-> movie to chat. Design TODO: change the hint to `▶ PRESS ANY KEY ▶` for honesty.
+The hint and the credits marquee both say "press any key" — matching the actual
+exit behavior (**any** key exits the movie to chat).
 
 ## UX
 
@@ -69,7 +68,7 @@ stream 1500 6
   the `SCENE n/5` counter advances across the stream; FAIL if a scene is blank or
   the counter is stuck.
 - **Determinism** — PASS if re-running yields the same frames (seeded noise).
-- **Exit hint** — PASS if the bottom-row hint is present (blinking). (Flag if it
-  still says SHIFT-TAB rather than "any key" — known TODO.)
+- **Exit hint** — PASS if the bottom-row hint blinks `▶ PRESS ANY KEY ▶` (FAIL on
+  any stale SHIFT-TAB wording).
 - **Manual replay** — PASS if `/intro` plays it over chat and a key returns.
 - **Overall** — PASS if it reads as a cool retro explainer a person enjoys watching.

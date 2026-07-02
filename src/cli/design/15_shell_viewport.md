@@ -9,7 +9,7 @@ interactivity; `Esc` (or `Ctrl+F`) releases back to the chat input.
 ## Design
 
 ```text
-   │ you → sh:  $ ls -la                              ← command echoed as a chat line
+   │ you → sh: ls -la                                 ← command echoed as a chat line
    ┌ (breathing PTY viewport — the live terminal screen, rendered into chat) ┐
    │ total 24                                                                 │
    │ drwxr-xr-x  …  src                                                       │
@@ -19,8 +19,9 @@ interactivity; `Esc` (or `Ctrl+F`) releases back to the chat input.
 ```
 
 **Mechanics** (`Route::Shell` → `run_shell`; `TerminalSession` in `fantastic-term`):
-- `@sh <cmd>` (or any bare line once sticky is `sh`) writes the command to the live
-  PTY; its screen is sampled (`used_rows`) and rendered as a viewport in the chat
+- `@sh <cmd>` (or any bare line once sticky is `sh`) echoes a `you → sh: <cmd>`
+  activity line (the Tool render collapses the doubled verb/target) and writes the
+  command to the live PTY; its screen is sampled (`used_rows`) and rendered as a viewport in the chat
   body — it updates as the program runs ("breathing").
 - **Room-scoped (`term_visible`)**: the PTY is shared but the viewport renders —
   and Ctrl+F / SIGINT apply — ONLY while you're in the `@sh` room

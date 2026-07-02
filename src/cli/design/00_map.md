@@ -34,7 +34,7 @@ transition → update this diagram first.
                   └─────────────────────────────────────────────────┘
                         │                                   ▲
                         │ Ctrl+F focus ↔ Esc release        │ sticky target persists
-                        ▼                                   │ (⇧⇥ to switch — 21, proposed)
+                        ▼                                   │ (⇧⇥ / @-palette — 21)
                   ┌──────────────────┐                      │
                   │ 15 SHELL FOCUS   │ ─────────────────────┘
                   │ full PTY keys    │
@@ -62,9 +62,12 @@ sender. One line resolves against the active room (`chat::route`):
 | `@ws <verb>`            | workspace root | `ws`         | 16 |
 | `/intro`                | movie (local)  | unchanged    | 11 |
 | `/setup` · `/model`     | connector wizard (local) | unchanged | 20 |
+| `/help`                 | overlay (local) | unchanged   | 22 |
+| `/…` (unknown)          | command hint (local) | unchanged | 22 |
 
-Switching rooms (input affordances, no send): **Shift-Tab** turns to the next open
-room · **Tab** completes the `@sender` · **Backspace** past an empty message edits
+Switching rooms (input affordances, no send): **`@` opens the palette** (ai first,
+open rooms, discoverable agents — ↑↓/⏎/⇥/Esc) · **Shift-Tab** turns to the next
+open room · **Esc** comes home to `@ai` · **Backspace** past an empty message edits
 the sender. The prompt `@<sender> ▸` is the live truth of where the next line goes;
 an unknown sender flashes red and is **not** sent. See [21](21_addressee_switch.md).
 
@@ -90,6 +93,7 @@ contract's §Design for the per-screen specifics.
 | 17 | Exit affordances | implemented | `17_exit.md` |
 | 18 | Headless / manager CLI | implemented | `18_headless_cli.md` |
 | 20 | Connector onboarding (dry brain · /setup) | implemented | `20_provider_onboarding.md` |
-| 21 | Addressee switch (rooms + composer) | implemented | `21_addressee_switch.md` |
+| 21 | Agent navigation (@-palette + Esc home) | implemented | `21_addressee_switch.md` |
+| 22 | Help overlay · input history · safe paste | implemented | `22_help.md` |
 
 See `README.md` for the contract format + how an LLM drives/judges a run.

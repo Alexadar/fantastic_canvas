@@ -27,10 +27,17 @@ $ fantastic up [--runtime rust|python|swift] [--container]   # attach-or-spawn i
   { "agents": [ … ] }
 $ fantastic k <id> <verb> [k=v…]    # send a verb to the workspace over HTTP, print reply
 $ fantastic down                    # graceful shutdown of cwd's workspace kernel
+
+$ fantastic --help                  # the whole surface on one screen (also -h | help)
+$ fantastic bogus                   # unknown subcommand → usage on stderr, exit 2
 ```
 
-**Dispatch order** (`cli/src/main.rs::main`): gateway subcommands (`up`/`k`/`down`)
-→ host subcommands (`demo`/`--smoke`/`ai`|`ask`) → else tty? TUI : headless reflect.
+**Dispatch order** (`cli/src/main.rs::main`): `config` + gateway subcommands
+(`up`/`k`/`down`) → `--help`/`-h`/`help` → **unknown subcommand refused** (usage on
+stderr, exit 2 — never a silent TUI launch) → host subcommands
+(`demo`/`--smoke`/`ai`|`ask`) → else tty? TUI : headless reflect.
+**Exit codes**: 0 success · 2 usage error (unknown subcommand, `ai` with no prompt,
+`k` with too few args) · nonzero via anyhow for runtime failures.
 `--runtime` parsed by `runtime_from_args` (default rust); `--container` spawns a
 podman/docker kernel. The image is **`FANTASTIC_IMAGE` (or `--image`), REQUIRED** —
 by default no defaults: an unset image fails loud (never a guessed tag); and a

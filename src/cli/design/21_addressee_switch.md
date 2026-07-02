@@ -1,100 +1,97 @@
-# Changing the addressee (the `@sender` composer)
+# 21 · Agent navigation — the `@`-palette + Esc home
 
 Status: implemented
 
-> **Shipped** (see [12_chat.md](12_chat.md) for the full surface). The addressee
-> became a per-character **room** + an editable **`@sender`** field on the input:
-> **Shift-Tab** turns to the next open room (rolls over the characters you know);
-> **Tab** completes the `@sender` against every known character (base + open tabs +
-> kernel agents); **Backspace** past an empty message edits the sender in place;
-> a send to an unknown character is a **nogo** (the `@sender` flashes red). The one
-> deviation from the proposal below: Shift-Tab cycles *open rooms* (not the full
-> known set) to avoid spawning a tab per agent on every keypress — untabbed agents
-> are reached by name + Tab, opened on send. The rest landed as designed.
-
-**Problem.** Chat is one surface with many recipients (`@ai`, `@kernel`, `@sh`,
-`@ws`, and any spawned workspace agent). Today you retarget by typing the full
-`@name` on a line; the sticky target persists and the prompt shows `@kernel ▸`.
-That's good, but **retyping a long `@agent-id` every time you switch is friction**,
-and which addressees even exist isn't discoverable.
-
-**Recommendation — make the prompt the switcher.** The addressee should be
-*persistent, visible, and cyclable*: set it once, see it always in the `▸` prompt,
-and change it with **zero typing**. Three complementary mechanisms, cheapest-first:
-
-1. **`Shift+Tab` cycles the sticky target** through the live addressee ring →
-   `@ai → @kernel → @sh → @ws → <spawned agents…> → @ai`, updating the prompt
-   instantly. This is the zero-typing fast path. (It reuses the muscle memory of
-   the old "Shift+Tab to change mode" — now that modes are gone, it cycles
-   *who you're talking to* instead, which is the thing that actually varies.)
-2. **`@` + `Tab` autocompletes** an addressee inline — type `@ke`▸Tab → `@kernel`.
-   The precise path, essential for spawned agents with arbitrary ids.
-3. **Bare `@name` ⏎ retargets only** (no empty send) — an explicit one-shot set
-   when you know the name and don't want to cycle.
-
-The `@<target> ▸` prompt is always the live truth of where the next line goes — the
-switch is *visible state you steer*, never hidden.
+**Easy navigation through agents, AI-first, not complex.** One gesture — `@` —
+navigates AND discovers: it opens a palette of every character you can face
+(`ai` pinned first, then your open rooms, then agents you haven't met), and
+picking one walks you into their room. Esc always steps *back*, ending at the
+brain. Shift-Tab remains the lazy walk; the palette is the deliberate one.
 
 ## Design
 
 ```text
-   host: 2 agents · ws: rust · @ai · @kernel · @sh · @ws · ⇧⇥ switch · Ctrl+F focus
-                                                            └─ hint added to status
-
-   … transcript …
-                                                    ·                 *
-   @kernel ▸ _                ← Shift+Tab →    @sh ▸ _    ← Shift+Tab →   @ws ▸ _
-
-   ── `@` + Tab autocomplete popover (anchored at the input) ──
-   @ke_                                                     │ kernel
-   ┌──────────────┐   ↑/↓ move · Tab/⏎ pick · Esc cancel    │ ai
-   │ ▸ kernel     │                                          │ sh
-   │   …          │   (only shows on `@`+Tab; lists the      │ ws
-   └──────────────┘    live ring incl. spawned agent ids)    │ rust-wk-01
+│              │ (transcript of the active room)                │
+│              ┌──────────────────────────────┐                 │
+│              │ @ rooms & agents             │  ← palette floats over the
+│              │ ▸ @ai                        │    transcript bottom while the
+│              │   @sh •                      │    @sender is being edited.
+│              │   @ws                        │    ▸ = selection (magenta),
+│              │   @kernel  opens room        │    • = unread, dim = not yet
+│              │   @web     opens room        │    opened (picking opens it)
+│              │ ↑↓ · ⏎ enter room · ⇥ complete · esc │
+│              └──────────────────────────────┘                 │
+│   @a▸ _                                                       │  ← typing filters
 ```
 
-- **The ring is live.** It's `@ai`, `@kernel`, `@sh`, `@ws`, plus every spawned
-  workspace agent the manager knows — built from the kernel's reflect, not a
-  hardcoded list. New agents appear in the cycle and the popover automatically.
-- **Prompt = source of truth.** `@<target> ▸` always names the next recipient;
-  `color_for(target)` tints the caret so the *who* is also a glance of color.
-- **Status hint.** Add `⇧⇥ switch` to the status line so the fast path is
-  discoverable without docs.
-- **Sticky semantics unchanged.** A line with no `@` still goes to the sticky
-  target; `@name …` on a line both retargets and sends (one-shot override that also
-  updates sticky). Shift+Tab and `@`+Tab only move the sticky — they never send.
+**Mechanics** (`chat::palette_items` — pure + unit-tested; overlay in
+`render_palette`; keys in `handle_input`):
+
+- **Opening**: `@` on an empty message enters the sender edit (as before) and the
+  palette appears. Typing **filters** (prefix match); every keystroke resets the
+  selection to the top.
+- **Ordering — AI first**: `ai` is pinned to the top (the brain is home), then the
+  OPEN rooms in tab order (unread `•` shown), then **known-but-unopened kernel
+  agents** (dim, tagged `opens room`). Discovery and navigation are one list.
+- **⏎ picks + enters**: the selection becomes the sender and the bare line is
+  submitted — for an open room that just walks you in; for a fresh kernel agent
+  the room opens **on its reflect** (bare `@id` → reflect: the introduction).
+  `@ws` shows its tree. No new routing — the palette drives the existing bare-`@`
+  semantics.
+- **⇥ completes** to the selection and stays composing (so you can type a verb);
+  landing on an open room turns to face it.
+- **Esc cancels** the sender edit, restoring the sender as it was (`sender_prev`).
+- **No match**: the panel says so; ⏎ falls back to the typed fragment → the nogo
+  flash. You can't wander into a room that doesn't exist.
+
+**Esc = back/home (one ladder)**: cancel a setup flow → release the PTY → cancel
+the sender edit → **home to `@ai`**. Wherever you are, Esc walks you back toward
+the brain. AI-first: `@ai` is always one Esc away.
+
+**Visual language**: the palette reuses the setup-flow Select styling (`▸` mark,
+magenta selection, dim hint row) — one system, nothing new to learn.
 
 ## UX
 
-1. **Talking to `@ai`, want the kernel** → *expect* one `Shift+Tab` flips the
-   prompt to `@kernel ▸` (or a couple taps to reach it). *feel:* instant, no typing.
-2. **Want a spawned agent `rust-wk-01`** → *expect* `@`+Tab pops the list, arrow/
-   type to it, Tab picks. *feel:* discoverable; I didn't memorize the id.
-3. **Know exactly where** → *expect* `@kernel reflect ⏎` sends there and leaves the
-   sticky on `@kernel`. *feel:* explicit override still works.
-4. **At all times** → *expect* the prompt shows the current target. *feel:* I'm
-   never unsure who hears my next line.
+1. **`@` on an empty line** → *expect* the palette with `▸ @ai` on top, your rooms,
+   then dim discoverable agents. *feel:* the cast of characters, brain first.
+2. **Type `k`** → *expect* it filters to `@kernel`. *feel:* find by name, instantly.
+3. **⏎ on a dim agent** → *expect* its room opens showing its reflect. *feel:*
+   walking up to someone new and getting an introduction.
+4. **⏎ on `@sh •`** → *expect* you're in the shell room, unread cleared. *feel:*
+   answering whoever called.
+5. **Esc mid-edit** → *expect* the palette closes, the sender restored. *feel:*
+   never lost.
+6. **Esc from any room** → *expect* you're facing `@ai` again. *feel:* home.
 
-## Drive (once built)
+## Drive
 
-```text
-# wait 2500 ; key space ; wait 600 ; shot at_ai          # prompt @ai ▸
-# key shift-tab ; wait 200 ; shot at_kernel               # prompt @kernel ▸
-# key shift-tab ; wait 200 ; shot at_sh                   # prompt @sh ▸
-# type @ke ; key tab ; wait 200 ; shot autocomplete       # @kernel completed
+```script
+wait 2500
+key space
+wait 600
+type @
+wait 300
+shot palette_open
+type k
+wait 200
+shot palette_filtered
+key enter
+wait 2000
+shot entered_kernel_room
+key esc
+wait 300
+shot home_at_ai
 ```
-(*Harness note: add a `shift-tab` key mapping to `screenshot.rs` when building.*)
 
 ## Judge
 
-- **Zero-typing cycle** — PASS if `Shift+Tab` advances the prompt target through
-  the ring and wraps; FAIL if it sends a message or does nothing.
-- **Live ring** — PASS if a spawned agent appears in the cycle / popover (not just
-  the four built-ins).
-- **Visible truth** — PASS if the `▸` prompt always matches the actual next
-  recipient (and is sender-tinted).
-- **Autocomplete** — PASS if `@`+Tab completes / lists known addressees including
-  arbitrary spawned ids.
-- **No accidental send** — PASS if switching never emits a message.
-- **Overall** — PASS if changing who you talk to feels like flicking a selector,
-  not retyping an address.
+- **Palette opens on `@`** — PASS if the panel lists `@ai` first with the selection
+  mark, open rooms next, dim unopened agents last.
+- **Filter** — PASS if typing narrows the list by prefix.
+- **⏎ enters** — PASS if picking `kernel` opens/focuses its room (a fresh agent
+  shows its reflect).
+- **Esc ladder** — PASS if Esc cancels the edit (sender restored), and from plain
+  chat lands you in `@ai`.
+- **Overall** — PASS if moving between agents feels like one effortless gesture,
+  with the brain as the center of gravity.

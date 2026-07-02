@@ -48,21 +48,30 @@ field + the message**:
 
 - **Backspace past an empty message steps into the sender** — edit/delete the
   `@sender`, not just the text.
-- **Tab completes** the sender against every known character (base rooms + open
-  tabs + kernel agents); landing on an open room turns to face it.
+- **`@` on an empty message opens the palette** (see 21): `ai` pinned first, open
+  rooms, then discoverable agents — ↑↓ pick, ⏎ enter the room, ⇥ complete, Esc
+  cancel. A space commits the typed sender back to the message.
+- **Tab completes** the sender to the palette selection (base rooms + open tabs +
+  kernel agents); landing on an open room turns to face it.
 - **Shift-Tab turns to the next open room** (rolls over the characters you know);
-  the composer follows. New agents are reached by name + Tab, opened on send.
-- **`@` on an empty message** jumps to retyping the sender from scratch; a space
-  commits it back to the message.
+  the composer follows. **Esc comes home to `@ai`.**
+- **Caret editing**: ←/→/Home/End move the caret; insert/Backspace/Delete edit at
+  it. **↑/↓ recall sent lines** (a draft is stashed and restored). **Paste is
+  bracketed**: a multi-line paste lands as ONE message (newlines shown as `⏎`),
+  never submitted line-by-line.
 - **Nogo**: a send to a sender that names no known character is **rejected** (the
   `@sender` flashes red), never sent.
 
-**Bottom-anchored** — newest hugs the input; a short room leaves the empty space
-(starfield) at the top. Anchoring counts visual rows so wrapped lines never clip.
+**Bottom-anchored + scrollback** — newest hugs the input; a short room leaves the
+empty space (starfield) at the top. Anchoring counts visual rows so wrapped lines
+never clip. **PageUp/PageDown (and the mouse wheel) scroll history**; while
+scrolled a dim `↓ newer (End)` marker shows and new lines DON'T yank the view;
+End / any submit / a room switch snaps back to the newest.
 
 **AI room specifics** (see [13_ai_turn.md](13_ai_turn.md)) — `@ai` streams live;
-extra `@ai` lines typed mid-turn **queue** and fire in order; a backend error
-**seals** the stream (you never get a hung empty `brain:`).
+extra `@ai` lines typed mid-turn **queue** (rendered dim + `⏳` until they fire in
+order); a backend error **seals** the stream red (`State::Error`) — you never get
+a hung empty `brain:`. `/help` overlays the whole key/command surface.
 
 ## UX
 
